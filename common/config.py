@@ -115,8 +115,8 @@ COOLDOWN_SEC = 60.0
 
 DECISION_INTERVAL_SEC = 30.0  # = MONITOR_WINDOW_SEC (عمداً یکسان - یک تیک تصمیم مشترک)
 
-PPO_REWARD_WEIGHTS = {"w1_response_time": 0.25, "w2_deadline": 0.25,
-                       "w3_energy": 0.26, "w4_load_balance": 0.24}
+PPO_REWARD_WEIGHTS = {"w1_response_time": 0.24, "w2_deadline": 0.24,
+                       "w3_energy": 0.29, "w4_load_balance": 0.23}
 PPO_PENALTY_PER_REJECTED = 0.5
 PPO_PENALTY_PER_ACTION = 0.01  # جریمه‌ی ثابت کوچک هر SCALE_UP/DOWN/TURN_ON/OFF
 
