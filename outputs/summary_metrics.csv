@@ -1,0 +1,5 @@
+algorithm,E_T%,avg_response_time_sec,p95_response_time_sec,p99_response_time_sec,deadline_violations,deadline_violation_rate_pct,cumulative_energy_joule,avg_distance_km,avg_load_balance_cv,avg_network_delay_ms,p95_network_delay_ms,p99_network_delay_ms,avg_total_replicas,avg_servers_on,server_power_on_events,server_power_off_events,total_requests
+Greedy,55.71,48.805,172.208,307.436,16948,53.62,28086983.1,7.27,0.539,11.64,21.13,25.17,104.6,9.5,8,0,31606
+HPA,53.11,42.665,143.769,240.45,15971,50.53,29084183.1,7.15,0.513,11.51,22.16,26.97,116.1,9.5,8,0,31606
+Voila,51.04,40.3,131.376,204.157,15474,48.96,30787883.1,6.82,0.496,11.16,20.96,25.17,135.9,9.5,8,0,31606
+PPO (RL),65.54,54.403,170.725,257.082,19817,62.7,27770183.1,8.43,0.548,12.93,24.31,28.27,100.9,9.5,8,0,31606
