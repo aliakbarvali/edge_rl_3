@@ -62,7 +62,17 @@ ACTIVE_SERVICES = tuple(sorted(SERVICES_INFO.keys()))
 # بخش ۱.۳: داده و تایم‌لاین
 # ---------------------------------------------------------------------------
 
-DATA_DIR = r"D:\PT\edge_rl_3\data"
+import os as _os
+
+# *** پورتابیلیتی: قبلاً یک مسیر مطلق ویندوزی هاردکد بود
+# (r"D:\PT\edge_rl_3\data") که فقط روی یک سیستم خاص کار می‌کرد. حالا از
+# env var با fallback به <ریشه‌ی پروژه>/data/raw استفاده می‌شود.
+#   لینوکس/مک:   export EOTCH_DATA_DIR=/path/to/data
+#   ویندوز(cmd): set EOTCH_DATA_DIR=D:\PT\edge_rl_3\data
+DATA_DIR = _os.environ.get(
+    "EOTCH_DATA_DIR",
+    _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data", "raw"),
+)
 TRAIN_FILES = ["Data1.csv", "Data2.csv", "Data3.csv"]  # شنبه‌های هفته ۱ تا ۳
 TEST_FILE = "Data4.csv"  # شنبه‌ی هفته ۴
 SECONDS_PER_DAY = 86400
@@ -109,8 +119,30 @@ DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.7    # اشغال صف بالاتر ا
 DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD = 0.2  # اشغال صف پایین‌تر از این -> واقعاً ظرفیت اضافی بود
 
 DECISION_INTERVAL_SEC = 30.0
-PPO_REWARD_WEIGHTS = {"w1_response_time": 0.24, "w2_deadline": 0.24, "w3_energy": 0.29, "w4_load_balance": 0.23}
-PPO_PENALTY_PER_REJECTED = 0.5
+
+# ---------------------------------------------------------------------------
+# بخش ۱۱.۴: وزن‌های reward PPO.
+# *** CHANGELOG (بازبینی ۳): قبلاً فقط ۴ وزن بود (w1..w4) و جریمه‌ی
+# «درخواست ردشده» جدا و نرمال‌نشده با PPO_PENALTY_PER_REJECTED اعمال
+# می‌شد (نگاه کنید algorithms/ppo/env.py برای شرح کامل باگ: این جمله‌ی
+# نرمال‌نشده می‌توانست ۵-۱۵ برابر بقیه‌ی اجزای reward بزرگ‌تر شود و کل
+# سیگنال را تحت‌الشعاع قرار دهد -> عامل یاد گرفت هیچ اکشنی نزند و فقط
+# سرور اضافه نگه دارد). حالا num_rejected_recent هم مثل بقیه نرمال و با
+# وزن صریح w5_rejected در همان مجموع وزن‌دار ترکیب می‌شود.
+# مقادیر کالیبره‌شده (جمع=۱.۰): پاسخ‌گویی به رد شدن (w5) و انرژی (w3)
+# سنگین‌تر از پاسخ‌گویی خام (w1) وزن گرفته‌اند - بخش ۱۳ سند: قابل تنظیم.
+# ---------------------------------------------------------------------------
+PPO_REWARD_WEIGHTS = {
+    "w1_response_time": 0.12,
+    "w2_deadline": 0.20,
+    "w3_energy": 0.30,
+    "w4_load_balance": 0.23,
+    "w5_rejected": 0.15,
+}
+# *** PPO_PENALTY_PER_REJECTED حذف شد: env.py دیگر جریمه‌ی رد را جداگانه و
+# نرمال‌نشده اعمال نمی‌کند (نگاه کنید بالا)؛ اگر کد دیگری (مثلاً نسخه‌ی
+# قدیمی‌تر train.py/infer.py) هنوز به CFG.ppo_penalty_per_rejected ارجاع
+# می‌دهد، آن ارجاع باید حذف/به w5_rejected منتقل شود.
 PPO_PENALTY_PER_ACTION = 0.01
 SEED = 42
 
@@ -152,7 +184,6 @@ class Config:
     decision_audit_scale_down_occ_threshold: float = DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD
     decision_interval_sec: float = DECISION_INTERVAL_SEC
     ppo_reward_weights: dict = field(default_factory=lambda: PPO_REWARD_WEIGHTS)
-    ppo_penalty_per_rejected: float = PPO_PENALTY_PER_REJECTED
     ppo_penalty_per_action: float = PPO_PENALTY_PER_ACTION
     seed: int = SEED
 
