@@ -2,6 +2,12 @@
 common/config.py
 تنظیمات مرکزی پروژه - دقیقاً طبق «سند معماری کامل پروژه» بخش‌های ۱، ۹، ۱۱.
 هیچ عدد پارامتری نباید در جای دیگر کد hardcode شود؛ همه از اینجا خوانده می‌شوند.
+
+*** CHANGELOG (بازبینی ۲): اضافه شدن SUSTAIN_HIGH_SEC - بخش ۶.۱ سند می‌گوید
+utilization باید «به‌طور مداوم» بالای آستانه باشد تا TURN_ON اعمال شود، ولی
+این تداوم قبلاً فقط سمت پایین (SUSTAIN_LOW_SEC) پیاده‌سازی شده بود. حالا
+simulator/engine.py از این مقدار برای سمت بالا هم استفاده می‌کند (نگاه کنید
+_any_active_server_sustained_overloaded در engine.py).
 """
 
 from __future__ import annotations
@@ -107,6 +113,13 @@ UTIL_SCALE_UP_THRESHOLD = 0.95
 UTIL_SCALE_DOWN_THRESHOLD = 0.45
 MONITOR_WINDOW_SEC = 30.0
 SUSTAIN_LOW_SEC = 60.0
+# *** بخش ۶.۱ سند: «اگر utilization(t) (میانگین متحرک روی MONITOR_WINDOW_SEC)
+# > 95% به‌طور مداوم -> نیاز به روشن‌کردن سرور». قبلاً این سمت (بر خلاف سمت
+# پایین که SUSTAIN_LOW_SEC داشت) هیچ الزام تداومی نداشت - یک نمونه‌ی
+# لحظه‌ای بالای آستانه فوراً TURN_ON را trigger می‌کرد. اضافه شد تا با سمت
+# پایین متقارن باشد. مقدار پیش‌فرض = یک MONITOR_WINDOW کامل (یعنی حداقل ۲
+# تیک تصمیم متوالی باید overload را نشان دهند)؛ طبق بخش ۱۳ قابل کالیبراسیون.
+SUSTAIN_HIGH_SEC = 30.0
 COOLDOWN_SEC = 60.0
 
 # ---------------------------------------------------------------------------
@@ -154,6 +167,7 @@ class Config:
     util_scale_down_threshold: float = UTIL_SCALE_DOWN_THRESHOLD
     monitor_window_sec: float = MONITOR_WINDOW_SEC
     sustain_low_sec: float = SUSTAIN_LOW_SEC
+    sustain_high_sec: float = SUSTAIN_HIGH_SEC
     cooldown_sec: float = COOLDOWN_SEC
     decision_interval_sec: float = DECISION_INTERVAL_SEC
     ppo_reward_weights: dict = field(default_factory=lambda: PPO_REWARD_WEIGHTS)

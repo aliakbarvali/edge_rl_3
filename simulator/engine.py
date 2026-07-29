@@ -6,12 +6,29 @@ simulator/engine.py
 رویداد-محور را با اولویت زمانی انجام می‌دهد. اگر روی سیستم خودتان simpy در
 دسترس بود و ترجیح می‌دهید از آن استفاده شود، فقط همین فایل باید بازنویسی
 شود؛ common/، algorithms/، data/ نیازی به تغییر ندارند.
+
+*** CHANGELOG (بازبینی ۲): دو اصلاح مهم نسبت به نسخه‌ی قبلی:
+
+1) Migration اکنون واقعاً به‌سبک «Make-Before-Break» است (طبق بخش ۶.۲ سند):
+   قبلاً رپلیکای جدید STARTING می‌شد *و هم‌زمان* رپلیکای قدیم هم بلافاصله
+   DRAINING می‌شد. چون رپلیکای DRAINING فوراً از کاندیدهای Router حذف
+   می‌شود ولی رپلیکای جدید تا POD_STARTUP_DELAY_SEC ثانیه بعد READY نیست،
+   یک پنجره‌ی واقعی وجود داشت که هیچ رپلیکای READY از آن سرویس در دسترس
+   نبود -> REJECTED_NO_REPLICA غیرواقعی. حالا رپلیکای قدیم READY می‌ماند و
+   فقط *پس از* READY شدن رپلیکای جدید وارد DRAINING می‌شود (نگاه کنید
+   self._pending_migrations و _handle_replica_ready).
+
+2) رویدادهای scale_decision، provision_decision، migration_started،
+   migration_completed که بخش ۱۲ سند به‌عنوان حداقل رویدادهای لاگ اجباری
+   نام می‌برد، قبلاً اصلاً لاگ نمی‌شدند؛ اضافه شدند. همچنین
+   REJECTED_NO_REPLICA (که قبلاً فقط در متریک‌ها شمارش می‌شد بدون رکورد
+   JSONL) اکنون مثل REJECTED_QUEUE_FULL لاگ می‌شود.
 """
 
 from __future__ import annotations
 import heapq
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -53,6 +70,21 @@ class SimulationEngine:
 
         self._request_seq = 0
         self._service_demand_centroid: Dict[int, tuple] = {}
+
+        # *** بخش ۶.۲: migration های در انتظار تکمیل (make-before-break).
+        # کلید: (target_server_id, service_id) -> مقدار: server_id مبدأ (در حال drain)
+        # وقتی رپلیکای مقصد READY شد، رپلیکای مبدأ همان‌جا وارد DRAINING می‌شود.
+        self._pending_migrations: Dict[Tuple[int, int], int] = {}
+
+        # *** بخش ۶.۱: ردیابی «تداوم overload» متقارن با _low_util_since،
+        # چون قبلاً فقط سمت پایین (scale-down/turn-off) تداوم چند-تیکی
+        # داشت و سمت بالا با یک نمونه‌ی لحظه‌ای فوراً trigger می‌شد.
+        self._high_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
+
+        # *** بخش ۷: «Cooldown مشابه ۶.۱ برای هر service_id» - قبلاً اصلاً
+        # پیاده نشده بود (فقط سرور cooldown داشت، نه سرویس). آخرین لحظه‌ای
+        # که یک اکشن SCALE_UP/DOWN واقعاً روی هر سرویس اعمال شد.
+        self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
 
     # ------------------------------------------------------------------
     def _init_servers(self) -> Dict[int, Server]:
@@ -162,10 +194,24 @@ class SimulationEngine:
         s.last_transition_time = self.now
         self._log("server_drain_started", server_id=server_id)
 
+        # *** Make-Before-Break (بخش ۶.۲): رپلیکای جدید را روی مقصد می‌سازیم
+        # ولی رپلیکای قدیم را *هنوز* drain نمی‌کنیم؛ فقط علامت "در انتظار
+        # مهاجرت" می‌زنیم. تا وقتی رپلیکای جدید READY نشود، رپلیکای قدیم
+        # همچنان یک کاندید معتبر برای Router باقی می‌ماند (سرویس هرگز بدون
+        # replica نمی‌ماند).
         for step in steps:
             self._place_replica(step.target_server_id, step.service_id)
+            self._pending_migrations[(step.target_server_id, step.service_id)] = server_id
+            self._log("migration_started", server_id=server_id, service_id=step.service_id,
+                      target_server_id=step.target_server_id)
 
+        # سرویس‌هایی که مهاجرت نمی‌کنند (چندرپلیکایی/رپلیکای دیگری هم دارند)
+        # طبق ۶.۲ فوراً DRAINING می‌شوند؛ سرویس‌های در حال مهاجرت را تا
+        # تکمیل مهاجرت دست نمی‌زنیم (_handle_replica_ready آن‌ها را در
+        # زمان مناسب drain می‌کند).
         for r in list(s.hosted_replicas.values()):
+            if r.service_id in migrated_services:
+                continue
             self._start_replica_drain(r)
 
         self._push(self.now + CFG.server_drain_grace_sec, EventType.SERVER_DRAIN_DONE, server_id)
@@ -173,8 +219,11 @@ class SimulationEngine:
 
     def _handle_drain_done(self, server_id: int):
         s = self.servers[server_id]
-        # اگر هنوز رپلیکای درحال‌تخلیه دارد، صبر بیشتر (نادر، ولی برای امنیت)
-        if any(r.state == ReplicaState.DRAINING for r in s.hosted_replicas.values()):
+        # اگر هنوز رپلیکایی (در حال پردازش، در انتظار مهاجرت، یا در حال
+        # تخلیه) روی این سرور باقی مانده، صبر بیشتر (نگاه کنید بند make-
+        # before-break بالا: رپلیکای READY منتظر تکمیل مهاجرت هم باید اینجا
+        # لحاظ شود، نه فقط DRAINING).
+        if any(r.state != ReplicaState.TERMINATED for r in s.hosted_replicas.values()):
             self._push(self.now + CFG.server_drain_grace_sec, EventType.SERVER_DRAIN_DONE, server_id)
             return
         s.hosted_replicas = {sid: r for sid, r in s.hosted_replicas.items()
@@ -218,6 +267,20 @@ class SimulationEngine:
         r.ready_since = self.now
         self._log("pod_ready", server_id=server_id, service_id=service_id)
 
+        # *** اگر این رپلیکا مقصد یک migration در انتظار بود، حالا که READY
+        # شد نوبت drain کردن رپلیکای قدیم (مبدأ) است - همین‌جا make-before-
+        # break تکمیل می‌شود (بخش ۶.۲).
+        pending_key = (server_id, service_id)
+        source_server_id = self._pending_migrations.pop(pending_key, None)
+        if source_server_id is not None:
+            source_server = self.servers.get(source_server_id)
+            old_replica = source_server.hosted_replicas.get(service_id) if source_server else None
+            if old_replica is not None and old_replica.state not in (ReplicaState.TERMINATED,
+                                                                       ReplicaState.DRAINING):
+                self._start_replica_drain(old_replica)
+            self._log("migration_completed", server_id=source_server_id, service_id=service_id,
+                      target_server_id=server_id)
+
     def _start_replica_drain(self, r: Replica):
         if r.state == ReplicaState.TERMINATED:
             return
@@ -259,8 +322,12 @@ class SimulationEngine:
         if chosen is None:
             if not candidates:
                 req.status = RequestStatus.REJECTED_NO_REPLICA
+                self._log("request_rejected", request_id=req.id, service_id=req.service_id,
+                          reason="no_replica")
             else:
                 req.status = RequestStatus.REJECTED_QUEUE_FULL
+                self._log("request_rejected", request_id=req.id, service_id=req.service_id,
+                          reason="queue_full")
             self._tick_rejected[req.service_id] += 1
             self._tick_violated[req.service_id] += 1
             self._finalize_request(req)
@@ -391,29 +458,83 @@ class SimulationEngine:
 
     def _apply_provisioning(self, action, snapshot: dict):
         self._last_tick_decisions["provision"] = action
+        applied = False
+        skip_reason = None
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
             s = self.servers[action.server_id]
-            if s.state == ServerState.OFF and not s.in_cooldown(self.now, CFG.cooldown_sec):
+            # *** بخش ۶.۱: علاوه بر cooldown، حالا باید حداقل یک سرور ACTIVE
+            # وجود داشته باشد که overload‌اش *مداوم* (>= SUSTAIN_HIGH_SEC) بوده
+            # باشد - نه صرفاً یک نمونه‌ی لحظه‌ای این تیک (قبلاً این تداوم
+            # اصلاً چک نمی‌شد؛ نگاه کنید _update_sustain_tracking).
+            if s.state != ServerState.OFF:
+                skip_reason = "not_off"
+            elif s.in_cooldown(self.now, CFG.cooldown_sec):
+                skip_reason = "cooldown"
+            elif not self._any_active_server_sustained_overloaded():
+                skip_reason = "overload_not_sustained"
+            else:
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
+                applied = True
         elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
             sustained = (self._low_util_since[action.server_id] is not None and
                          (self.now - self._low_util_since[action.server_id]) >= CFG.sustain_low_sec)
             # *** محافظ سیستمی: هرگز آخرین سرور فعال را drain نکن.
-            if s.state == ServerState.ACTIVE and sustained and n_active > 1 and \
-                    not s.in_cooldown(self.now, CFG.cooldown_sec):
+            if s.state != ServerState.ACTIVE:
+                skip_reason = "not_active"
+            elif not sustained:
+                skip_reason = "low_util_not_sustained"
+            elif n_active <= 1:
+                skip_reason = "last_active_server"
+            elif s.in_cooldown(self.now, CFG.cooldown_sec):
+                skip_reason = "cooldown"
+            else:
                 if self._start_server_drain(action.server_id):
                     self.metrics.record_scale_action("TURN_OFF")
+                    applied = True
+                else:
+                    skip_reason = "migration_incomplete"
+        # *** بخش ۱۲: لاگ provision_decision با وضعیت نهایی اعمال/رد
+        self._log("provision_decision", action=action.action.name, server_id=action.server_id,
+                  applied=applied, skip_reason=skip_reason)
+
+    def _any_active_server_sustained_overloaded(self) -> bool:
+        """بخش ۶.۱: آیا حداقل یک سرور ACTIVE وجود دارد که overload‌اش برای
+        حداقل CFG.sustain_high_sec به‌طور مداوم برقرار بوده (نه یک نمونه‌ی
+        لحظه‌ای تنها)؟ نگاه کنید _update_sustain_tracking برای پرشدن
+        self._high_util_since."""
+        for sid, since in self._high_util_since.items():
+            if since is not None and (self.now - since) >= CFG.sustain_high_sec:
+                return True
+        return False
 
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction):
         self._last_tick_decisions["scale"][svc_id] = decision
-        if decision == ScaleAction.SCALE_UP:
+        applied = False
+        skip_reason = None
+
+        if decision == ScaleAction.NO_CHANGE:
+            pass
+        elif (self.now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec:
+            # *** بخش ۷: «Cooldown مشابه ۶.۱ برای هر service_id» - قبلاً این
+            # کنترل اصلاً وجود نداشت و هر تیک می‌توانست دوباره SCALE_UP/DOWN
+            # بزند (flapping)، دقیقاً چیزی که سند صراحتاً می‌خواست جلویش
+            # گرفته شود.
+            skip_reason = "cooldown"
+        elif decision == ScaleAction.SCALE_UP:
             target = self.algorithm.select_placement_server(svc_id, self.servers)
             if target is not None:
-                self._place_replica(target, svc_id)
-                self.metrics.record_scale_action("SCALE_UP")
+                placed = self._place_replica(target, svc_id)
+                if placed is not None:
+                    self.metrics.record_scale_action("SCALE_UP")
+                    self._service_last_scale_time[svc_id] = self.now
+                    applied = True
+                else:
+                    skip_reason = "placement_failed"
+            else:
+                skip_reason = "no_target_server"
         elif decision == ScaleAction.SCALE_DOWN:
             ready = [r for r in self.replicas_by_service.get(svc_id, [])
                      if r.state == ReplicaState.READY]
@@ -421,10 +542,21 @@ class SimulationEngine:
                 victim = min(ready, key=lambda r: r.queue_occupancy(self.now))
                 self._start_replica_drain(victim)
                 self.metrics.record_scale_action("SCALE_DOWN")
+                self._service_last_scale_time[svc_id] = self.now
+                applied = True
+            else:
+                skip_reason = "only_one_replica_left"
+
+        # *** بخش ۱۲: لاگ رویداد scale_decision برای هر سرویس هر تیک، همراه
+        # با وضعیت نهایی اعمال/رد (audit trail کامل).
+        self._log("scale_decision", service_id=svc_id, decision=decision.name,
+                  applied=applied, skip_reason=skip_reason)
 
     def _update_sustain_tracking(self, snapshot: dict):
         for sid, s in self.servers.items():
             if s.state != ServerState.ACTIVE:
+                self._low_util_since[sid] = None
+                self._high_util_since[sid] = None
                 continue
             util = snapshot["servers"][sid]["utilization"]
             if util < CFG.util_scale_down_threshold:
@@ -432,6 +564,12 @@ class SimulationEngine:
                     self._low_util_since[sid] = self.now
             else:
                 self._low_util_since[sid] = None
+
+            if util > CFG.util_scale_up_threshold:
+                if self._high_util_since[sid] is None:
+                    self._high_util_since[sid] = self.now
+            else:
+                self._high_util_since[sid] = None
 
     def _handle_decision_tick(self, external_actions: dict | None = None) -> dict:
         """

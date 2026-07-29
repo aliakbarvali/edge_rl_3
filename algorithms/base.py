@@ -1,15 +1,3 @@
-"""
-algorithms/base.py
-کلاس انتزاعی مشترک بین Greedy/Voila/HPA/PPO، طبق بخش ۱۰ سند معماری.
-
-دو متد (initial_placement و select_replica) یک پیاده‌سازی پیش‌فرض *مشترک*
-دارند چون سند صریحاً می‌گوید این دو بخش بین همه‌ی الگوریتم‌ها یکسان است
-(بخش ۴: پوشش اولیه به سبک Voila Procedure 3؛ بخش ۵: مسیریابی بر پایه‌ی
-فاصله+صف، نه چیزی که هر الگوریتم جدا طراحی کند). بقیه‌ی متدها (scale_decision،
-provision_decision، migration_decision) باید توسط هر زیرکلاس پیاده شوند چون
-دقیقاً همان‌هایی هستند که الگوریتم‌ها را از هم متمایز می‌کنند.
-"""
-
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -48,19 +36,9 @@ class MigrationStep:
 class AlgorithmBase(ABC):
     name: str = "base"
 
-    # ------------------------------------------------------------------
-    # بخش ۴: پوشش اولیه (پیاده‌سازی مشترک، پیش‌فرض برای همه‌ی الگوریتم‌ها)
-    # ------------------------------------------------------------------
-    def initial_placement(self, servers: Dict[int, Server],
-                           active_bts: List[tuple]) -> List[int]:
-        """
-        پوشش حریصانه‌ی Set-Cover-Style (مشابه Voila Procedure 3): حداقل
-        زیرمجموعه‌ای از سرورها که تمام BTSهای فعال (active_bts: لیست
-        (lat, long)) را در محدوده‌ی l0 پوشش دهد.
-        خروجی: لیست server_id هایی که باید روشن شوند.
-        """
+    def initial_placement(self, servers, active_bts):
         remaining = set(range(len(active_bts)))
-        covers: Dict[int, set] = {}
+        covers = {}
         for sid, srv in servers.items():
             covered = set()
             for i, (lat, lon) in enumerate(active_bts):
@@ -70,7 +48,7 @@ class AlgorithmBase(ABC):
                     covered.add(i)
             covers[sid] = covered
 
-        selected: List[int] = []
+        selected = []
         while remaining:
             best_sid, best_cover = None, set()
             for sid, covered in covers.items():
@@ -80,19 +58,14 @@ class AlgorithmBase(ABC):
                 if len(inter) > len(best_cover):
                     best_sid, best_cover = sid, inter
             if best_sid is None or len(best_cover) == 0:
-                break  # هیچ سرور باقی‌مانده‌ای پوشش بیشتری نمی‌دهد
+                break
             selected.append(best_sid)
             remaining -= best_cover
             if len(selected) == len(servers):
                 break
-        if not selected:  # حالت لبه: هیچ BTS فعالی نبود - حداقل یک سرور روشن کن
+        if not selected:
             selected = [next(iter(servers))]
 
-        # *** گسترش انتخاب تا ظرفیت کل هم کافی باشد (نه فقط پوشش جغرافیایی):
-        # مجموع cpu_demand هر ۱۵ سرویس معمولاً از ظرفیت تک‌تک سرورها بیشتر است،
-        # پس صرفِ پوشش جغرافیایی کافی نیست - باید سرور کافی برای جاگیری همه‌ی
-        # سرویس‌ها هم روشن شود (بخش ۴: «اگر پوشش اولیه کافی نبود، همه‌ی
-        # سرورها روشن می‌شوند» - همین قاعده را برای کمبود ظرفیت هم اعمال می‌کنیم).
         total_cpu_needed = sum(s["cpu_demand"] for s in CFG.services_info.values())
         remaining_servers = [sid for sid in servers if sid not in selected]
         remaining_servers.sort(key=lambda sid: min(
@@ -103,17 +76,7 @@ class AlgorithmBase(ABC):
 
         return selected
 
-    # ------------------------------------------------------------------
-    # بخش ۵: مسیریابی/انتخاب نمونه (پیاده‌سازی مشترک، پیش‌فرض برای همه)
-    # ------------------------------------------------------------------
-    def select_replica(self, request: Request,
-                        candidate_replicas: List[Replica],
-                        servers: Dict[int, Server], now: float) -> Optional[Replica]:
-        """
-        candidate_replicas: تمام رپلیکاهای READY همان سرویس (از هر جای سیستم).
-        بر اساس فاصله‌ی جغرافیایی صعودی مرتب و اولین رپلیکایی که صفش پر
-        نیست انتخاب می‌شود (بخش ۵/۳).
-        """
+    def select_replica(self, request, candidate_replicas, servers, now):
         if not candidate_replicas:
             return None
         ranked = sorted(
@@ -124,26 +87,49 @@ class AlgorithmBase(ABC):
         for r in ranked:
             if r.queue_occupancy(now) < r.queue_len:
                 return r
-        return None  # همه‌ی رپلیکاهای READY صف پر دارند -> REJECTED_QUEUE_FULL
+        return None
 
     # ------------------------------------------------------------------
-    # متدهایی که هر الگوریتم باید خودش پیاده کند (منطق تمایزدهنده)
+    # بخش ۶.۱: انتخاب پروفایل سرور خاموش متناسب با میزان اضافه‌بار
+    # (پیاده‌سازی مشترک - چون معیارش «میزان اضافه‌بار فعلی سیستم» است، نه
+    # یک تصمیم مختص فلسفه‌ی هر الگوریتم؛ Greedy/Voila آن را با اولویت
+    # نزدیک‌ترین فاصله ترکیب می‌کنند، HPA به‌عمد بدون فاصله فراخوانی‌اش
+    # می‌کند تا location-unaware بماند - نگاه کنید hpa_algorithm.py).
     # ------------------------------------------------------------------
+    @staticmethod
+    def _pick_profile_for_overload(overloaded_servers: List[Server], fallback_capacity: int) -> str:
+        """
+        بخش ۶.۱ سند: «با پروفایل ظرفیتی متناسب با میزان اضافه‌بار (تقاضای
+        بیشتر -> ترجیح large، تقاضای کم -> ترجیح edge_small)». سند مقدار
+        عددی دقیق آستانه را مشخص نکرده (بخش ۱۳: قابل کالیبراسیون)؛ از مجموع
+        ظرفیت سرورهای ACTIVه‌ی اشباع‌شده‌ی فعلی به‌عنوان proxy معقول برای
+        «میزان اضافه‌بار» استفاده شده - هرچه این مجموع بزرگ‌تر، سرور بزرگ‌تری
+        لازم است.
+        """
+        total = sum(s.capacity for s in overloaded_servers) if overloaded_servers else fallback_capacity
+        if total >= 200:
+            return "large"
+        if total >= 100:
+            return "medium"
+        return "edge_small"
+
+    @staticmethod
+    def _filter_by_profile_with_fallback(candidates: List[Server], desired_profile: str) -> List[Server]:
+        matching = [s for s in candidates if s.profile == desired_profile]
+        return matching if matching else candidates  # اگر پروفایل دلخواه در دسترس نبود -> همه‌ی کاندیدها
+
     @abstractmethod
-    def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
+    def scale_decision(self, service_id, metrics_snapshot):
         ...
 
     @abstractmethod
-    def provision_decision(self, servers: Dict[int, Server], metrics_snapshot: dict,
-                            now: float) -> ProvisionAction:
+    def provision_decision(self, servers, metrics_snapshot, now):
         ...
 
     @abstractmethod
-    def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
-        """کدام سرور برای رپلیکای *جدید* این سرویس (بعد از SCALE_UP) انتخاب شود؟"""
+    def select_placement_server(self, service_id, servers):
         ...
 
     @abstractmethod
-    def migration_decision(self, draining_server: Server,
-                            servers: Dict[int, Server]) -> List[MigrationStep]:
+    def migration_decision(self, draining_server, servers):
         ...

@@ -5,8 +5,21 @@ algorithms/ppo/train.py
     - از Greedy به‌عنوان معلم برای BC warm-start استفاده می‌شود.
     - ارزیابی نهایی روی Data4.csv (بخش infer.py / evaluation/compare_runs.py)، جدا.
 
+*** CHANGELOG (بازبینی ۲): سند بخش ۱۱.۵ صراحتاً می‌خواهد «لاگ منحنی یادگیری
+(reward per episode) برای گزارش‌دهی» ذخیره شود. قبلاً Monitor(...) بدون
+filename ساخته می‌شد (فقط stdout via verbose=1) و MaskablePPO بدون
+tensorboard_log بود - یعنی هیچ فایل قابل‌رسم (نه CSV، نه TensorBoard) تولید
+نمی‌شد. حالا:
+  1) هر یک از n_envs محیط موازی، log خودش را در logs/monitor/env_{i}.monitor.csv
+     می‌نویسد (ستون‌های r/l/t استاندارد Monitor - همان چیزی که برای رسم
+     reward-per-episode لازم است).
+  2) MaskablePPO با tensorboard_log=logs/tensorboard ساخته می‌شود؛ اگر
+     tensorboard نصب نباشد sb3 خودش fallback می‌کند به فقط-CSV بدون کرش.
+
 اجرا (بعد از pip install -r requirements.txt):
     python3 -m algorithms.ppo.train
+    # برای دیدن منحنی یادگیری زنده (اختیاری، اگر tensorboard نصب باشد):
+    tensorboard --logdir logs/tensorboard
 """
 
 from __future__ import annotations
@@ -21,6 +34,9 @@ from algorithms.ppo.env import EdgeResourceEnv, _SERVICE_IDS, _SERVER_IDS
 from simulator.engine import SimulationEngine
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "ppo_model.zip")
+LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
+MONITOR_DIR = os.path.join(LOG_DIR, "monitor")
+TENSORBOARD_DIR = os.path.join(LOG_DIR, "tensorboard")
 
 _SCALE_TO_INT = {ScaleAction.NO_CHANGE: 0, ScaleAction.SCALE_UP: 1, ScaleAction.SCALE_DOWN: 2}
 _PROVISION_TO_INT = {ProvisionActionType.NO_CHANGE: 0, ProvisionActionType.TURN_ON: 1,
@@ -61,13 +77,19 @@ def collect_greedy_demonstrations(events_df, max_ticks: int | None = None):
 
 
 def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
-                               epochs: int = 10, batch_size: int = 64, lr: float = 1e-4):
+                               epochs: int = 10, batch_size: int = 64, lr: float = 1e-4,
+                               log_path: str | None = None):
     """
     Warm-start سیاست با یادگیری تحت‌نظارت (cross-entropy) روی دموی Greedy،
     قبل از fine-tune با RL. مستقیماً روی model.policy (torch.nn.Module واقعی
     stable-baselines3) کار می‌کند.
+
+    *** اگر log_path داده شود، loss هر epoch هم در یک CSV ذخیره می‌شود (بخش
+    ۱۱.۵: «لاگ منحنی یادگیری ... برای گزارش‌دهی» - BC loss هم بخشی از همان
+    منحنی یادگیری کامل است، نه فقط RL reward).
     """
     import torch
+    import csv
 
     device = model.policy.device
     obs_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=device)
@@ -75,6 +97,7 @@ def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
     optimizer = torch.optim.Adam(model.policy.parameters(), lr=lr)
     n = obs_t.shape[0]
 
+    bc_log_rows = []
     for epoch in range(epochs):
         perm = torch.randperm(n)
         total_loss = 0.0
@@ -88,7 +111,17 @@ def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * len(idx)
-        print(f"[BC warm-start] epoch {epoch + 1}/{epochs}  loss={total_loss / n:.4f}")
+        avg_loss = total_loss / n
+        print(f"[BC warm-start] epoch {epoch + 1}/{epochs}  loss={avg_loss:.4f}")
+        bc_log_rows.append({"epoch": epoch + 1, "loss": avg_loss})
+
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["epoch", "loss"])
+            writer.writeheader()
+            writer.writerows(bc_log_rows)
+        print(f"[BC warm-start] لاگ loss در {log_path} ذخیره شد.")
 
 
 def make_random_window_provider(train_events, window_sec: float, seed: int = CFG.seed):
@@ -126,6 +159,9 @@ def main(total_timesteps: int = 500_000, bc_epochs: int = 10, window_hours: floa
     from algorithms.ppo.policy_network import PPO_POLICY_KWARGS
     from data.loader import load_train
 
+    os.makedirs(MONITOR_DIR, exist_ok=True)
+    os.makedirs(TENSORBOARD_DIR, exist_ok=True)
+
     train_events = load_train()
 
     print("در حال جمع‌آوری دموی Greedy برای BC warm-start ...")
@@ -135,20 +171,22 @@ def main(total_timesteps: int = 500_000, bc_epochs: int = 10, window_hours: floa
     def mask_fn(env):
         return env.action_masks()
 
-    def make_env(seed: int):
+    def make_env(seed: int, env_idx: int):
         # *** هر محیط موازی provider تصادفی *مستقل* خودش را دارد (seed جدا)
         # تا پنجره‌های آموزشی هم‌بسته/تکراری بین محیط‌ها نشوند - این تنوع
         # داده‌ی هر batch را زیاد می‌کند و نوسان گرادیان را کم می‌کند.
         provider = make_random_window_provider(train_events, window_sec=window_hours * 3600, seed=seed)
 
         def _init():
-            return Monitor(ActionMasker(EdgeResourceEnv(events_df_provider=provider), mask_fn))
+            monitor_path = os.path.join(MONITOR_DIR, f"env_{env_idx}.monitor.csv")
+            return Monitor(ActionMasker(EdgeResourceEnv(events_df_provider=provider), mask_fn),
+                            filename=monitor_path)
         return _init
 
     # *** به‌جای ۱ محیط، n_envs محیط موازی (هم‌زمان، DummyVecEnv - نه
     # SubprocVecEnv، چون موتور شبیه‌سازی به‌قدری سریع است که سربار
     # multiprocessing ارزشش را ندارد و مشکلات pickling را هم دور می‌زند).
-    vec_env = DummyVecEnv([make_env(CFG.seed + i) for i in range(n_envs)])
+    vec_env = DummyVecEnv([make_env(CFG.seed + i, i) for i in range(n_envs)])
     # *** نرمال‌سازی خودکار reward با آمار running mean/std (به‌جای حدس دستی
     # ثابت‌های مقیاس که چند بار کالیبراسیونش اشتباه از آب درآمد).
     vec_env = VecNormalize(vec_env, norm_obs=False, norm_reward=True, gamma=0.99)
@@ -156,18 +194,24 @@ def main(total_timesteps: int = 500_000, bc_epochs: int = 10, window_hours: floa
     model = MaskablePPO(
         "MlpPolicy", vec_env, verbose=1, policy_kwargs=PPO_POLICY_KWARGS,
         n_steps=2048, batch_size=256, gamma=0.99, learning_rate=3e-4, seed=CFG.seed,
+        tensorboard_log=TENSORBOARD_DIR,
     )
 
     print("در حال BC warm-start ...")
-    behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs)
+    behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,
+                               log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv"))
 
     print(f"در حال آموزش PPO (fine-tune با RL، {n_envs} محیط موازی، {total_timesteps} timestep) ...")
-    model.learn(total_timesteps=total_timesteps, progress_bar=True)
+    # *** tb_log_name ثابت تا هر بار اجرا با پسوند خودکار sb3 (PPO_1, PPO_2, ...)
+    # زیر یک پوشه‌ی مشترک قابل‌مقایسه در TensorBoard جمع شود.
+    model.learn(total_timesteps=total_timesteps, progress_bar=True, tb_log_name="ppo_run")
 
     model.save(MODEL_PATH)
     vec_env.save(MODEL_PATH.replace(".zip", "_vecnormalize.pkl"))
     print(f"مدل ذخیره شد: {MODEL_PATH}")
     print(f"آمار VecNormalize ذخیره شد: {MODEL_PATH.replace('.zip', '_vecnormalize.pkl')}")
+    print(f"لاگ‌های reward-per-episode هر محیط: {MONITOR_DIR}/env_*.monitor.csv")
+    print(f"لاگ TensorBoard: {TENSORBOARD_DIR}  (تماشا با: tensorboard --logdir {TENSORBOARD_DIR})")
 
 
 if __name__ == "__main__":
