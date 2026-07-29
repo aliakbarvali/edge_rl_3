@@ -1,27 +1,53 @@
 {
   "algorithm": "voila",
-  "avg_response_time_sec": 52.01247172747405,
-  "p95_response_time_sec": 237.00478505500655,
-  "p99_response_time_sec": 437.00520037772236,
-  "deadline_violations": 1697,
-  "deadline_violation_rate_pct": 4.971145677710402,
-  "cumulative_energy_joule": 35220552.099999815,
-  "avg_distance_km": 16.78737088605076,
-  "avg_load_balance_cv": 0.5032784503446274,
-  "avg_network_delay_ms": 2.271594152935006,
-  "p95_network_delay_ms": 2.7773634080317153,
-  "p99_network_delay_ms": 3.0569169471261137,
-  "num_server_boots": 57,
-  "num_server_shutdowns": 55,
-  "num_pod_creates": 179,
-  "num_pod_deletes": 164,
-  "num_requests_rejected_queue_full": 1081,
+  "avg_response_time_sec": 51.91121130129672,
+  "p95_response_time_sec": 239.0051714860405,
+  "p99_response_time_sec": 441.0043288516776,
+  "deadline_violations": 1776,
+  "deadline_violation_rate_pct": 5.202566130591441,
+  "cumulative_energy_joule": 32111739.69999983,
+  "avg_distance_km": 20.62170093226616,
+  "avg_load_balance_cv": 0.2849833217445683,
+  "avg_network_delay_ms": 2.345702905776588,
+  "p95_network_delay_ms": 2.950457656802172,
+  "p99_network_delay_ms": 3.2634769341885015,
+  "num_server_boots": 39,
+  "num_server_shutdowns": 36,
+  "num_pod_creates": 230,
+  "num_pod_deletes": 215,
+  "num_requests_rejected_queue_full": 1125,
   "num_requests_rejected_no_replica": 14,
-  "avg_active_servers": 1.4038861901457322,
-  "num_scale_up": 143,
-  "num_scale_down": 58,
-  "num_turn_on": 54,
-  "num_turn_off": 56,
+  "avg_active_servers": 1.9854267869535045,
+  "num_scale_up": 199,
+  "num_scale_down": 146,
+  "num_turn_on": 36,
+  "num_turn_off": 37,
+  "decision_correctness": {
+    "SCALE_DOWN": {
+      "correct": 146,
+      "incorrect": 0,
+      "missed_opportunities": 25982,
+      "correctness_rate_pct": 100.0
+    },
+    "SCALE_UP": {
+      "correct": 199,
+      "incorrect": 0,
+      "missed_opportunities": 2742,
+      "correctness_rate_pct": 100.0
+    },
+    "TURN_OFF": {
+      "correct": 37,
+      "incorrect": 0,
+      "missed_opportunities": 857,
+      "correctness_rate_pct": 100.0
+    },
+    "TURN_ON": {
+      "correct": 36,
+      "incorrect": 0,
+      "missed_opportunities": 1,
+      "correctness_rate_pct": 100.0
+    }
+  },
   "total_requests": 34137,
-  "completed_requests": 33042
+  "completed_requests": 32998
 }

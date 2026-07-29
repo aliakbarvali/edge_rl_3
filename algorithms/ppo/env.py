@@ -10,6 +10,23 @@ Action (بخش ۱۱.۳): MultiDiscrete
 Reward (بخش ۱۱.۴): ترکیب وزن‌دار منفی از ۴ معیار + جریمه‌ی درخواست ردشده +
     جریمه‌ی ثابت کوچک هر اکشن (برای جلوگیری از flapping بی‌مورد عامل).
 
+*** CHANGELOG (بازبینی ۳): جریمه‌ی «درخواست ردشده» قبلاً به‌صورت خام
+(PPO_PENALTY_PER_REJECTED * num_rejected_recent) اضافه می‌شد - یعنی یک عدد
+*نامحدود* و *نرمال‌نشده*، در حالی‌که ۴ جزء دیگر reward همه در بازه‌ی [۰,۲]
+نرمال شده بودند. در تیک‌های شلوغ که چند درخواست هم‌زمان رد می‌شدند (مثلاً
+۶-۱۰ تا)، این جمله می‌توانست ۵ تا ۱۵ برابر بزرگ‌تر از مجموع ۴ جزء دیگر
+باشد و کل سیگنال reward را تحت‌الشعاع قرار دهد. نتیجه‌ی مشاهده‌شده (روی
+Data4.csv): عامل یاد گرفت تقریباً هیچ اکشنی نزند (۵۵ اکشن در کل ۲۸۸۰ تیک،
+در برابر ۵۰۵ تای Greedy) و فقط تعداد سرور فعال را از ابتدا بالا نگه دارد
+(avg_active_servers=3.07 در برابر ~۲ بقیه) تا هرگز درخواستی رد نشود - که
+باعث بدترین انرژی (۳۸.۱M ژول در برابر ۳۲-۳۵.۷M) و بدترین توازن بار
+(cv=0.71 در برابر ۰.۲۸-۰.۵۸) در بین هر ۴ الگوریتم شد.
+
+اصلاح: num_rejected_recent هم مثل بقیه نرمال و به [۰,۲] کلمپ می‌شود
+(_NORM_REJECTED_PER_TICK به‌عنوان مقیاس کالیبراسیون - بخش ۱۳: قابل تنظیم)
+و یک وزن صریح w5_rejected به آن اختصاص می‌یابد؛ دیگر PPO_PENALTY_PER_REJECTED
+جداگانه استفاده نمی‌شود (نگاه کنید common/config.py برای وزن‌های جدید).
+
 *** طبق تأیید معماری، از sb3-contrib's MaskablePPO استفاده می‌شود که قبل از
 sample کردن اکشن، گزینه‌های نامعتبر را از توزیع احتمال حذف می‌کند؛ به همین
 دلیل action_masks() پیاده‌سازی شده (اینترفیس مورد انتظار MaskableMultiDiscrete
@@ -36,6 +53,13 @@ _SERVER_IDS = sorted(CFG.server_info.keys())
 _SCALE_MAP = {0: ScaleAction.NO_CHANGE, 1: ScaleAction.SCALE_UP, 2: ScaleAction.SCALE_DOWN}
 _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_ON,
                    2: ProvisionActionType.TURN_OFF}
+
+# *** بخش ۱۳ سند (قابل کالیبراسیون): مقیاس نرمال‌سازی num_rejected_recent.
+# با میانگین ۰.۳-۰.۴۳ رد/تیک روی هر ۴ الگوریتم (بازبینی ۲ compare_runs)،
+# ولی با dispersion بالا (بیشتر تیک‌ها صفر، تیک‌های شلوغ می‌توانند ۵-۱۰ تا
+# داشته باشند)، ۵ رد در یک تیک را «حداکثر معمول» در نظر می‌گیریم (norm=1.0)
+# و در ۱۰ تا کلمپ می‌شود (norm=2.0، هم‌تراز سقف بقیه‌ی اجزا).
+_NORM_REJECTED_PER_TICK = 5.0
 
 
 class EdgeResourceEnv(gym.Env):
@@ -116,12 +140,15 @@ class EdgeResourceEnv(gym.Env):
         norm_rt = min(g["avg_response_time_recent"] / 300.0, 2.0)
         norm_energy = min(g["energy_recent_joule"] / 12_000.0, 2.0)  # *** کالیبره‌شده - نگاه کنید common/state_builder.py
         norm_lb = min(load_cv, 2.0)
+        # *** رفع مشکل غالب‌شدن reward توسط جریمه‌ی رد (نگاه کنید CHANGELOG بالا):
+        # قبلاً این جمله نرمال نبود و می‌توانست ۵-۱۵ برابر بقیه‌ی اجزا شود.
+        norm_rejected = min(g["num_rejected_recent"] / _NORM_REJECTED_PER_TICK, 2.0)
 
         penalty = (w["w1_response_time"] * norm_rt +
                    w["w2_deadline"] * avg_dv_rate +
                    w["w3_energy"] * norm_energy +
-                   w["w4_load_balance"] * norm_lb)
-        penalty += CFG.ppo_penalty_per_rejected * g["num_rejected_recent"]
+                   w["w4_load_balance"] * norm_lb +
+                   w["w5_rejected"] * norm_rejected)
         penalty += CFG.ppo_penalty_per_action * n_actions_taken
         return -float(penalty)
 

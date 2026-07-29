@@ -1,16 +1,3 @@
-"""
-algorithms/hpa/hpa_algorithm.py
-
-پیاده‌سازی فاز ۲: الگوریتم مبتنی بر Kubernetes HPA استاندارد. طبق مقدمه‌ی
-مقاله‌ی Voila، HPA/scheduler پیش‌فرض کوبرنتیز «location-unaware» است - یعنی
-هیچ تصمیمی (نه scale، نه provision، نه placement) بر اساس فاصله‌ی جغرافیایی
-گرفته نمی‌شود؛ فقط بر پایه‌ی utilization/ظرفیت آزاد است. این دقیقاً همان
-تمایزی است که این الگوریتم را از Voila (location-aware) متمایز می‌کند.
-
-فرمول استاندارد HPA (Kubernetes docs):
-    desiredReplicas = ceil(currentReplicas * (currentUtilization / targetUtilization))
-"""
-
 from __future__ import annotations
 import math
 from typing import Dict, List, Optional
@@ -19,14 +6,13 @@ from common.config import CFG
 from common.models import Server, ServerState, ReplicaState
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
 
-TARGET_UTILIZATION = 0.70  # مقدار پیش‌فرض معمول HPA واقعی کوبرنتیز
+TARGET_UTILIZATION = 0.70
 
 
 class HPAAlgorithm(AlgorithmBase):
     name = "hpa"
 
-    # ------------------------------------------------------------------
-    def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
+    def scale_decision(self, service_id, metrics_snapshot):
         sv = metrics_snapshot["services"][service_id]
         current_replicas = max(sv["n_replicas"], 1)
         current_util = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
@@ -37,7 +23,7 @@ class HPAAlgorithm(AlgorithmBase):
             desired = math.ceil(current_replicas * (current_util / TARGET_UTILIZATION))
         desired = max(1, desired)
 
-        if sv["rejection_rate"] > 0:  # درخواست رد شده -> قطعاً کمبود ظرفیت
+        if sv["rejection_rate"] > 0:
             desired = max(desired, current_replicas + 1)
 
         if desired > current_replicas:
@@ -46,10 +32,7 @@ class HPAAlgorithm(AlgorithmBase):
             return ScaleAction.SCALE_DOWN
         return ScaleAction.NO_CHANGE
 
-    # ------------------------------------------------------------------
-    def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
-        # *** latency-unaware: فقط بیشترین ظرفیت آزاد (bin-packing best-fit
-        # پیش‌فرض scheduler کوبرنتیز)، بدون هیچ ترجیح جغرافیایی.
+    def select_placement_server(self, service_id, servers):
         cpu = CFG.services_info[service_id]["cpu_demand"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
@@ -57,9 +40,7 @@ class HPAAlgorithm(AlgorithmBase):
             return None
         return max(candidates, key=lambda s: s.free_capacity()).id
 
-    # ------------------------------------------------------------------
-    def provision_decision(self, servers: Dict[int, Server], metrics_snapshot: dict,
-                            now: float) -> ProvisionAction:
+    def provision_decision(self, servers, metrics_snapshot, now):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         if not active:
             return ProvisionAction(ProvisionActionType.NO_CHANGE)
@@ -70,7 +51,16 @@ class HPAAlgorithm(AlgorithmBase):
             off_servers = sorted([s for s in servers.values() if s.state == ServerState.OFF],
                                   key=lambda s: s.id)  # *** ترتیب ثابت/دلخواه، نه بر اساس مکان
             if off_servers:
-                return ProvisionAction(ProvisionActionType.TURN_ON, off_servers[0].id)
+                # *** بخش ۶.۱: پروفایل متناسب با اضافه‌بار - همچنان
+                # location-unaware (بدون haversine)، فقط بر پایه‌ی ظرفیت،
+                # چون HPA طبق تعریف صریح سند «کاملاً latency-unaware» است.
+                overloaded = [s for s in active
+                              if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
+                desired_profile = self._pick_profile_for_overload(overloaded, active[0].capacity)
+                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
+                # پایداری تای‌بریک: بین کاندیدهای هم‌پروفایل هم بر اساس id
+                pool = sorted(pool, key=lambda s: s.id)
+                return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
 
         if avg_util < CFG.util_scale_down_threshold:
             idle = min(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
@@ -78,9 +68,7 @@ class HPAAlgorithm(AlgorithmBase):
 
         return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
-    # ------------------------------------------------------------------
-    def migration_decision(self, draining_server: Server,
-                            servers: Dict[int, Server]) -> List[MigrationStep]:
+    def migration_decision(self, draining_server, servers):
         steps = []
         for service_id, replica in draining_server.hosted_replicas.items():
             if replica.state == ReplicaState.TERMINATED:
@@ -96,7 +84,6 @@ class HPAAlgorithm(AlgorithmBase):
                           and s.can_host(service_id, cpu)]
             if not candidates:
                 continue
-            # *** latency-unaware: بیشترین ظرفیت آزاد، نه نزدیک‌ترین
             best = max(candidates, key=lambda s: s.free_capacity())
             steps.append(MigrationStep(service_id=service_id, target_server_id=best.id))
         return steps

@@ -1,18 +1,7 @@
-"""
-common/config.py
-تنظیمات مرکزی پروژه - دقیقاً طبق «سند معماری کامل پروژه» بخش‌های ۱، ۹، ۱۱.
-هیچ عدد پارامتری نباید در جای دیگر کد hardcode شود؛ همه از اینجا خوانده می‌شوند.
-
-*** CHANGELOG (بازبینی ۲): اضافه شدن SUSTAIN_HIGH_SEC - بخش ۶.۱ سند می‌گوید
-utilization باید «به‌طور مداوم» بالای آستانه باشد تا TURN_ON اعمال شود، ولی
-این تداوم قبلاً فقط سمت پایین (SUSTAIN_LOW_SEC) پیاده‌سازی شده بود. حالا
-simulator/engine.py از این مقدار برای سمت بالا هم استفاده می‌کند (نگاه کنید
-_any_active_server_sustained_overloaded در engine.py).
-"""
-
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
+ 
 
 # ---------------------------------------------------------------------------
 # بخش ۱.۱: پروفایل‌ها و سرورها (heterogeneous، ثابت - مکان‌یابی قبلاً با solver انجام شده)
@@ -77,31 +66,17 @@ DATA_DIR = r"D:\PT\edge_rl_3\data"
 TRAIN_FILES = ["Data1.csv", "Data2.csv", "Data3.csv"]  # شنبه‌های هفته ۱ تا ۳
 TEST_FILE = "Data4.csv"  # شنبه‌ی هفته ۴
 SECONDS_PER_DAY = 86400
-# محدوده‌ی جغرافیایی برای حذف نویز/دورافتاده‌ها (همان محدوده‌ای که سرورها در آن قرار دارند)
 LAT_MIN, LAT_MAX = 30.5, 31.7
 LON_MIN, LON_MAX = 120.7, 122.0
 
-# ---------------------------------------------------------------------------
-# بخش ۳: مدل تاخیر شبکه
-# ---------------------------------------------------------------------------
-
 BASE_LATENCY_MS = 2.0
 K_MS_PER_KM = 0.02
-
-# *** l0: آستانه‌ی تاخیر رفت‌وبرگشت برای «پوشش قابل‌قبول» در جایگذاری اولیه
-# (بخش ۴ و ۵ سند به l0 اشاره می‌کنند ولی مقدار عددی‌اش در بخش ۹ فراموش شده
-# بود). طبق مقدار پیش‌فرض خود مقاله‌ی Voila (بخش V-D) = 20ms قرار داده شد؛
-# در صورت نیاز کالیبره کنید.
 L0_MS = 20.0
 
-# ---------------------------------------------------------------------------
-# بخش ۹: تاخیرها، جریمه‌ها، پارامترهای پیکربندی‌پذیر
-# ---------------------------------------------------------------------------
-
-BOOT_DELAY_SEC = 30.0                  # سرور OFF -> ACTIVE (از طریق BOOTING)
-POD_STARTUP_DELAY_SEC = 5.0            # رپلیکا STARTING -> READY
-GRACEFUL_TERMINATION_DELAY_SEC = 10.0  # رپلیکا DRAINING -> TERMINATED
-SERVER_DRAIN_GRACE_SEC = 15.0          # سرور DRAINING -> OFF پس از خالی‌شدن
+BOOT_DELAY_SEC = 30.0
+POD_STARTUP_DELAY_SEC = 5.0
+GRACEFUL_TERMINATION_DELAY_SEC = 10.0
+SERVER_DRAIN_GRACE_SEC = 15.0
 
 COLD_START_WINDOW_SEC = 10.0
 COLD_START_PENALTY_SEC = 1.0
@@ -123,16 +98,20 @@ SUSTAIN_HIGH_SEC = 30.0
 COOLDOWN_SEC = 60.0
 
 # ---------------------------------------------------------------------------
-# بخش ۱۱: PPO-DRL
+# بخش ۸: معیار «درستی تصمیم» - آستانه‌ی ممیزی *مستقل* از سیاست داخلی هر
+# الگوریتم (Greedy=0.7, Voila=0.75, HPA=فرمول K8s, PPO=یادگرفته‌شده). سند:
+# «هر الگوریتم گزارش بده ... از این تصمیم‌ها چند تا (با معیار: آیا واقعاً
+# لازم بود) درست بودن». اگر از threshold خودِ همان الگوریتم استفاده می‌شد،
+# هر تصمیم به‌تعریف «درست» می‌بود - این معیار باید یک خط‌کش واحد و مستقل
+# برای هر ۴ الگوریتم باشد، نه بازتاب منطق داخلی خودشان.
 # ---------------------------------------------------------------------------
+DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.7    # اشغال صف بالاتر از این یا rejection>0 -> واقعاً نیاز به SCALE_UP بود
+DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD = 0.2  # اشغال صف پایین‌تر از این -> واقعاً ظرفیت اضافی بود
 
-DECISION_INTERVAL_SEC = 30.0  # = MONITOR_WINDOW_SEC (عمداً یکسان - یک تیک تصمیم مشترک)
-
-PPO_REWARD_WEIGHTS = {"w1_response_time": 0.24, "w2_deadline": 0.24,
-                       "w3_energy": 0.29, "w4_load_balance": 0.23}
+DECISION_INTERVAL_SEC = 30.0
+PPO_REWARD_WEIGHTS = {"w1_response_time": 0.24, "w2_deadline": 0.24, "w3_energy": 0.29, "w4_load_balance": 0.23}
 PPO_PENALTY_PER_REJECTED = 0.5
-PPO_PENALTY_PER_ACTION = 0.01  # جریمه‌ی ثابت کوچک هر SCALE_UP/DOWN/TURN_ON/OFF
-
+PPO_PENALTY_PER_ACTION = 0.01
 SEED = 42
 
 
@@ -169,6 +148,8 @@ class Config:
     sustain_low_sec: float = SUSTAIN_LOW_SEC
     sustain_high_sec: float = SUSTAIN_HIGH_SEC
     cooldown_sec: float = COOLDOWN_SEC
+    decision_audit_scale_up_occ_threshold: float = DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD
+    decision_audit_scale_down_occ_threshold: float = DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD
     decision_interval_sec: float = DECISION_INTERVAL_SEC
     ppo_reward_weights: dict = field(default_factory=lambda: PPO_REWARD_WEIGHTS)
     ppo_penalty_per_rejected: float = PPO_PENALTY_PER_REJECTED

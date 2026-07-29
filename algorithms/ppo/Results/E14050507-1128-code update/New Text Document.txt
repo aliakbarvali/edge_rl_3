@@ -1,0 +1,3 @@
+
+PPO_REWARD_WEIGHTS = {"w1_response_time": 0.24, "w2_deadline": 0.24,
+                       "w3_energy": 0.29, "w4_load_balance": 0.23}

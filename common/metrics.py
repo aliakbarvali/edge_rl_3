@@ -1,50 +1,53 @@
-"""
-common/metrics.py
-جمع‌آوری/محاسبه‌ی همه‌ی معیارهای بخش ۸ سند معماری.
-"""
-
 from __future__ import annotations
 import numpy as np
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import List
 
 from common.models import Request, RequestStatus, ServerState
 
 
-def _pct(values: List[float], p: float) -> float:
+def _pct(values, p):
     return float(np.percentile(values, p)) if values else 0.0
 
 
 @dataclass
 class MetricsCollector:
     algorithm: str = ""
-
-    # --- سطح درخواست ---
     response_times: List[float] = field(default_factory=list)
-    network_delays: List[float] = field(default_factory=list)   # یک‌طرفه (طبق بخش ۳: گزارش تک‌طرفه)
+    network_delays: List[float] = field(default_factory=list)
     distances: List[float] = field(default_factory=list)
     deadline_violations: int = 0
     total_requests: int = 0
     completed_requests: int = 0
     rejected_queue_full: int = 0
     rejected_no_replica: int = 0
-
-    # --- سطح زیرساخت (رویدادهای گذار) ---
     num_server_boots: int = 0
     num_server_shutdowns: int = 0
     num_pod_creates: int = 0
     num_pod_deletes: int = 0
-
-    # --- تصمیمات مقیاس‌پذیری (برای گزارش تعداد و بعداً بررسی صحت) ---
     num_scale_up: int = 0
     num_scale_down: int = 0
     num_turn_on: int = 0
     num_turn_off: int = 0
-
-    # --- نمونه‌برداری زمانی برای میانگین‌های وزن‌دار با زمان ---
     _snapshot_times: List[float] = field(default_factory=list)
     _active_server_counts: List[int] = field(default_factory=list)
     _load_balance_cvs: List[float] = field(default_factory=list)
+
+    # *** بخش ۸: «هر الگوریتم گزارش بده ... چند تا از این تصمیم‌ها (با معیار:
+    # آیا واقعاً لازم بود) درست بودند» - قبلاً فقط تعداد خام هر نوع اکشن
+    # ثبت می‌شد، هیچ سنجه‌ای برای لزوم/عدم‌لزوم آن نبود.
+    _decision_correctness: dict = field(
+        default_factory=lambda: defaultdict(lambda: {"correct": 0, "incorrect": 0, "missed": 0}))
+
+    def record_decision_correctness(self, kind: str, necessary: bool):
+        """برای یک اکشن *واقعاً اعمال‌شده*: آیا طبق معیار ممیزی مستقل لازم بود؟"""
+        self._decision_correctness[kind]["correct" if necessary else "incorrect"] += 1
+
+    def record_missed_opportunity(self, kind: str):
+        """طبق معیار ممیزی مستقل این اکشن لازم بود، ولی این تیک اعمال نشد
+        (چه چون الگوریتم تصمیم دیگری گرفت، چه چون gate/cooldown آن را رد کرد)."""
+        self._decision_correctness[kind]["missed"] += 1
 
     def record_request(self, req: Request):
         self.total_requests += 1
@@ -57,18 +60,16 @@ class MetricsCollector:
                 self.deadline_violations += 1
         elif req.status == RequestStatus.REJECTED_QUEUE_FULL:
             self.rejected_queue_full += 1
-            self.deadline_violations += 1  # درخواست ردشده = نقض قطعی SLA
+            self.deadline_violations += 1
         elif req.status == RequestStatus.REJECTED_NO_REPLICA:
             self.rejected_no_replica += 1
             self.deadline_violations += 1
 
     @staticmethod
-    def _distance_of(req: Request) -> float:
-        # فاصله از network_delay_ms معکوس‌سازی نمی‌شود؛ engine مستقیم می‌فرستد (نگاه کنید به simulator/engine.py)
+    def _distance_of(req):
         return getattr(req, "_distance_km", 0.0)
 
-    def record_snapshot(self, now: float, servers: dict):
-        """باید هر MONITOR_WINDOW_SEC توسط engine صدا زده شود (بخش ۸: avg_active_servers, avg_load_balance_cv)."""
+    def record_snapshot(self, now, servers):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         self._snapshot_times.append(now)
         self._active_server_counts.append(len(active))
@@ -77,7 +78,7 @@ class MetricsCollector:
             if loads.mean() > 0:
                 self._load_balance_cvs.append(float(loads.std() / loads.mean()))
 
-    def record_transition(self, kind: str):
+    def record_transition(self, kind):
         if kind == "server_boot":
             self.num_server_boots += 1
         elif kind == "server_shutdown":
@@ -87,7 +88,7 @@ class MetricsCollector:
         elif kind == "pod_delete":
             self.num_pod_deletes += 1
 
-    def record_scale_action(self, kind: str):
+    def record_scale_action(self, kind):
         if kind == "SCALE_UP":
             self.num_scale_up += 1
         elif kind == "SCALE_DOWN":
@@ -97,9 +98,21 @@ class MetricsCollector:
         elif kind == "TURN_OFF":
             self.num_turn_off += 1
 
-    def finalize(self, servers: dict) -> dict:
+    def finalize(self, servers):
         cumulative_energy = sum(s.cumulative_energy_joule for s in servers.values())
         total = max(self.total_requests, 1)
+
+        decision_correctness = {}
+        for kind, counts in self._decision_correctness.items():
+            applied_total = counts["correct"] + counts["incorrect"]
+            decision_correctness[kind] = {
+                "correct": counts["correct"],
+                "incorrect": counts["incorrect"],
+                "missed_opportunities": counts["missed"],
+                "correctness_rate_pct": (100.0 * counts["correct"] / applied_total)
+                                        if applied_total else None,
+            }
+
         return {
             "algorithm": self.algorithm,
             "avg_response_time_sec": float(np.mean(self.response_times)) if self.response_times else 0.0,
@@ -124,6 +137,7 @@ class MetricsCollector:
             "num_scale_down": self.num_scale_down,
             "num_turn_on": self.num_turn_on,
             "num_turn_off": self.num_turn_off,
+            "decision_correctness": decision_correctness,
             "total_requests": self.total_requests,
             "completed_requests": self.completed_requests,
         }

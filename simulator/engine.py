@@ -460,6 +460,9 @@ class SimulationEngine:
         self._last_tick_decisions["provision"] = action
         applied = False
         skip_reason = None
+        turn_on_necessary = self._any_active_server_sustained_overloaded()
+        turn_off_opportunity = self._any_active_server_sustained_underloaded()
+
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
             s = self.servers[action.server_id]
             # *** بخش ۶.۱: علاوه بر cooldown، حالا باید حداقل یک سرور ACTIVE
@@ -470,21 +473,24 @@ class SimulationEngine:
                 skip_reason = "not_off"
             elif s.in_cooldown(self.now, CFG.cooldown_sec):
                 skip_reason = "cooldown"
-            elif not self._any_active_server_sustained_overloaded():
+            elif not turn_on_necessary:
                 skip_reason = "overload_not_sustained"
             else:
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
                 applied = True
+                # *** بخش ۸: چون gate بالا خودش دقیقاً همان معیار ممیزی است،
+                # هر TURN_ON اعمال‌شده به‌تعریف "correct" است؛ ارزش این ثبت
+                # بیشتر برای تأیید یکنواختی رفتار گیت روی هر ۴ الگوریتم است.
+                self.metrics.record_decision_correctness("TURN_ON", True)
         elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
-            sustained = (self._low_util_since[action.server_id] is not None and
-                         (self.now - self._low_util_since[action.server_id]) >= CFG.sustain_low_sec)
+            turn_off_necessary = self._was_turn_off_necessary(action.server_id)
             # *** محافظ سیستمی: هرگز آخرین سرور فعال را drain نکن.
             if s.state != ServerState.ACTIVE:
                 skip_reason = "not_active"
-            elif not sustained:
+            elif not turn_off_necessary:
                 skip_reason = "low_util_not_sustained"
             elif n_active <= 1:
                 skip_reason = "last_active_server"
@@ -494,26 +500,72 @@ class SimulationEngine:
                 if self._start_server_drain(action.server_id):
                     self.metrics.record_scale_action("TURN_OFF")
                     applied = True
+                    self.metrics.record_decision_correctness("TURN_OFF", True)
                 else:
                     skip_reason = "migration_incomplete"
-        # *** بخش ۱۲: لاگ provision_decision با وضعیت نهایی اعمال/رد
+
+        # *** بخش ۸: فرصت ازدست‌رفته - صرف‌نظر از تصمیم این تیک، آیا طبق
+        # معیار مستقل سیستم واقعاً به TURN_ON/TURN_OFF نیاز داشت ولی این
+        # تیک اعمال نشد؟
+        if turn_on_necessary and not (action.action == ProvisionActionType.TURN_ON and applied):
+            self.metrics.record_missed_opportunity("TURN_ON")
+        if turn_off_opportunity and not (action.action == ProvisionActionType.TURN_OFF and applied):
+            self.metrics.record_missed_opportunity("TURN_OFF")
+
+        # *** بخش ۱۲: لاگ provision_decision با وضعیت نهایی اعمال/رد و
+        # نتیجه‌ی ممیزی مستقل (audit trail کامل).
         self._log("provision_decision", action=action.action.name, server_id=action.server_id,
-                  applied=applied, skip_reason=skip_reason)
+                  applied=applied, skip_reason=skip_reason,
+                  necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity)
 
     def _any_active_server_sustained_overloaded(self) -> bool:
         """بخش ۶.۱: آیا حداقل یک سرور ACTIVE وجود دارد که overload‌اش برای
         حداقل CFG.sustain_high_sec به‌طور مداوم برقرار بوده (نه یک نمونه‌ی
         لحظه‌ای تنها)؟ نگاه کنید _update_sustain_tracking برای پرشدن
-        self._high_util_since."""
+        self._high_util_since. این تابع هم برای gate کردن TURN_ON و هم
+        به‌عنوان معیار ممیزی مستقلِ بخش ۸ (decision correctness) استفاده
+        می‌شود - عمداً، چون هر دو یک سؤال را می‌پرسند: «آیا سیستم واقعاً به
+        TURN_ON نیاز داشت؟»."""
         for sid, since in self._high_util_since.items():
             if since is not None and (self.now - since) >= CFG.sustain_high_sec:
                 return True
         return False
 
-    def _apply_scale_decision(self, svc_id: int, decision: ScaleAction):
+    def _any_active_server_sustained_underloaded(self) -> bool:
+        """قرینه‌ی بالا برای TURN_OFF: آیا حداقل یک سرور ACTIVE (غیر از آخرین
+        سرور فعال سیستم) برای مدت کافی زیر آستانه بوده؟ برای «فرصت ازدست‌رفته»ی
+        بخش ۸ استفاده می‌شود."""
+        n_active = sum(1 for s in self.servers.values() if s.state == ServerState.ACTIVE)
+        if n_active <= 1:
+            return False
+        for sid, since in self._low_util_since.items():
+            if since is not None and (self.now - since) >= CFG.sustain_low_sec:
+                return True
+        return False
+
+    def _was_turn_off_necessary(self, server_id: int) -> bool:
+        since = self._low_util_since.get(server_id)
+        return since is not None and (self.now - since) >= CFG.sustain_low_sec
+
+    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
+        """بخش ۸: معیار ممیزی *مستقل* از threshold داخلی هر الگوریتم (Greedy،
+        Voila، HPA، PPO هر کدام threshold/فرمول خودشان را دارند) - یک خط‌کش
+        واحد برای مقایسه‌ی منصفانه‌ی «درستی» تصمیم هر ۴ الگوریتم."""
+        sv = snapshot["services"][svc_id]
+        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+        return occ_ratio > CFG.decision_audit_scale_up_occ_threshold or sv["rejection_rate"] > 0.0
+
+    def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
+        sv = snapshot["services"][svc_id]
+        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold
+
+    def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):
         self._last_tick_decisions["scale"][svc_id] = decision
         applied = False
         skip_reason = None
+        necessary_up = self._was_scale_up_necessary(svc_id, snapshot)
+        necessary_down = self._was_scale_down_necessary(svc_id, snapshot)
 
         if decision == ScaleAction.NO_CHANGE:
             pass
@@ -531,6 +583,7 @@ class SimulationEngine:
                     self.metrics.record_scale_action("SCALE_UP")
                     self._service_last_scale_time[svc_id] = self.now
                     applied = True
+                    self.metrics.record_decision_correctness("SCALE_UP", necessary_up)
                 else:
                     skip_reason = "placement_failed"
             else:
@@ -544,13 +597,22 @@ class SimulationEngine:
                 self.metrics.record_scale_action("SCALE_DOWN")
                 self._service_last_scale_time[svc_id] = self.now
                 applied = True
+                self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
             else:
                 skip_reason = "only_one_replica_left"
 
+        # *** بخش ۸: فرصت ازدست‌رفته - صرف‌نظر از تصمیم این تیک، آیا طبق
+        # معیار مستقل واقعاً SCALE_UP/DOWN لازم بود ولی اعمال نشد؟
+        if necessary_up and not (decision == ScaleAction.SCALE_UP and applied):
+            self.metrics.record_missed_opportunity("SCALE_UP")
+        if necessary_down and not (decision == ScaleAction.SCALE_DOWN and applied):
+            self.metrics.record_missed_opportunity("SCALE_DOWN")
+
         # *** بخش ۱۲: لاگ رویداد scale_decision برای هر سرویس هر تیک، همراه
-        # با وضعیت نهایی اعمال/رد (audit trail کامل).
+        # با وضعیت نهایی اعمال/رد و نتیجه‌ی ممیزی مستقل (audit trail کامل).
         self._log("scale_decision", service_id=svc_id, decision=decision.name,
-                  applied=applied, skip_reason=skip_reason)
+                  applied=applied, skip_reason=skip_reason,
+                  necessary_scale_up=necessary_up, necessary_scale_down=necessary_down)
 
     def _update_sustain_tracking(self, snapshot: dict):
         for sid, s in self.servers.items():
@@ -587,13 +649,13 @@ class SimulationEngine:
         if external_actions is not None:
             self._apply_provisioning(external_actions["provision"], snapshot)
             for svc_id, decision in external_actions["scale"].items():
-                self._apply_scale_decision(svc_id, decision)
+                self._apply_scale_decision(svc_id, decision, snapshot)
         else:
             action = self.algorithm.provision_decision(self.servers, snapshot, self.now)
             self._apply_provisioning(action, snapshot)
             for svc_id in CFG.active_services:
                 decision = self.algorithm.scale_decision(svc_id, snapshot)
-                self._apply_scale_decision(svc_id, decision)
+                self._apply_scale_decision(svc_id, decision, snapshot)
 
         self._tick_total.clear()
         self._tick_rejected.clear()

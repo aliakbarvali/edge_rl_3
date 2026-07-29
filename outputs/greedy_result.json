@@ -22,6 +22,32 @@
   "num_scale_down": 167,
   "num_turn_on": 48,
   "num_turn_off": 50,
+  "decision_correctness": {
+    "SCALE_DOWN": {
+      "correct": 167,
+      "incorrect": 0,
+      "missed_opportunities": 25987,
+      "correctness_rate_pct": 100.0
+    },
+    "SCALE_UP": {
+      "correct": 240,
+      "incorrect": 0,
+      "missed_opportunities": 2702,
+      "correctness_rate_pct": 100.0
+    },
+    "TURN_OFF": {
+      "correct": 50,
+      "incorrect": 0,
+      "missed_opportunities": 927,
+      "correctness_rate_pct": 100.0
+    },
+    "TURN_ON": {
+      "correct": 48,
+      "incorrect": 0,
+      "missed_opportunities": 7,
+      "correctness_rate_pct": 100.0
+    }
+  },
   "total_requests": 34137,
   "completed_requests": 33009
 }
