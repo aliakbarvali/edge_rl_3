@@ -29,16 +29,16 @@
       "missed_opportunities": 388,
       "correctness_rate_pct": 100.0
     },
-    "SCALE_DOWN": {
-      "correct": 59,
-      "incorrect": 0,
-      "missed_opportunities": 26317,
-      "correctness_rate_pct": 100.0
-    },
     "SCALE_UP": {
       "correct": 569,
       "incorrect": 0,
       "missed_opportunities": 1188,
+      "correctness_rate_pct": 100.0
+    },
+    "SCALE_DOWN": {
+      "correct": 59,
+      "incorrect": 0,
+      "missed_opportunities": 192,
       "correctness_rate_pct": 100.0
     },
     "TURN_OFF": {
