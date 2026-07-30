@@ -75,7 +75,12 @@ class SimulationEngine:
         # کلید: (target_server_id, service_id) -> مقدار: server_id مبدأ (در حال drain)
         # وقتی رپلیکای مقصد READY شد، رپلیکای مبدأ همان‌جا وارد DRAINING می‌شود.
         self._pending_migrations: Dict[Tuple[int, int], int] = {}
-
+        # *** بخش ۶.۲ سند: «اگر هیچ سرور ACTIVE مناسبی پیدا نشد، یک سرور
+        # OFF جدید Boot اضطراری شود». ردیابی سرویس‌هایی که فعلاً منتظر
+        # تکمیل یک boot اضطراری‌اند تا هر تیک دوباره یک سرور اضافی برایشان
+        # boot نشود. کلید: service_id -> server_id سروری که به‌خاطر همین
+        # سرویس در حال BOOTING است.
+        self._emergency_boot_for_service: Dict[int, int] = {}
         # *** بخش ۶.۱: ردیابی «تداوم overload» متقارن با _low_util_since،
         # چون قبلاً فقط سمت پایین (scale-down/turn-off) تداوم چند-تیکی
         # داشت و سمت بالا با یک نمونه‌ی لحظه‌ای فوراً trigger می‌شد.
@@ -138,6 +143,36 @@ class SimulationEngine:
         candidates.sort(key=lambda s: haversine_km(centroid_lat, centroid_lon, s.lat, s.long))
         return candidates[0].id
 
+
+    def _trigger_emergency_boot(self, unmigrated_services: set, draining_server: Server):
+        """
+        بخش ۶.۲ سند: «اگر هیچ سرور ACTIVE مناسبی پیدا نشد، یک سرور OFF جدید
+        Boot اضطراری شود و migration به محض ACTIVE شدنش انجام می‌شود».
+        *** قبلاً این‌جا هیچ اقدامی نبود - drain فقط لغو و چرخه‌ی بعد دوباره
+        امتحان می‌شد، بدون هیچ پیشرفتی (در لاگ واقعی PPO این باعث ۵۱۰ بار
+        تلاش شکست‌خورده‌ی پیاپی روی همان سرور شده بود - نگاه کنید
+        server_drain_aborted در ppo_events.jsonl). حالا برای هر سرویسِ
+        بی‌مقصد یک سرور OFF مناسب (نزدیک‌ترین با ظرفیت کافی) boot می‌شود.
+        """
+        off_servers = [x for x in self.servers.values() if x.state == ServerState.OFF]
+        reserved_cpu: Dict[int, int] = defaultdict(int)
+        for svc_id in unmigrated_services:
+            if svc_id in self._emergency_boot_for_service:
+                continue  # قبلاً یک سرور برای همین سرویس در حال boot است
+            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            candidates = [x for x in off_servers if x.capacity - reserved_cpu[x.id] >= cpu]
+            if not candidates:
+                # هیچ سرور OFF مناسبی موجود نیست؛ چرخه‌ی بعد دوباره امتحان می‌شود
+                continue
+            candidates.sort(key=lambda x: haversine_km(
+                draining_server.lat, draining_server.long, x.lat, x.long))
+            target = candidates[0]
+            reserved_cpu[target.id] += cpu
+            self._emergency_boot_for_service[svc_id] = target.id
+            self._start_server_boot(target.id)
+            self._log("emergency_boot_triggered", server_id=target.id, service_id=svc_id,
+                      source_server_id=draining_server.id, reason="migration_target_unavailable")
+            
     # ------------------------------------------------------------------
     # گذارهای سرور
     # ------------------------------------------------------------------
@@ -154,16 +189,28 @@ class SimulationEngine:
         self._log("server_boot_started", server_id=server_id)
         self._push(self.now + CFG.boot_delay_sec, EventType.SERVER_BOOT_DONE, server_id)
 
+
     def _handle_boot_done(self, server_id: int):
         s = self.servers[server_id]
         s.state = ServerState.ACTIVE
         s.last_transition_time = self.now
         self._log("server_active", server_id=server_id)
-        # هر رپلیکای STARTING که منتظر روشن‌شدن سرور بود، حالا pod-create واقعی می‌شود
         for r in s.hosted_replicas.values():
             if r.state == ReplicaState.STARTING and r.ready_since is None and r.created_at <= self.now:
                 self._schedule_replica_ready(r)
 
+        # *** بخش ۶.۲: اگر این boot به‌خاطر رفع migration_incomplete بود،
+        # حالا که ACTIVE شد کاندید معتبری برای migration_decision الگوریتم
+        # است (چرخه‌ی بعدی که همان سرور مبدأ دوباره تلاش TURN_OFF می‌کند
+        # این را می‌بیند). رکورد انتظار پاک می‌شود تا اگر بعداً دوباره
+        # گیر کرد بتوان یک emergency boot جدید trigger کرد.
+        rescued = [svc_id for svc_id, target_id in self._emergency_boot_for_service.items()
+                   if target_id == server_id]
+        for svc_id in rescued:
+            del self._emergency_boot_for_service[svc_id]
+            self._log("emergency_boot_completed", server_id=server_id, service_id=svc_id)
+            
+            
     def _start_server_drain(self, server_id: int) -> bool:
         s = self.servers[server_id]
         if s.state != ServerState.ACTIVE:
@@ -184,11 +231,13 @@ class SimulationEngine:
         # طبق بخش ۶.۲ در این حالت باید یک سرور جدید Boot اضطراری شود؛ فعلاً
         # به‌عنوان راه‌حل ایمن‌تر، drain را عقب می‌اندازیم تا چرخه‌ی بعد با
         # وضعیت ظرفیت جدید دوباره امتحان شود.
-        if not sole_hosted.issubset(migrated_services):
+      
+        unmigrated = sole_hosted - migrated_services
+        if unmigrated:
+            self._trigger_emergency_boot(unmigrated, s)
             self._log("server_drain_aborted", server_id=server_id,
-                      reason="migration_incomplete", unmigrated=list(sole_hosted - migrated_services))
+                      reason="migration_incomplete", unmigrated=list(unmigrated))
             return False
-
         s.state = ServerState.DRAINING
         s.drain_started_at = self.now
         s.last_transition_time = self.now
@@ -459,8 +508,9 @@ class SimulationEngine:
     def _apply_provisioning(self, action, snapshot: dict):
         self._last_tick_decisions["provision"] = action
         applied = False
-        skip_reason = None
-        turn_on_necessary = self._any_active_server_sustained_overloaded()
+        skip_reason = None 
+        turn_on_necessary = (self._any_active_server_sustained_overloaded()
+                              or self._any_service_capacity_starved(snapshot))
         turn_off_opportunity = self._any_active_server_sustained_underloaded()
 
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
@@ -528,6 +578,26 @@ class SimulationEngine:
         TURN_ON نیاز داشت؟»."""
         for sid, since in self._high_util_since.items():
             if since is not None and (self.now - since) >= CFG.sustain_high_sec:
+                return True
+        return False
+
+    def _any_service_capacity_starved(self, snapshot: dict) -> bool:
+        """
+        *** یافته‌ی جدید بعد از فعال‌شدن واقعی TURN_OFF (به لطف فیکس
+        emergency-boot): معیار قدیمی turn_on_necessary فقط utilization
+        لحظه‌ای (busy-fraction) سرورهای ACTIVE را می‌سنجد، نه اینکه اصلاً
+        ظرفیت آزاد برای رپلیکای جدید مانده یا نه. یک سرور می‌تواند کاملاً
+        پر (free_capacity=0) باشد ولی چون هم‌زمان صددرصد busy نیست
+        utilization<0.95 بماند - یعنی TURN_ON هرگز trigger نمی‌شد حتی وقتی
+        3500 از 3508 تلاش SCALE_UP واقعی با no_target_server شکست خورده
+        بودند (نگاه کنید greedy_events.jsonl). این تابع سیگنال مکمل است.
+        """
+        for svc_id in CFG.active_services:
+            if not self._was_scale_up_necessary(svc_id, snapshot):
+                continue
+            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+                       for s in self.servers.values()):
                 return True
         return False
 

@@ -118,6 +118,27 @@ class AlgorithmBase(ABC):
         matching = [s for s in candidates if s.profile == desired_profile]
         return matching if matching else candidates  # اگر پروفایل دلخواه در دسترس نبود -> همه‌ی کاندیدها
 
+    @staticmethod
+    def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server]) -> List[int]:
+        """
+        *** سیگنال مکمل نیاز به ظرفیت بیشتر: سرویس‌هایی که occ_ratio بالا یا
+        rejection>0 دارند ولی هیچ سرور ACTIVE ای جا برایشان ندارد (free_capacity
+        کافی). قبلاً فقط utilization لحظه‌ای (busy-fraction) چک می‌شد که یک
+        سرور کاملاً پر (free_capacity=0) را هم می‌تواند به‌اشتباه "غیراضافه‌بار"
+        نشان دهد. نگاه کنید simulator/engine.py:_any_service_capacity_starved
+        برای نسخه‌ی معادل سطح موتور.
+        """
+        starved = []
+        for svc_id, sv in metrics_snapshot["services"].items():
+            occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+            if not (occ_ratio > 0.7 or sv["rejection_rate"] > 0.0):
+                continue
+            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+                       for s in servers.values()):
+                starved.append(svc_id)
+        return starved
+
     @abstractmethod
     def scale_decision(self, service_id, metrics_snapshot):
         ...

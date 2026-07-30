@@ -10,37 +10,13 @@
 |---|---|
 | `common/` (config, models, geo, metrics, logger, state_builder) | ✅ کامل |
 | `data/loader.py` (۴ فایل + آفست روزانه) | ✅ کامل |
-| `simulator/engine.py` (موتور discrete-event) | ✅ کامل |
+| `simulator/engine.py` (موتور discrete-event) | ✅ کامل (شامل emergency-boot بخش ۶.۲ و لاگ کامل بخش ۱۲) |
 | `algorithms/base.py` (AlgorithmBase مشترک) | ✅ کامل |
 | `algorithms/greedy/` | ✅ کامل و تست‌شده |
-| `algorithms/voila/` | ✅ کامل و تست‌شده (بخش ۲ جدید) |
-| `algorithms/hpa/` | ✅ کامل و تست‌شده (بخش ۲ جدید) |
-| `algorithms/ppo/` (env, train, infer, ppo_algorithm) | ✅ کد کامل — **آموزش روی سیستم من اجرا نشد** (زیر را بخوانید) |
+| `algorithms/voila/` | ✅ کامل و تست‌شده |
+| `algorithms/hpa/` | ✅ کامل و تست‌شده |
+| `algorithms/ppo/` (env, train, infer, ppo_algorithm) | ✅ کامل — **آموزش با BC warm-start + fine-tune واقعاً روی داده اجرا شد** (نتایج زیر) |
 | `k8s_adapter/` (فاز ۳) | ⏳ هنوز شروع نشده |
-
-## ⚠️ مهم‌ترین نکته قبل از هرچیز
-
-**در محیط توسعه‌ی من (sandbox) دسترسی شبکه به `gymnasium`, `stable-baselines3`,
-`sb3-contrib`, `torch`, `simpy` وجود نداشت** (pip نمی‌توانست این پکیج‌ها را
-resolve کند، با اینکه دامنه‌های pypi در تنظیمات مجاز بودند). بنابراین:
-
-1. `simulator/engine.py` را با یک موتور heapq-based **معادل** simpy نوشتم
-   (مستند در بالای همان فایل). اگر simpy روی سیستم خودتان در دسترس است و
-   ترجیحش می‌دهید، فقط همین فایل نیاز به بازنویسی دارد.
-2. تمام کد PPO (`env.py`, `train.py`, `ppo_algorithm.py`) نوشته و تا حد ممکن
-   تست شده (با یک ماژول `gymnasium` جعلی برای بررسی منطق `reset/step`/
-   action masking بدون نیاز به نصب واقعی)، **اما هرگز واقعاً `train.py` را با
-   torch/sb3-contrib واقعی اجرا نکردم**. لطفاً:
-   ```bash
-   pip install -r requirements.txt
-   python -m algorithms.ppo.train
-   ```
-   را خودتان اجرا کنید و اگر خطایی داد (مثلاً ناسازگاری نسخه‌ی API
-   `MaskablePPO`/`get_distribution`) برایم بفرستید تا دیباگ کنم.
-
-همه‌ی بخش‌های دیگر (`common/`, `data/`, `simulator/engine.py`,
-`algorithms/greedy/`, `algorithms/base.py`) با داده‌ی واقعی شما کاملاً اجرا و
-تست شدند (نتایج زیر).
 
 ## نحوه‌ی اجرا
 
@@ -56,33 +32,93 @@ python -m algorithms.ppo.train
 # ارزیابی PPO آموزش‌دیده (روی Data4.csv، inference-only)
 python -m algorithms.ppo.infer
 
-# مقایسه‌ی همه‌ی الگوریتم‌های *آماده* (فعلاً greedy + ppo اگر آموزش دیده شود)
+# مقایسه‌ی هر ۴ الگوریتم روی همان داده و تولید جدول مقایسه
 python -m evaluation.compare_runs --data test
 ```
 
-## نتیجه‌ی واقعی هر سه الگوریتم روی Data4.csv (تست‌شده در sandbox من)
+> **نکته‌ی reproducibility:** `algorithms/ppo/ppo_model.zip` (چک‌پوینت آموزش‌دیده)
+> در ریپو commit نشده، چون `.gitignore` قانون `*.zip` دارد. برای بازتولید نتایج
+> PPO زیر، اول `python -m algorithms.ppo.train` را اجرا کنید (یا اگر می‌خواهید
+> مدل را هم نسخه‌بندی کنید، این فایل را از قانون gitignore استثنا بگذارید یا
+> از Git LFS/GitHub Release استفاده کنید).
 
-| متریک | Greedy | **Voila** | HPA |
-|---|---|---|---|
-| avg_response_time_sec | 50.89 | 51.50 | 52.72 |
-| deadline_violation_rate_pct | 4.88 | **4.79** | 5.45 |
-| deadline_violations | 1667 | **1634** | 1859 |
-| avg_load_balance_cv | 0.302 | 0.286 | **0.246** |
-| cumulative_energy_joule | 31.8M | 31.5M | **30.7M** |
-| num_requests_rejected_no_replica | 68 | **22** | 19 |
-| avg_active_servers | 2.17 | 2.13 | 2.02 |
-| num_server_boots/shutdowns | 93/91 | 76/74 | 6/4 |
-| completed | 33029 | **33079** | 32931 |
+> **متغیر محیطی داده:** مسیر داده‌ها دیگر هاردکد نیست؛ با `EOTCH_DATA_DIR`
+> تنظیم می‌شود (پیش‌فرض: `<ریشه‌ی پروژه>/data/raw`):
+> ```bash
+> export EOTCH_DATA_DIR=/path/to/data      # لینوکس/مک
+> set EOTCH_DATA_DIR=D:\path\to\data       # ویندوز (cmd)
+> ```
 
-**تفسیر صادقانه:** Voila کمترین نقض deadline و کمترین رد به‌خاطر نبود replica
-را دارد (دقیقاً چیزی که فلسفه‌ی location-aware آن پیش‌بینی می‌کند). یک نکته‌ی
-جالب: `avg_distance_km` واقعی Greedy (۱۸.۱۵) از Voila (۲۰.۶۴) کمتر است -
-چون Greedy در مجموع replica بیشتری ساخته (۳۶۵ در برابر ۲۸۳ pod-create) که
-خودش فاصله‌ی متوسط تا نزدیک‌ترین replica را کم می‌کند، صرف‌نظر از هوشمندی
-مکان‌یابی؛ این نشان می‌دهد `avg_distance_km` به‌تنهایی معیار کاملی برای
-سنجش کیفیت placement نیست - باید همراه با تعداد replica/انرژی خوانده شود.
-HPA چون کاملاً latency-unaware است (بخش ۳ مقدمه‌ی مقاله‌ی Voila)، کمترین
-انرژی و کمترین churn زیرساخت را دارد ولی بدترین کیفیت QoS را.
+## نتیجه‌ی واقعی هر ۴ الگوریتم روی Data4.csv
+
+اجرای کامل `evaluation/compare_runs.py --data test` (۳۴٬۱۳۷ درخواست کل):
+
+| متریک | Greedy | Voila | HPA | **PPO** |
+|---|---|---|---|---|
+| avg_response_time_sec | 51.95 | 51.91 | 52.70 | **50.40** |
+| p95_response_time_sec | 240.00 | 239.01 | 242.25 | 242.00 |
+| deadline_violation_rate_pct | 5.11 | 5.20 | 5.54 | 5.35 |
+| deadline_violations | 1743 | 1776 | 1890 | 1828 |
+| cumulative_energy_joule | 32.2M | **32.1M** | 35.7M | 34.0M |
+| avg_distance_km | 17.43 | 21.33 | **17.34** | 18.49 |
+| avg_load_balance_cv | 0.307 | **0.285** | 0.584 | 0.369 |
+| avg_network_delay_ms | 2.349 | 2.427 | 2.347 | 2.370 |
+| num_requests_rejected_no_replica | 14 | 14 | 14 | 14 |
+| num_requests_rejected_queue_full | 1114 | 1125 | 1227 | 1145 |
+| avg_active_servers | 2.10 | 1.99 | **1.15** | 2.08 |
+| num_server_boots / shutdowns | 51 / 49 | 39 / 36 | **22 / 20** | 13 / 9 |
+| num_pod_creates / deletes | 268 / 253 | 230 / 215 | 141 / 126 | 128 / 102 |
+| completed_requests | 33009 | 32998 | 32896 | 32978 |
+
+### کیفیت تصمیمات (بخش ۸ سند: correctness مستقل از منطق داخلی هر الگوریتم)
+
+| الگوریتم | SCALE_UP correct/incorrect (rate) | SCALE_DOWN correct/incorrect (rate) | TURN_ON correct | TURN_OFF correct (missed) |
+|---|---|---|---|---|
+| Greedy | 240 / 0 (100%) | 167 / 0 (100%) | 48 / 0 (100%) | 50 (missed 927) |
+| Voila | 199 / 0 (100%) | 146 / 0 (100%) | 36 / 0 (100%) | 37 (missed 857) |
+| HPA | 113 / 0 (100%) | 25 / 56 (31%) | 19 / 0 (100%) | 21 (missed 314) |
+| **PPO** | 41 / 62 (**40%**) | 22 / 29 (**43%**) | 10 / 0 (100%) | 10 (missed **1395**) |
+
+## تفسیر صادقانه (به‌روزرسانی‌شده پس از رفع باگ متریک فاصله)
+
+- **باگ متریک رفع شد:** نسخه‌ی قبلی این README ادعا می‌کرد `avg_distance_km`
+  Greedy (۱۸.۱۵) از Voila (۲۰.۶۴) کمتر است چون Greedy replica بیشتری ساخته.
+  این ادعا تا حدی نتیجه‌ی یک باگ بود: `common/metrics.py` قبلاً برای
+  درخواست‌های **رد‌شده** هم مقدار `distance_km=0.0`/`network_delay_ms=0.0`
+  را در میانگین لحاظ می‌کرد (چون این دو فیلد فقط برای درخواست‌های پذیرفته‌شده
+  واقعاً محاسبه می‌شوند)، که میانگین را به نسبت تعداد رد هر الگوریتم به‌طور
+  مصنوعی پایین می‌آورد. بعد از رفع باگ (append فقط برای `COMPLETED`، مثل
+  `response_times`)، عدد Greedy=17.43 و Voila=21.33 است — یعنی Greedy واقعاً
+  و به‌طور واقعی هم replica نزدیک‌تری به BTSها می‌سازد (چون replica بیشتری
+  دارد)، نه فقط به‌خاطر باگ. HPA با کمترین تعداد سرور فعال (۱.۱۵ میانگین) و
+  کمترین replica (141) در عمل نزدیک‌ترین میانگین فاصله را دارد (۱۷.۳۴) که
+  نشان می‌دهد `avg_distance_km` به‌تنهایی هنوز معیار کاملی برای کیفیت
+  placement نیست؛ چون HPA کاملاً latency-unaware است و این عدد پایین صرفاً
+  از تراکم جغرافیایی سرورهای باقی‌مانده می‌آید، نه هوشمندی مکان‌یابی.
+- **Voila** کمترین `avg_load_balance_cv` (بار متوازن‌تر بین سرورها) و کمترین
+  انرژی مصرفی را دارد — دقیقاً مطابق فلسفه‌ی location-aware مقاله.
+- **HPA** چون کاملاً latency-unaware است (بخش ۳ مقدمه‌ی مقاله‌ی Voila)،
+  کمترین churn زیرساخت (کمترین boot/shutdown) را دارد، ولی بدترین
+  `avg_load_balance_cv` (۰.۵۸۴) و بیشترین انرژی و نقض deadline را — یعنی با
+  کمترین سرور فعال، بار را نامتوازن روی همان چند سرور متمرکز می‌کند.
+- **PPO** بهترین `avg_response_time_sec` خام (۵۰.۴۰) را دارد، ولی جدول
+  «کیفیت تصمیمات» نشان می‌دهد این عدد رایگان نیست: نرخ درستی SCALE_UP/DOWN
+  آن (~۴۰-۴۳٪) به‌مراتب پایین‌تر از سه الگوریتم قاعده‌محور (که همه ۱۰۰٪
+  یا نزدیک آن‌اند، چون خودِ threshold آن‌ها با معیار ممیزی این پروژه هم‌راستا
+  طراحی شده) است، و ۱۳۹۵ فرصت TURN_OFF را از دست داده (در مقابل ۹۲۷ برای
+  Greedy و ۸۵۷ برای Voila) — یعنی با وجود gate سراسری sustain، عامل هنوز
+  گرایش به نگه‌داشتن سرور اضافی دارد. رفع باگ نرمال‌سازی reward (نگاه کنید
+  `algorithms/ppo/env.py` CHANGELOG بازبینی ۳) این را بهبود داد (قبل از آن
+  عامل تقریباً هیچ اکشنی نمی‌زد)، ولی هنوز فاصله‌ی محسوسی تا سیاست heuristic
+  دارد؛ برای گزارش نهایی این را به‌عنوان یک محدودیت شناخته‌شده ذکر کنید، نه
+  یک برتری کامل PPO.
+- **رد به‌دلیل نبود replica (`num_requests_rejected_no_replica=14`) در هر ۴
+  الگوریتم دقیقاً برابر است** — این تصادفی نیست: این ۱۴ رد همگی در پنجره‌ی
+  مشترک `_initial_placement` (پیش از هر تصمیم الگوریتم‌محور، وقتی سرورهای
+  اولیه هنوز BOOTING‌اند) رخ می‌دهند و منطق initial placement بین هر ۴
+  الگوریتم مشترک است (`AlgorithmBase.initial_placement`/`select_replica`)؛
+  تفاوت واقعی بین الگوریتم‌ها در `num_requests_rejected_queue_full` دیده
+  می‌شود (Greedy=1114 تا HPA=1227).
 
 ## تصمیمات مهندسی/فرضیات صریح (برای گزارش نهایی حتماً ذکر کنید)
 
@@ -95,13 +131,30 @@ HPA چون کاملاً latency-unaware است (بخش ۳ مقدمه‌ی مقا
   کافی نبود چون مجموع `cpu_demand` هر ۱۵ سرویس (=۲۴۸) از ظرفیت هر سرور
   به‌تنهایی (حداکثر ۲۰۰) بیشتر است؛ انتخاب اولیه را تا کافی‌شدن ظرفیت کل هم
   گسترش دادم (`algorithms/base.py:initial_placement`).
-- **محافظ ایمنی drain**: اگر migration نتواند مقصدی برای همه‌ی سرویس‌های
-  تک‌رپلیکای یک سرور در حال drain پیدا کند، drain آن چرخه لغو می‌شود (به‌جای
-  قطع کامل آن سرویس‌ها). بخش ۶.۲ سند در این حالت لبه می‌گوید یک سرور جدید
-  Boot اضطراری شود - این حالت را فعلاً به‌صورت «عقب‌انداختن drain تا چرخه‌ی
-  بعد» ساده‌سازی کردم؛ اگر پیاده‌سازی دقیق‌تر emergency-boot را می‌خواهید بگویید.
+- **Emergency-boot بخش ۶.۲**: وقتی migration یک سرویس تک‌رپلیکای در حال
+  drain نتواند مقصد ACTIVE مناسبی پیدا کند، به‌جای لغو کامل drain (رفتار
+  نسخه‌ی قبلی)، الان یک سرور OFF جدید بلافاصله Boot می‌شود («Provisioning
+  اضطراری» طبق متن دقیق سند) و migration واقعی به‌محض ACTIVE شدن آن سرور
+  کامل می‌شود (`simulator/engine.py:_start_server_drain` /
+  `_handle_boot_done`، رویداد لاگ `emergency_boot_triggered`). فقط اگر
+  اصلاً هیچ سرور OFFی موجود نباشد (همه‌ی ۱۰ سرور از قبل ACTIVE/BOOTING/
+  DRAINING‌اند)، drain همچنان طبق محافظ قبلی این چرخه لغو می‌شود.
+- **لاگ ساخت‌یافته‌ی کامل بخش ۱۲**: علاوه بر رویدادهای قبلی، `request_routed`
+  (لحظه‌ی انتخاب replica توسط Router، پیش از admit به صف) و `request_queued`
+  (لحظه‌ی ورود واقعی به صف FIFO) هم اضافه شدند تا هر ۹ رویداد اجباری بخش ۱۲
+  پوشش داده شوند.
+- **رفع باگ متریک فاصله/تاخیر شبکه**: `avg_distance_km` و
+  `avg_network_delay_ms` قبلاً برای درخواست‌های رد‌شده هم مقدار صفر را در
+  میانگین append می‌کردند (چون این فیلدها فقط برای درخواست‌های پذیرفته‌شده
+  واقعاً محاسبه می‌شوند)؛ الان مثل `response_times` فقط برای `COMPLETED`
+  append می‌شوند (`common/metrics.py`).
+- **پورتابیلیتی `DATA_DIR`**: به‌جای مسیر مطلق هاردکد، از `EOTCH_DATA_DIR`
+  (با fallback به `<ریشه‌ی پروژه>/data/raw`) استفاده می‌شود.
 - **utilization برای provisioning**: `used_cpu/capacity` بر اساس رپلیکاهای
   *در حال پردازش* در لحظه (نه صرفاً deploy‌شده)، دقیقاً طبق فرمول بخش ۲.۴.
+  (نکته‌ی باز: این «لحظه‌ای» است، نه میانگین متحرک روی `MONITOR_WINDOW_SEC`
+  که متن دقیق بخش ۶.۱ سند پیشنهاد می‌دهد؛ تداوم چند-تیکی `SUSTAIN_HIGH/LOW_SEC`
+  تا حدی همین اثر را می‌دهد ولی معادل ریاضی EMA/میانگین متحرک نیست.)
 - **مرکز ثقل تقاضا برای Voila**: چون AlgorithmBase استاندارد به snapshot خام
   موقعیت هر درخواست دسترسی نمی‌دهد، `simulator/engine.py` یک میانگین متحرک
   نمایی (EMA, α=۰.۳) از موقعیت جغرافیایی درخواست‌های اخیر هر سرویس را در
@@ -111,10 +164,29 @@ HPA چون کاملاً latency-unaware است (بخش ۳ مقدمه‌ی مقا
 - **آستانه‌های heuristic هر الگوریتم** (`OCC_UP_THRESHOLD`, `TARGET_UTILIZATION`
   و مشابه) در همان فایل الگوریتم نگه داشته شدند، نه `config.py`، چون این‌ها
   سیاست تصمیم‌گیری مختص هر الگوریتم‌اند، نه قید فیزیکی سیستم.
-- **ثابت‌های نرمال‌سازی reward PPO** (`_NORM_RESPONSE_TIME_SEC=300`,
-  `_NORM_ENERGY_JOULE=50000` در `state_builder.py`/`env.py`): چون سند «نرمال‌سازی
-  با warm-up» را پیشنهاد داده ولی مکانیزم دقیقش را مشخص نکرده، مقادیر ثابت و
-  مستند به‌جایش گذاشتم؛ در صورت نیاز به warm-up واقعی بگویید تا اضافه کنم.
+- **وزن‌های reward PPO (بازبینی ۳)**: `w1_response_time=0.12, w2_deadline=0.20,
+  w3_energy=0.30, w4_load_balance=0.23, w5_rejected=0.15` (جمع=۱.۰،
+  `common/config.py`). قبلاً جریمه‌ی «درخواست ردشده» جدا و نرمال‌نشده اعمال
+  می‌شد و می‌توانست ۵-۱۵ برابر بقیه‌ی اجزای reward بزرگ‌تر شود و کل سیگنال را
+  تحت‌الشعاع قرار دهد (عامل یاد گرفته بود عملاً هیچ اکشنی نزند)؛ الان
+  `num_rejected_recent` هم مثل بقیه نرمال (کلمپ در `_NORM_REJECTED_PER_TICK=5`)
+  و با وزن صریح `w5_rejected` ترکیب می‌شود (`algorithms/ppo/env.py`).
+- **ثابت نرمال‌سازی انرژی**: `_NORM_ENERGY_JOULE=12000` (کالیبره‌شده روی
+  میانگین/صدک۹۰ واقعی انرژی هر تیک با Greedy روی Data4.csv؛ مقدار اولیه‌ی
+  ۵۰۰۰۰ خیلی بزرگ بود و جریمه‌ی انرژی را عملاً بی‌اثر می‌کرد). این عدد فعلاً
+  در دو جا (`common/state_builder.py` و `algorithms/ppo/env.py`) به‌طور
+  مستقل هاردکد شده — برای گزارش نهایی بهتر است یکی import کند تا یک منبع
+  حقیقت باشد.
+
+## موارد باز/شناخته‌شده (برای ادامه‌ی کار)
+
+- Placement اولیه‌ی هر سرویس (`_nearest_capable_server`) بر اساس نزدیکی به
+  **centroid سرورهای انتخاب‌شده** است، نه نزدیکی به BTSهای واقعی آن سرویس
+  در پنجره‌ی اول؛ ممکن است تفسیر دقیق‌تری از سند («نزدیک‌ترین سرور فعال»)
+  باشد ولی اگر هدف نزدیکی به تقاضای واقعی است، باید فیلتر شود.
+- کیفیت تصمیمات PPO (نرخ درستی SCALE_UP/DOWN ~۴۰٪، missed TURN_OFF بالا)
+  هنوز به سیاست heuristic نرسیده؛ کاندید بهبود بعدی برای fine-tuning.
+- `k8s_adapter/` (فاز ۳) هنوز شروع نشده.
 
 ## ساختار پروژه
 

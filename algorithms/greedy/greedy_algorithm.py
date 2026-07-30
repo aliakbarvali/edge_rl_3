@@ -24,14 +24,33 @@ class GreedyAlgorithm(AlgorithmBase):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-        if overloaded:
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
+        if overloaded or starved_services:
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:
-                ref = overloaded[0]
-                # بخش ۶.۱: نزدیک‌ترین جغرافیایی + پروفایل متناسب با اضافه‌بار
-                desired_profile = self._pick_profile_for_overload(overloaded, ref.capacity)
-                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
-                pool.sort(key=lambda s: haversine_km(ref.lat, ref.long, s.lat, s.long))
+                if overloaded:
+                    ref = overloaded[0]
+                elif active:
+                    # *** اضافه‌بار utilization-محور نبود ولی capacity-starved
+                    # بودیم؛ پرمشغول‌ترین سرور ACTIVE فعلی را مرجع جغرافیایی
+                    # می‌گیریم.
+                    ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
+                else:
+                    # *** لبه‌ی مرزی: هیچ سروری هنوز ACTIVE نیست (مثلاً همان
+                    # اولین DECISION_TICK در t=0 که همه‌ی سرورهای اولیه هنوز
+                    # BOOTING هستند ولی درخواست‌های همین لحظه چون replica
+                    # READY ای نیست REJECTED_NO_REPLICA می‌خورند و سرویس را
+                    # «starved» نشان می‌دهند). در این حالت معیار مکانی معناداری
+                    # نداریم؛ فقط اولین سرور OFF را بدون اولویت جغرافیایی
+                    # انتخاب می‌کنیم (به‌هرحال initial_placement به‌زودی چند
+                    # سرور دیگر هم boot می‌کند).
+                    ref = None
+                if ref is not None:
+                    desired_profile = self._pick_profile_for_overload(overloaded or active, ref.capacity)
+                    pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
+                    pool.sort(key=lambda s: haversine_km(ref.lat, ref.long, s.lat, s.long))
+                else:
+                    pool = off_servers
                 return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
 
         if active:
