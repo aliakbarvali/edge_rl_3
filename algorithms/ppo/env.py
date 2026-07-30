@@ -150,7 +150,7 @@ class EdgeResourceEnv(gym.Env):
                    w["w4_load_balance"] * norm_lb +
                    w["w5_rejected"] * norm_rejected)
         penalty += CFG.ppo_penalty_per_action * n_actions_taken
-        return -float(penalty)
+        return -float(penalty) 
 
     # ------------------------------------------------------------------
     def action_masks(self) -> np.ndarray:
