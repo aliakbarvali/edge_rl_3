@@ -46,17 +46,21 @@ class HPAAlgorithm(AlgorithmBase):
             return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
         avg_util = sum(metrics_snapshot["servers"][s.id]["utilization"] for s in active) / len(active)
+        overloaded = [s for s in active
+                      if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
+        # *** بخش ۶.۱ / یافته‌ی جدید: مثل Greedy/Voila، سیگنال «کاملاً پر ولی
+        # busy-fraction<0.95» هم اضافه شد تا مقایسه‌ی چهارگانه منصفانه بماند.
+        # همچنان location-unaware (بدون haversine) طبق تعریف صریح سند از HPA.
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
 
-        if avg_util > CFG.util_scale_up_threshold:
+        if avg_util > CFG.util_scale_up_threshold or starved_services:
             off_servers = sorted([s for s in servers.values() if s.state == ServerState.OFF],
                                   key=lambda s: s.id)  # *** ترتیب ثابت/دلخواه، نه بر اساس مکان
             if off_servers:
                 # *** بخش ۶.۱: پروفایل متناسب با اضافه‌بار - همچنان
                 # location-unaware (بدون haversine)، فقط بر پایه‌ی ظرفیت،
                 # چون HPA طبق تعریف صریح سند «کاملاً latency-unaware» است.
-                overloaded = [s for s in active
-                              if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-                desired_profile = self._pick_profile_for_overload(overloaded, active[0].capacity)
+                desired_profile = self._pick_profile_for_overload(overloaded or active, active[0].capacity)
                 pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
                 # پایداری تای‌بریک: بین کاندیدهای هم‌پروفایل هم بر اساس id
                 pool = sorted(pool, key=lambda s: s.id)

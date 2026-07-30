@@ -125,11 +125,35 @@ class VoilaAlgorithm(AlgorithmBase):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-        if overloaded:
+        # *** بخش ۶.۱ / یافته‌ی جدید: قبلاً این‌جا فقط utilization لحظه‌ای چک
+        # می‌شد که یک سرور کاملاً پر (free_capacity=0) را می‌توانست به‌اشتباه
+        # "غیراضافه‌بار" نشان دهد (چون busy-fraction آن لزوماً >0.95 نیست).
+        # Greedy همین سیگنال را گرفته؛ اینجا هم اضافه شد تا مقایسه‌ی چهارگانه
+        # منصفانه بماند - نگاه کنید algorithms/base.py:_capacity_starved_services.
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
+        if overloaded or starved_services:
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:
-                ref = overloaded[0]
-                off_servers.sort(key=lambda s: haversine_km(ref.lat, ref.long, s.lat, s.long))
+                ref_lat, ref_lon = None, None
+                if overloaded:
+                    ref = overloaded[0]
+                    ref_lat, ref_lon = ref.lat, ref.long
+                elif starved_services:
+                    # *** فلسفه‌ی Voila: مرکز ثقل تقاضای واقعی سرویس‌های
+                    # starved را مرجع مکانی می‌گیریم (نه صرفاً سرور پرمشغول)،
+                    # چون این همان چیزی است که Voila را از Greedy متمایز
+                    # می‌کند - محل واقعی تقاضا، نه محل خودِ سرورها.
+                    centroids = [metrics_snapshot["services"][sid].get("demand_centroid")
+                                 for sid in starved_services]
+                    centroids = [c for c in centroids if c is not None]
+                    if centroids:
+                        ref_lat = sum(c[0] for c in centroids) / len(centroids)
+                        ref_lon = sum(c[1] for c in centroids) / len(centroids)
+                    elif active:
+                        ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
+                        ref_lat, ref_lon = ref.lat, ref.long
+                if ref_lat is not None:
+                    off_servers.sort(key=lambda s: haversine_km(ref_lat, ref_lon, s.lat, s.long))
                 return ProvisionAction(ProvisionActionType.TURN_ON, off_servers[0].id)
 
         if active:

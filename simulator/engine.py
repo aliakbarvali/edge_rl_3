@@ -628,7 +628,12 @@ class SimulationEngine:
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
-        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold
+        # *** رفع باگ: قبلاً n_replicas>1 چک نمی‌شد. وقتی سرویسی از قبل فقط
+        # ۱ رپلیکا دارد، SCALE_DOWN اصلاً امکان‌پذیر نیست (بخش ۲.۲: حداقل ۱
+        # رپلیکا همیشه باید بماند)؛ بدون این چک، هر تیکی که occ_ratio پایین
+        # بود ولی فقط ۱ رپلیکا وجود داشت به‌غلط "فرصت ازدست‌رفته" ثبت می‌شد -
+        # همین باعث اعداد missed_opportunities غیرواقعی (~۲۶٬۰۰۰) شده بود.
+        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold and sv["n_replicas"] > 1
 
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):
         self._last_tick_decisions["scale"][svc_id] = decision

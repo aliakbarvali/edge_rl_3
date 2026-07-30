@@ -18,9 +18,25 @@ analyze_decision_quality.py
       - وگرنه -> "harmless_early" (ظرفیت اضافی را کمی زودتر از حد رسمی آزاد
         کرده، ولی مشکلی هم ایجاد نکرده)
 
+همچنین (بازبینی: افزوده شدن تحلیل flapping سرور) اگر فایل رویدادهای
+`provision_decision` با `applied=true` داشته باشد، برای هر سرور مدت
+«dwell» (فاصله‌ی واقعی بین یک TURN_ON اعمال‌شده و اولین TURN_OFF اعمال‌شده‌ی
+بعدی روی همان سرور) را هم محاسبه و طبقه‌بندی می‌کند:
+    - "flapping": dwell < FLAPPING_DWELL_SEC (پیش‌فرض ۳۰۰ ثانیه = ۱۰ تیک
+      تصمیم) - سرور تقریباً به محض رسیدن به حداقل ممکن (boot_delay +
+      cooldown + یک تیک تصمیم) دوباره خاموش شده؛ این الگو معمولاً یعنی
+      سیگنال trigger (مثلاً capacity_starved لحظه‌ای) خیلی زودگذر/نویزی
+      بوده، نه یک نیاز پایدار.
+    - "stable": dwell >= FLAPPING_DWELL_SEC.
+این انگیزه‌ی این افزونه: بعد از فعال‌شدن gate جدید `_any_service_capacity_starved`
+(engine.py)، تعداد boot/shutdown Greedy روی Data4.csv از ۵۱/۴۹ به ۳۱۹/۳۱۷
+جهش کرد و انرژی کل هم‌زمان بالا رفت با وجود کاهش avg_active_servers - نشانه‌ی
+کلاسیک flapping (سرورها زمان زیادی را در حالت گذار BOOTING/DRAINING
+می‌گذرانند که در avg_active_servers شمرده نمی‌شود ولی برق مصرف می‌کند).
+
 ورودی: مسیر یک فایل *_events.jsonl که با EventLogger تولید شده (باید شامل
-رویدادهای scale_decision و request_rejected باشد - نسخه‌ی به‌روزشده‌ی
-simulator/engine.py که این‌ها را لاگ می‌کند لازم است).
+رویدادهای scale_decision، provision_decision و request_rejected باشد -
+نسخه‌ی به‌روزشده‌ی simulator/engine.py که این‌ها را لاگ می‌کند لازم است).
 
 اجرا:
     python3 analyze_decision_quality.py outputs/ppo_events.jsonl
@@ -33,11 +49,13 @@ from collections import defaultdict
 
 LOOKAHEAD_TICKS = 3          # چند تیک تصمیم بعدی را بررسی کنیم (۳ تیک = ۹۰ ثانیه با DECISION_INTERVAL_SEC=30)
 REJECTION_LOOKAHEAD_SEC = 90  # پنجره‌ی زمانی مشابه برای جست‌وجوی رد درخواست واقعی
+FLAPPING_DWELL_SEC = 300      # کمتر از این = flapping (۱۰ تیک تصمیم با DECISION_INTERVAL_SEC=30)
 
 
 def load_events(path: str):
     scale_by_service = defaultdict(list)   # service_id -> [رکورد scale_decision به ترتیب زمان]
     rejections_by_service = defaultdict(list)  # service_id -> [sim_time رد شدن]
+    provision_by_server = defaultdict(list)  # server_id -> [رکورد provision_decision اعمال‌شده به ترتیب زمان]
 
     with open(path, encoding="utf-8") as f:
         for line in f:
@@ -56,10 +74,44 @@ def load_events(path: str):
                 if sid is None:
                     continue
                 rejections_by_service[sid].append(rec.get("sim_time_sec"))
+            elif et == "provision_decision":
+                if not rec.get("applied"):
+                    continue
+                srv = rec.get("server_id")
+                if srv is None or rec.get("action") not in ("TURN_ON", "TURN_OFF"):
+                    continue
+                provision_by_server[srv].append(rec)
 
     for sid in scale_by_service:
         scale_by_service[sid].sort(key=lambda r: r["sim_time_sec"])
-    return scale_by_service, rejections_by_service
+    for srv in provision_by_server:
+        provision_by_server[srv].sort(key=lambda r: r["sim_time_sec"])
+    return scale_by_service, rejections_by_service, provision_by_server
+
+
+def classify_flapping(provision_by_server, dwell_threshold=FLAPPING_DWELL_SEC):
+    """
+    برای هر سرور، رکوردهای TURN_ON/TURN_OFF اعمال‌شده را به‌ترتیب زمان
+    می‌خواند و هر جفت متوالی (TURN_ON، سپس اولین TURN_OFF بعدی) را یک
+    «چرخه‌ی فعالیت» حساب می‌کند. dwell = مدت زمانی که سرور واقعاً ACTIVE
+    مانده (تقریب: server_off چند ثانیه بعد از خودِ provision_decision با
+    grace اتفاق می‌افتد؛ اینجا فاصله‌ی تصمیم تا تصمیم را به‌عنوان تقریب
+    مناسب و کافی برای تشخیص flapping در نظر می‌گیریم، نه معیار انرژی دقیق).
+    """
+    cycles = []  # (server_id, on_time, off_time, dwell_sec)
+    for srv, records in provision_by_server.items():
+        pending_on = None
+        for rec in records:
+            if rec["action"] == "TURN_ON":
+                pending_on = rec["sim_time_sec"]
+            elif rec["action"] == "TURN_OFF" and pending_on is not None:
+                dwell = rec["sim_time_sec"] - pending_on
+                cycles.append((srv, pending_on, rec["sim_time_sec"], dwell))
+                pending_on = None
+
+    flapping = [c for c in cycles if c[3] < dwell_threshold]
+    stable = [c for c in cycles if c[3] >= dwell_threshold]
+    return cycles, flapping, stable
 
 
 def had_rejection_within(rejections: list, start_time: float, end_time: float) -> bool:
@@ -124,8 +176,9 @@ def main():
         sys.exit(1)
 
     path = sys.argv[1]
-    scale_by_service, rejections_by_service = load_events(path)
+    scale_by_service, rejections_by_service, provision_by_server = load_events(path)
     result, examples = classify(scale_by_service, rejections_by_service)
+    cycles, flapping, stable = classify_flapping(provision_by_server)
 
     print(f"فایل: {path}")
     print(f"پنجره‌ی lookahead: {LOOKAHEAD_TICKS} تیک تصمیم\n")
@@ -160,6 +213,23 @@ def main():
               f"{sd['risky']} تا ({100*sd['risky']/sd_incorrect:.0f}%) به‌نظر واقعاً *مضر* می‌رسند "
               f"(بلافاصله بعدش کمبود/رد رخ داد)، "
               f"{sd['harmless_early']} تا ({100*sd['harmless_early']/sd_incorrect:.0f}%) بی‌ضرر بودند.")
+
+    print(f"\n=== TURN_ON/TURN_OFF flapping (آستانه‌ی dwell: {FLAPPING_DWELL_SEC} ثانیه) ===")
+    if cycles:
+        avg_dwell = sum(c[3] for c in cycles) / len(cycles)
+        print(f"  کل چرخه‌های کامل on->off: {len(cycles)}")
+        print(f"  flapping (dwell < {FLAPPING_DWELL_SEC}s): {len(flapping)}  "
+              f"({100*len(flapping)/len(cycles):.1f}%)")
+        print(f"  stable   (dwell >= {FLAPPING_DWELL_SEC}s): {len(stable)}  "
+              f"({100*len(stable)/len(cycles):.1f}%)")
+        print(f"  میانگین dwell همه‌ی چرخه‌ها: {avg_dwell:.0f} ثانیه (~{avg_dwell/60:.1f} دقیقه)")
+        if flapping:
+            worst = sorted(flapping, key=lambda c: c[3])[:5]
+            print("  ۵ چرخه‌ی کوتاه‌ترین (server_id, on_time, off_time, dwell_sec):")
+            for c in worst:
+                print(f"    {c}")
+    else:
+        print("  هیچ چرخه‌ی کامل TURN_ON->TURN_OFF یافت نشد (یا provision_decision در لاگ نیست).")
 
 
 if __name__ == "__main__":
