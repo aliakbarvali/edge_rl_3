@@ -24,6 +24,6 @@ class EventType(Enum):
 @dataclass(order=True)
 class Event:
     time: float
-    seq: int                       # tie-breaker پایدار برای رویدادهای هم‌زمان (FIFO)
+    seq: int                      
     type: EventType = field(compare=False)
     payload: Any = field(default=None, compare=False)
