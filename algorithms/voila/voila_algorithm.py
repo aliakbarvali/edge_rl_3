@@ -53,6 +53,7 @@ class VoilaAlgorithm(AlgorithmBase):
     OCC_UP_THRESHOLD = 0.75
     OCC_DOWN_THRESHOLD = 0.20
     SCALE_DOWN_PATIENCE_TICKS = 3
+    PROXIMITY_SUSTAIN_TICKS = 2 
     # *** جدید: چند تیک بعد از یک نقض proximity، از SCALE_DOWN همان سرویس
     # صرف‌نظر شود - تقریب محافظ‌کارانه‌ی مفهوم «رپلیکای vital» در Procedure 7
     # مقاله (چون AlgorithmBase انتخاب قربانی SCALE_DOWN را به engine واگذار
@@ -64,6 +65,8 @@ class VoilaAlgorithm(AlgorithmBase):
         self._good_streak: Dict[int, int] = {}
         self._proximity_recent: Dict[int, int] = {}
         self._last_snapshot: Optional[dict] = None
+         
+        self._proximity_violation_streak = {}  
 
     def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
         self._last_snapshot = metrics_snapshot
@@ -82,17 +85,17 @@ class VoilaAlgorithm(AlgorithmBase):
             return ScaleAction.SCALE_UP
 
         if proximity_violation:
-            # *** طبق Procedure 4/5: نقض proximity هم باید فعالانه رفع شود.
-            # چون این اینترفیس اکشن "replace" مستقیم ندارد، معادل دوتیکی‌اش
-            # اجرا می‌شود: یک SCALE_UP در مکان مناسب (select_placement_server
-            # از قبل demand_centroid-aware است و نزدیک تقاضای واقعی جا
-            # می‌گذارد)، و بعداً که SCALE_DOWN_PATIENCE سپری شد، رپلیکای
-            # کم‌فایده‌ی قدیمی توسط چرخه‌ی عادی زیر حذف می‌شود - قبلاً این‌جا
-            # فقط NO_CHANGE بود که عملاً هیچ اقدامی برای رفع Vlo نمی‌کرد.
+            streak = self._proximity_violation_streak.get(service_id, 0) + 1
+            self._proximity_violation_streak[service_id] = streak
             self._good_streak[service_id] = 0
+            if streak < self.PROXIMITY_SUSTAIN_TICKS:
+                return ScaleAction.NO_CHANGE   # هنوز به‌اندازه‌ی کافی پایدار نبوده
+            self._proximity_violation_streak[service_id] = 0
             self._proximity_recent[service_id] = self.PROXIMITY_MEMORY_TICKS
             return ScaleAction.SCALE_UP
 
+        self._proximity_violation_streak[service_id] = 0
+        
         self._good_streak[service_id] = self._good_streak.get(service_id, 0) + 1
         self._proximity_recent[service_id] = max(0, self._proximity_recent.get(service_id, 0) - 1)
 
@@ -148,16 +151,11 @@ class VoilaAlgorithm(AlgorithmBase):
                     ref = overloaded[0]
                     ref_lat, ref_lon = ref.lat, ref.long
                 elif starved_services:
-                    # *** فلسفه‌ی Voila: مرکز ثقل تقاضای واقعی سرویس‌های
-                    # starved را مرجع مکانی می‌گیریم (نه صرفاً سرور پرمشغول)،
-                    # چون این همان چیزی است که Voila را از Greedy متمایز
-                    # می‌کند - محل واقعی تقاضا، نه محل خودِ سرورها.
-                    centroids = [metrics_snapshot["services"][sid].get("demand_centroid")
-                                 for sid in starved_services]
-                    centroids = [c for c in centroids if c is not None]
-                    if centroids:
-                        ref_lat = sum(c[0] for c in centroids) / len(centroids)
-                        ref_lon = sum(c[1] for c in centroids) / len(centroids)
+                    worst = max(starved_services,
+                                key=lambda sid: metrics_snapshot["services"][sid]["rejection_rate"])
+                    centroid = metrics_snapshot["services"][worst].get("demand_centroid")
+                    if centroid:
+                        ref_lat, ref_lon = centroid
                     elif active:
                         ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
                         ref_lat, ref_lon = ref.lat, ref.long
@@ -197,3 +195,14 @@ class VoilaAlgorithm(AlgorithmBase):
             candidates.sort(key=lambda s: haversine_km(ref_lat, ref_lon, s.lat, s.long))
             steps.append(MigrationStep(service_id=service_id, target_server_id=candidates[0].id))
         return steps
+    
+    
+         
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now):
+        centroid = None
+        if self._last_snapshot is not None:
+            centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
+        if centroid is None or len(ready_replicas) <= 1:
+            return super().select_scale_down_victim(service_id, ready_replicas, servers, now)
+        return max(ready_replicas, key=lambda r: haversine_km(
+            centroid[0], centroid[1], servers[r.server_id].lat, servers[r.server_id].long))

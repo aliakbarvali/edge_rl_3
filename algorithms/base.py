@@ -118,6 +118,10 @@ class AlgorithmBase(ABC):
         matching = [s for s in candidates if s.profile == desired_profile]
         return matching if matching else candidates  # اگر پروفایل دلخواه در دسترس نبود -> همه‌ی کاندیدها
 
+    
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now): 
+        return min(ready_replicas, key=lambda r: r.queue_occupancy(now))
+
     @staticmethod
     def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server]) -> List[int]:
         """

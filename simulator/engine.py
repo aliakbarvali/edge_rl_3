@@ -38,7 +38,7 @@ from common.models import Server, Replica, Request, ServerState, ReplicaState, R
 from common.metrics import MetricsCollector
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionActionType
 from simulator.events import Event, EventType
-
+from collections import deque
 
 class SimulationEngine:
     def __init__(self, events_df: pd.DataFrame, algorithm: AlgorithmBase,
@@ -93,6 +93,8 @@ class SimulationEngine:
         # که یک اکشن SCALE_UP/DOWN واقعاً روی هر سرویس اعمال شد.
         self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
         self._service_last_scale_up_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
+        self._recent_positions: Dict[int, deque] = defaultdict(lambda: deque(maxlen=30))
+        
     # ------------------------------------------------------------------
     def _init_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -254,12 +256,10 @@ class SimulationEngine:
             self._log("migration_started", service_id=step.service_id,
                       from_server_id=server_id, to_server_id=step.target_server_id)
             self._place_replica(step.target_server_id, step.service_id)
-            self._log("migration_completed", service_id=step.service_id,
-                      from_server_id=server_id, to_server_id=step.target_server_id)
+            
             
             self._pending_migrations[(step.target_server_id, step.service_id)] = server_id
-            self._log("migration_started", server_id=server_id, service_id=step.service_id,
-                      target_server_id=step.target_server_id)
+    
 
         # سرویس‌هایی که مهاجرت نمی‌کنند (چندرپلیکایی/رپلیکای دیگری هم دارند)
         # طبق ۶.۲ فوراً DRAINING می‌شوند؛ سرویس‌های در حال مهاجرت را تا
@@ -397,15 +397,11 @@ class SimulationEngine:
         req.network_delay_ms = delay_ms
         req.assigned_server_id = server.id
 
-        if delay_ms > CFG.l0_ms:
+        if 2 * delay_ms > CFG.l0_ms:
             self._tick_proximity_violated[req.service_id] += 1
         
         
-        
-        
-        req._distance_km = distance_km
-        req.network_delay_ms = delay_ms
-        req.assigned_server_id = server.id
+         
         self._log("request_routed", request_id=req.id, service_id=req.service_id,
             server_id=server.id, distance_km=distance_km, network_delay_ms=delay_ms)
         cold_start_extra = 0.0
@@ -438,6 +434,8 @@ class SimulationEngine:
         self._tick_response_times.append(req.response_time_sec)
         self._log("request_completed", request_id=req.id, service_id=req.service_id,
                   server_id=server.id, response_time_sec=req.response_time_sec)
+        self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
+
         self._finalize_request(req)
 
     def _finalize_request(self, req: Request):
@@ -493,20 +491,24 @@ class SimulationEngine:
                 "state": s.state, "utilization": s.instantaneous_utilization(self.now),
                 "free_capacity": s.free_capacity(),
             }
+        def _medoid(points):
+            if not points:
+                return None
+            best, best_cost = points[0], float("inf")
+            for p in points:
+                cost = sum(haversine_km(p[0], p[1], q[0], q[1]) for q in points)
+                if cost < best_cost:
+                    best, best_cost = p, cost
+            return best
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(r.queue_occupancy(self.now) for r in ready) / len(ready)) if ready else 0.0
             if self._tick_total[svc_id] > 0:
-                new_lat = self._tick_lat_sum[svc_id] / self._tick_total[svc_id]
-                new_lon = self._tick_lon_sum[svc_id] / self._tick_total[svc_id]
-                if svc_id in self._service_demand_centroid:
-                    old_lat, old_lon = self._service_demand_centroid[svc_id]
-                    alpha = 0.3  # میانگین متحرک نمایی برای پایداری بین چرخه‌های کم‌درخواست
-                    new_lat = alpha * new_lat + (1 - alpha) * old_lat
-                    new_lon = alpha * new_lon + (1 - alpha) * old_lon
-                self._service_demand_centroid[svc_id] = (new_lat, new_lon)
+                
+                self._service_demand_centroid[svc_id] = _medoid(list(self._recent_positions[svc_id]))
+                #self._service_demand_centroid[svc_id] = (new_lat, new_lon)
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
@@ -529,8 +531,7 @@ class SimulationEngine:
         return snapshot
 
     def _apply_provisioning(self, action, snapshot: dict):
-        self._last_tick_decisions["provision"] = action
-        self._log("provision_decision", action=action.action.name, server_id=action.server_id)        
+        self._last_tick_decisions["provision"] = action      
         applied = False
         skip_reason = None 
         turn_on_necessary = (self._any_active_server_sustained_overloaded()
@@ -662,8 +663,7 @@ class SimulationEngine:
 
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):
         self._last_tick_decisions["scale"][svc_id] = decision
-        if decision != ScaleAction.NO_CHANGE:
-            self._log("scale_decision", service_id=svc_id, action=decision.name)
+            
         applied = False
         skip_reason = None
         necessary_up = self._was_scale_up_necessary(svc_id, snapshot)
@@ -698,8 +698,8 @@ class SimulationEngine:
             else:
                 ready = [r for r in self.replicas_by_service.get(svc_id, [])
                          if r.state == ReplicaState.READY]
-                if len(ready) > 1:  # حداقل ۱ رپلیکا همیشه باید بماند
-                    victim = min(ready, key=lambda r: r.queue_occupancy(self.now))
+                if len(ready) > 1:  
+                    victim = self.algorithm.select_scale_down_victim(svc_id, ready, self.servers, self.now)
                     self._start_replica_drain(victim)
                     self.metrics.record_scale_action("SCALE_DOWN")
                     self._service_last_scale_time[svc_id] = self.now

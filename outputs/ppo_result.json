@@ -42,10 +42,10 @@
       "correctness_rate_pct": 87.04402515723271
     },
     "TURN_OFF": {
-      "correct": 120,
-      "incorrect": 0,
+      "correct": 21,
+      "incorrect": 99,
       "missed_opportunities": 2335,
-      "correctness_rate_pct": 100.0
+      "correctness_rate_pct": 17.5
     }
   },
   "total_requests": 34137,

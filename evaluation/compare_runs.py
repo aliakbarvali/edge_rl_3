@@ -49,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="test", choices=["train", "test"])
     parser.add_argument("--output-dir", default="outputs")
+    
     args = parser.parse_args()
 
     from data.loader import load_train, load_test

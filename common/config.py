@@ -148,7 +148,9 @@ PPO_REWARD_WEIGHTS = {
 # قدیمی‌تر train.py/infer.py) هنوز به CFG.ppo_penalty_per_rejected ارجاع
 # می‌دهد، آن ارجاع باید حذف/به w5_rejected منتقل شود.
 PPO_PENALTY_PER_ACTION = 0.01
-SEED = 43
+SEED = 42
+#python -m evaluation.compare_runs --output-dir outputs/seed44
+
 
 
 @dataclass(frozen=True)

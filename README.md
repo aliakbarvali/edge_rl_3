@@ -32,7 +32,10 @@ python -m algorithms.ppo.train
 python -m evaluation.compare_runs --data test
 
 # تحلیل کیفیت تصمیمات یک اجرا (SCALE_UP/DOWN با lookahead + flapping سرور)
-python3 analyze_decision_quality.py outputs/greedy_events.jsonl
+python analyze_decision_quality.py outputs/greedy_events.jsonl
+python analyze_decision_quality.py outputs/ppo_events.jsonl
+python analyze_decision_quality.py outputs/voila_events.jsonl
+
 ```
 
 > **نکته‌ی reproducibility:** `algorithms/ppo/ppo_model.zip` در ریپو commit
