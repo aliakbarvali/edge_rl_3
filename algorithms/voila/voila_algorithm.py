@@ -50,46 +50,55 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 
 class VoilaAlgorithm(AlgorithmBase):
     name = "voila"
-
-    # --- آستانه‌های heuristic اختصاصی Voila (نه قید سخت سیستم؛ در config.py
-    # نیستند چون مختص سیاست تصمیم‌گیری این الگوریتم‌اند، نه فیزیک سیستم) ---
-    OCC_UP_THRESHOLD = 0.75    # مشابه co مقاله: اشغال صف بالاتر از این = نقض ظرفیت (Vco)
-    OCC_DOWN_THRESHOLD = 0.20  # زیر این = این replica کم‌بار است
-    SCALE_DOWN_PATIENCE_TICKS = 3  # طبق بخش V-C مقاله: «۳ چرخه بدون نقض»
+    OCC_UP_THRESHOLD = 0.75
+    OCC_DOWN_THRESHOLD = 0.20
+    SCALE_DOWN_PATIENCE_TICKS = 3
+    # *** جدید: چند تیک بعد از یک نقض proximity، از SCALE_DOWN همان سرویس
+    # صرف‌نظر شود - تقریب محافظ‌کارانه‌ی مفهوم «رپلیکای vital» در Procedure 7
+    # مقاله (چون AlgorithmBase انتخاب قربانی SCALE_DOWN را به engine واگذار
+    # می‌کند - مشترک بین هر ۴ الگوریتم - Voila نمی‌تواند یک رپلیکای مشخص را
+    # مستقیماً "محافظت‌شده" اعلام کند؛ این نزدیک‌ترین معادل قابل‌اجرا است).
+    PROXIMITY_MEMORY_TICKS = 5
 
     def __init__(self):
         self._good_streak: Dict[int, int] = {}
+        self._proximity_recent: Dict[int, int] = {}
         self._last_snapshot: Optional[dict] = None
 
-    # ------------------------------------------------------------------
     def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
-        self._last_snapshot = metrics_snapshot  # برای select_placement_server همین تیک
+        self._last_snapshot = metrics_snapshot
         sv = metrics_snapshot["services"][service_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
-        # Procedure 4 مقاله: نقض ظرفیت (Vco) - نیاز واقعی به ظرفیت بیشتر
+        # Vco (Procedure 4): نقض ظرفیت واقعی
         capacity_violation = occ_ratio > self.OCC_UP_THRESHOLD or sv["rejection_rate"] > 0.0
-        # *** پچ: نقض تاخیر/مکان (Vlo) - قبلاً این‌جا اصلاً چک نمی‌شد؛ بدون
-        # آن یک سرویس با مشکل proximity (نه ظرفیت) می‌توانست اشتباهاً
-        # SCALE_DOWN بخورد چون occ_ratio پایین به‌تنهایی «کم‌باری» تلقی
-        # می‌شد. طبق Procedure 4 مقاله، این هم باید نقض حساب شود.
-        proximity_violation = (not capacity_violation) and sv["deadline_violation_rate"] > 0.0
+        # *** Vlo واقعی حالا از proximity_violation_rate (RTT>l0 خالص) می‌آید،
+        # نه از deadline_violation_rate که پروکسی نویزی بود.
+        proximity_violation = (not capacity_violation) and sv["proximity_violation_rate"] > 0.0
 
         if capacity_violation:
             self._good_streak[service_id] = 0
+            self._proximity_recent[service_id] = 0
             return ScaleAction.SCALE_UP
 
         if proximity_violation:
-            # نقض واقعی وجود دارد ولی از نوع مکان است نه ظرفیت؛ افزودن
-            # replica جدید هزینه‌ی بی‌مورد است (Procedure 5 مقاله اول
-            # replacement را امتحان می‌کند) - این اینترفیس اکشن replace
-            # مستقیم ندارد، پس فقط جلوی SCALE_DOWN اشتباه گرفته می‌شود و
-            # اصلاح مکان به select_placement_server/migration_decision
-            # (که هر دو demand_centroid-aware هستند) واگذار می‌شود.
+            # *** طبق Procedure 4/5: نقض proximity هم باید فعالانه رفع شود.
+            # چون این اینترفیس اکشن "replace" مستقیم ندارد، معادل دوتیکی‌اش
+            # اجرا می‌شود: یک SCALE_UP در مکان مناسب (select_placement_server
+            # از قبل demand_centroid-aware است و نزدیک تقاضای واقعی جا
+            # می‌گذارد)، و بعداً که SCALE_DOWN_PATIENCE سپری شد، رپلیکای
+            # کم‌فایده‌ی قدیمی توسط چرخه‌ی عادی زیر حذف می‌شود - قبلاً این‌جا
+            # فقط NO_CHANGE بود که عملاً هیچ اقدامی برای رفع Vlo نمی‌کرد.
             self._good_streak[service_id] = 0
-            return ScaleAction.NO_CHANGE
+            self._proximity_recent[service_id] = self.PROXIMITY_MEMORY_TICKS
+            return ScaleAction.SCALE_UP
 
         self._good_streak[service_id] = self._good_streak.get(service_id, 0) + 1
+        self._proximity_recent[service_id] = max(0, self._proximity_recent.get(service_id, 0) - 1)
+
+        if self._proximity_recent.get(service_id, 0) > 0:
+            return ScaleAction.NO_CHANGE
+
         if (self._good_streak[service_id] >= self.SCALE_DOWN_PATIENCE_TICKS and
                 occ_ratio < self.OCC_DOWN_THRESHOLD and sv["n_replicas"] > 1):
             self._good_streak[service_id] = 0

@@ -65,6 +65,8 @@ class SimulationEngine:
         self._tick_lon_sum = defaultdict(float)
         self._tick_violated = defaultdict(int)
         self._tick_response_times: List[float] = []
+        self._tick_proximity_violated = defaultdict(int)
+        
         self._energy_at_last_tick = 0.0
         self._last_tick_decisions = {"provision": None, "scale": {}}
 
@@ -90,7 +92,7 @@ class SimulationEngine:
         # پیاده نشده بود (فقط سرور cooldown داشت، نه سرویس). آخرین لحظه‌ای
         # که یک اکشن SCALE_UP/DOWN واقعاً روی هر سرویس اعمال شد.
         self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
-
+        self._service_last_scale_up_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
     # ------------------------------------------------------------------
     def _init_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -249,7 +251,12 @@ class SimulationEngine:
         # همچنان یک کاندید معتبر برای Router باقی می‌ماند (سرویس هرگز بدون
         # replica نمی‌ماند).
         for step in steps:
+            self._log("migration_started", service_id=step.service_id,
+                      from_server_id=server_id, to_server_id=step.target_server_id)
             self._place_replica(step.target_server_id, step.service_id)
+            self._log("migration_completed", service_id=step.service_id,
+                      from_server_id=server_id, to_server_id=step.target_server_id)
+            
             self._pending_migrations[(step.target_server_id, step.service_id)] = server_id
             self._log("migration_started", server_id=server_id, service_id=step.service_id,
                       target_server_id=step.target_server_id)
@@ -385,10 +392,22 @@ class SimulationEngine:
         server = self.servers[chosen.server_id]
         distance_km = haversine_km(req.bts_lat, req.bts_long, server.lat, server.long)
         delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
+        
         req._distance_km = distance_km
         req.network_delay_ms = delay_ms
         req.assigned_server_id = server.id
 
+        if delay_ms > CFG.l0_ms:
+            self._tick_proximity_violated[req.service_id] += 1
+        
+        
+        
+        
+        req._distance_km = distance_km
+        req.network_delay_ms = delay_ms
+        req.assigned_server_id = server.id
+        self._log("request_routed", request_id=req.id, service_id=req.service_id,
+            server_id=server.id, distance_km=distance_km, network_delay_ms=delay_ms)
         cold_start_extra = 0.0
         if chosen.ready_since is not None and (self.now - chosen.ready_since) <= CFG.cold_start_window_sec:
             cold_start_extra = CFG.cold_start_penalty_sec
@@ -407,6 +426,8 @@ class SimulationEngine:
         req.service_start_time = admit["service_start_time"]
         req.service_end_time = admit["service_end_time"]
         req.wait_time_sec = admit["wait_time_sec"]
+        self._log("request_queued", request_id=req.id, service_id=req.service_id,
+                  server_id=server.id, wait_time_sec=req.wait_time_sec)        
         # بخش ۳: response_time = ۲×network_delay (رفت+برگشت) + wait + exec (+cold start در exec لحاظ شد)
         req.response_time_sec = (2 * delay_ms / 1000.0) + req.wait_time_sec + \
                                  (req.service_end_time - req.service_start_time)
@@ -459,6 +480,7 @@ class SimulationEngine:
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
+                "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
             }
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
                                "num_rejected_recent": 0}
@@ -494,6 +516,7 @@ class SimulationEngine:
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
+                "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
             }
         current_energy = sum(s.cumulative_energy_joule for s in self.servers.values())
         snapshot["global"] = {
@@ -507,6 +530,7 @@ class SimulationEngine:
 
     def _apply_provisioning(self, action, snapshot: dict):
         self._last_tick_decisions["provision"] = action
+        self._log("provision_decision", action=action.action.name, server_id=action.server_id)        
         applied = False
         skip_reason = None 
         turn_on_necessary = (self._any_active_server_sustained_overloaded()
@@ -537,7 +561,6 @@ class SimulationEngine:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
             turn_off_necessary = self._was_turn_off_necessary(action.server_id)
-            # *** محافظ سیستمی: هرگز آخرین سرور فعال را drain نکن.
             if s.state != ServerState.ACTIVE:
                 skip_reason = "not_active"
             elif not turn_off_necessary:
@@ -546,7 +569,9 @@ class SimulationEngine:
                 skip_reason = "last_active_server"
             elif s.in_cooldown(self.now, CFG.cooldown_sec):
                 skip_reason = "cooldown"
-            else:
+            elif (self.now - s.last_transition_time) < CFG.min_active_duration_sec:
+                skip_reason = "min_active_duration"
+            else: 
                 if self._start_server_drain(action.server_id):
                     self.metrics.record_scale_action("TURN_OFF")
                     applied = True
@@ -637,6 +662,8 @@ class SimulationEngine:
 
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):
         self._last_tick_decisions["scale"][svc_id] = decision
+        if decision != ScaleAction.NO_CHANGE:
+            self._log("scale_decision", service_id=svc_id, action=decision.name)
         applied = False
         skip_reason = None
         necessary_up = self._was_scale_up_necessary(svc_id, snapshot)
@@ -657,24 +684,29 @@ class SimulationEngine:
                 if placed is not None:
                     self.metrics.record_scale_action("SCALE_UP")
                     self._service_last_scale_time[svc_id] = self.now
+                    self._service_last_scale_up_time[svc_id] = self.now
                     applied = True
                     self.metrics.record_decision_correctness("SCALE_UP", necessary_up)
                 else:
                     skip_reason = "placement_failed"
             else:
                 skip_reason = "no_target_server"
-        elif decision == ScaleAction.SCALE_DOWN:
-            ready = [r for r in self.replicas_by_service.get(svc_id, [])
-                     if r.state == ReplicaState.READY]
-            if len(ready) > 1:  # حداقل ۱ رپلیکا همیشه باید بماند
-                victim = min(ready, key=lambda r: r.queue_occupancy(self.now))
-                self._start_replica_drain(victim)
-                self.metrics.record_scale_action("SCALE_DOWN")
-                self._service_last_scale_time[svc_id] = self.now
-                applied = True
-                self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
+        elif decision == ScaleAction.SCALE_DOWN: 
+            since_last_up = self.now - self._service_last_scale_up_time[svc_id]
+            if since_last_up < CFG.min_replica_age_before_scale_down_sec:
+                skip_reason = "recent_scale_up"
             else:
-                skip_reason = "only_one_replica_left"
+                ready = [r for r in self.replicas_by_service.get(svc_id, [])
+                         if r.state == ReplicaState.READY]
+                if len(ready) > 1:  # حداقل ۱ رپلیکا همیشه باید بماند
+                    victim = min(ready, key=lambda r: r.queue_occupancy(self.now))
+                    self._start_replica_drain(victim)
+                    self.metrics.record_scale_action("SCALE_DOWN")
+                    self._service_last_scale_time[svc_id] = self.now
+                    applied = True
+                    self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
+                else:
+                    skip_reason = "only_one_replica_left"
 
         # *** بخش ۸: فرصت ازدست‌رفته - صرف‌نظر از تصمیم این تیک، آیا طبق
         # معیار مستقل واقعاً SCALE_UP/DOWN لازم بود ولی اعمال نشد؟
@@ -738,6 +770,7 @@ class SimulationEngine:
         self._tick_response_times.clear()
         self._tick_lat_sum.clear()
         self._tick_lon_sum.clear()
+        self._tick_proximity_violated.clear()
         return snapshot
 
     # ------------------------------------------------------------------

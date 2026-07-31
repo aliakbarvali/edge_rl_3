@@ -87,6 +87,10 @@ BOOT_DELAY_SEC = 30.0
 POD_STARTUP_DELAY_SEC = 5.0
 GRACEFUL_TERMINATION_DELAY_SEC = 10.0
 SERVER_DRAIN_GRACE_SEC = 15.0
+MIN_ACTIVE_DURATION_SEC = 300.0  # حداقل مدت ACTIVE بودن قبل از واجد شرایط TURN_OFF
+                                   # (ضد flapping - طبق تحلیل analyze_decision_quality.py:
+                                   #  ۹۱-۹۶٪ چرخه‌های on/off زیر ۵ دقیقه dwell داشتند)
+MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC = 120.0
 
 COLD_START_WINDOW_SEC = 10.0
 COLD_START_PENALTY_SEC = 1.0
@@ -144,7 +148,7 @@ PPO_REWARD_WEIGHTS = {
 # قدیمی‌تر train.py/infer.py) هنوز به CFG.ppo_penalty_per_rejected ارجاع
 # می‌دهد، آن ارجاع باید حذف/به w5_rejected منتقل شود.
 PPO_PENALTY_PER_ACTION = 0.01
-SEED = 42
+SEED = 43
 
 
 @dataclass(frozen=True)
@@ -186,6 +190,7 @@ class Config:
     ppo_reward_weights: dict = field(default_factory=lambda: PPO_REWARD_WEIGHTS)
     ppo_penalty_per_action: float = PPO_PENALTY_PER_ACTION
     seed: int = SEED
-
+    min_active_duration_sec: float = MIN_ACTIVE_DURATION_SEC
+    min_replica_age_before_scale_down_sec: float = MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC
 
 CFG = Config()

@@ -194,6 +194,7 @@ def main(total_timesteps: int = 3_000_000, bc_epochs: int = 25, window_hours: fl
     model = MaskablePPO(
         "MlpPolicy", vec_env, verbose=1, policy_kwargs=PPO_POLICY_KWARGS,
         n_steps=2048, batch_size=256, gamma=0.99, learning_rate=3e-4, seed=CFG.seed,
+        ent_coef=0.01,
         tensorboard_log=TENSORBOARD_DIR,
     )
 
@@ -201,12 +202,16 @@ def main(total_timesteps: int = 3_000_000, bc_epochs: int = 25, window_hours: fl
     behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,
                                log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv"))
 
-    print(f"در حال آموزش PPO (fine-tune با RL، {n_envs} محیط موازی، {total_timesteps} timestep) ...")
-    # *** tb_log_name ثابت تا هر بار اجرا با پسوند خودکار sb3 (PPO_1, PPO_2, ...)
-    # زیر یک پوشه‌ی مشترک قابل‌مقایسه در TensorBoard جمع شود.
-    model.learn(total_timesteps=total_timesteps, progress_bar=True, tb_log_name="ppo_run")
+    from stable_baselines3.common.callbacks import CheckpointCallback
+    checkpoint_cb = CheckpointCallback(
+        save_freq=max(200_000 // n_envs, 1), save_path=os.path.join(LOG_DIR, "checkpoints"),
+        name_prefix="ppo_ckpt")
 
-    model.save(MODEL_PATH)
+    print(f"در حال آموزش PPO (fine-tune با RL، {n_envs} محیط موازی، {total_timesteps} timestep) ...")
+    model.learn(total_timesteps=total_timesteps, progress_bar=True,
+                tb_log_name="ppo_run", callback=checkpoint_cb)
+
+    model.save(MODEL_PATH) 
     vec_env.save(MODEL_PATH.replace(".zip", "_vecnormalize.pkl"))
     print(f"مدل ذخیره شد: {MODEL_PATH}")
     print(f"آمار VecNormalize ذخیره شد: {MODEL_PATH.replace('.zip', '_vecnormalize.pkl')}")

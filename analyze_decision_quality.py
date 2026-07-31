@@ -47,7 +47,7 @@ import json
 import sys
 from collections import defaultdict
 
-LOOKAHEAD_TICKS = 3          # چند تیک تصمیم بعدی را بررسی کنیم (۳ تیک = ۹۰ ثانیه با DECISION_INTERVAL_SEC=30)
+LOOKAHEAD_TICKS = 15          # چند تیک تصمیم بعدی را بررسی کنیم (۳ تیک = ۹۰ ثانیه با DECISION_INTERVAL_SEC=30)
 REJECTION_LOOKAHEAD_SEC = 90  # پنجره‌ی زمانی مشابه برای جست‌وجوی رد درخواست واقعی
 FLAPPING_DWELL_SEC = 300      # کمتر از این = flapping (۱۰ تیک تصمیم با DECISION_INTERVAL_SEC=30)
 

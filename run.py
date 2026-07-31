@@ -49,11 +49,6 @@ def main():
     parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
 
-    if args.mode == "k8s":
-        raise SystemExit(
-            "mode=k8s (اجرای واقعی روی کوبرنتیز) فاز ۳ است و هنوز پیاده نشده "
-            "(k8s_adapter/ طبق بخش ۱۲ سند). فعلاً فقط --mode sim پشتیبانی می‌شود."
-        )
 
     os.makedirs(args.output_dir, exist_ok=True)
     events = load_data(args.data)
@@ -61,9 +56,18 @@ def main():
     logger = EventLogger(os.path.join(args.output_dir, f"{args.algorithm}_events.jsonl"),
                           algorithm=args.algorithm)
 
-    engine = SimulationEngine(events, algorithm, args.algorithm, event_logger=logger)
-    result = engine.run()
+    if args.mode == "k8s":
+        import asyncio
+        from k8s_adapter.realtime_dispatcher import RealtimeEngine
+        engine = RealtimeEngine(events, algorithm, args.algorithm, event_logger=logger)
+        result = asyncio.run(engine.run())
+    else:
+        engine = SimulationEngine(events, algorithm, args.algorithm, event_logger=logger)
+        result = engine.run()
+
     logger.close()
+    
+    
 
     out_path = os.path.join(args.output_dir, f"{args.algorithm}_result.json")
     with open(out_path, "w", encoding="utf-8") as f:
