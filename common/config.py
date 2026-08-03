@@ -83,6 +83,17 @@ BASE_LATENCY_MS = 2.0
 K_MS_PER_KM = 0.02
 L0_MS = 20.0
 
+# *** رفع باگ (بازبینی: proximity_violation_rate همیشه صفر بود): L0_MS بالا
+# برای «پوشش اولیه» (بخش ۴ سند، initial_placement) کالیبره شده و مقداری
+# سخاوتمندانه است. اما وقتی همان L0_MS برای متریک لحظه‌ای proximity_violation
+# (Vlo مقاله‌ی VOILA) هم استفاده می‌شد، هرگز trigger نمی‌شد: حداکثر تأخیر
+# رفت‌وبرگشت ممکن داخل کل محدوده‌ی جغرافیایی پیکربندی‌شده فقط ~۱۱.۳ میلی‌ثانیه
+# است (فاصله‌ی حداکثر ۱۸۲ کیلومتر × k_ms_per_km × ۲) - همیشه زیر ۲۰. یک ثابت
+# مستقل و در مقیاس واقعی تأخیرهای این پروژه (چند میلی‌ثانیه) لازم است. مقدار
+# ۴.۰ حدوداً میانه‌ی بازه‌ی واقعی تأخیر رفت‌وبرگشت (۴ تا ۱۱.۳ میلی‌ثانیه) است -
+# بخش ۱۳ سند: قابل کالیبراسیون بیشتر با داده‌ی واقعی.
+PROXIMITY_L0_MS = 4.0
+
 BOOT_DELAY_SEC = 30.0
 POD_STARTUP_DELAY_SEC = 5.0
 GRACEFUL_TERMINATION_DELAY_SEC = 10.0
@@ -143,13 +154,14 @@ PPO_REWARD_WEIGHTS = {
     "w4_load_balance": 0.23,
     "w5_rejected": 0.15,
 }
-# *** PPO_PENALTY_PER_REJECTED حذف شد: env.py دیگر جریمه‌ی رد را جداگانه و
-# نرمال‌نشده اعمال نمی‌کند (نگاه کنید بالا)؛ اگر کد دیگری (مثلاً نسخه‌ی
-# قدیمی‌تر train.py/infer.py) هنوز به CFG.ppo_penalty_per_rejected ارجاع
-# می‌دهد، آن ارجاع باید حذف/به w5_rejected منتقل شود.
+
 PPO_PENALTY_PER_ACTION = 0.01
-SEED = 42
-#python -m evaluation.compare_runs --output-dir outputs/seed44
+# *** قابل override با env var (هم‌راستا با الگوی EOTCH_DATA_DIR بالا)، تا
+# اجرای چند-seed (algorithms/ppo/train.py + evaluation/aggregate_seeds.py)
+# نیازی به ویرایش دستی این فایل قبل از هر اجرا نداشته باشد:
+#   EOTCH_SEED=44 python3 -m algorithms.ppo.train
+#   EOTCH_SEED=44 python3 -m evaluation.compare_runs --output-dir outputs/seed44
+SEED = int(_os.environ.get("EOTCH_SEED", "42"))
 
 
 
@@ -172,6 +184,7 @@ class Config:
     base_latency_ms: float = BASE_LATENCY_MS
     k_ms_per_km: float = K_MS_PER_KM
     l0_ms: float = L0_MS
+    proximity_l0_ms: float = PROXIMITY_L0_MS
     boot_delay_sec: float = BOOT_DELAY_SEC
     pod_startup_delay_sec: float = POD_STARTUP_DELAY_SEC
     graceful_termination_delay_sec: float = GRACEFUL_TERMINATION_DELAY_SEC

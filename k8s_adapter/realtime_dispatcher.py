@@ -295,7 +295,22 @@ class RealtimeEngine:
                     ready = [r for r in self.replicas_by_service.get(svc_id, [])
                              if r.state == ReplicaState.READY]
                     if len(ready) > 1:
-                        victim = min(ready, key=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
+                        # *** رفع ناهماهنگی مهم (بازبینی): قبلاً اینجا همیشه
+                        # min-by-occupancy هاردکد بود، بدون توجه به این‌که
+                        # الگوریتم (مثلاً VoilaAlgorithm) select_scale_down_victim
+                        # سفارشی خودش را override کرده - دقیقاً همان کلاس
+                        # مشکلی که قبلاً برای migration_decision در
+                        # algorithms/ppo/env.py رفع شده بود (رفتار متفاوت
+                        # آموزش/شبیه‌سازی در برابر اجرای واقعی). چون در فاز ۳
+                        # اشغال صف واقعی از Redis می‌آید نه از شیء Replica
+                        # سایه، از طریق occupancy_fn تزریق می‌شود.
+                        victim = self.algorithm.select_scale_down_victim(
+                            svc_id, ready, self.servers, time.monotonic(),
+                            occupancy_fn=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
+                        
+                        
+                                      
+                                      
                         asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
                         self.metrics.record_scale_action("SCALE_DOWN")
 
@@ -358,7 +373,8 @@ class RealtimeEngine:
         deadline = CFG.services_info[req.service_id]["deadline"]
         t0 = time.monotonic()
         try:
-            resp = await http_client.post(f"http://{ip}:8000/process", json={"request_id": req.id},
+            port = k8s_client.worker_port(req.service_id)
+            resp = await http_client.post(f"http://{ip}:{port}/process", json={"request_id": req.id},
                                            timeout=deadline + 10)
             resp.raise_for_status()
             ok = True

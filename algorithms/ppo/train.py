@@ -33,7 +33,8 @@ from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
 from algorithms.ppo.env import EdgeResourceEnv, _SERVICE_IDS, _SERVER_IDS
 from simulator.engine import SimulationEngine
 
-MODEL_PATH = os.path.join(os.path.dirname(__file__), "ppo_model.zip")
+
+MODEL_PATH = os.path.join(os.path.dirname(__file__), f"ppo_model_seed{CFG.seed}.zip")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "logs")
 MONITOR_DIR = os.path.join(LOG_DIR, "monitor")
 TENSORBOARD_DIR = os.path.join(LOG_DIR, "tensorboard")

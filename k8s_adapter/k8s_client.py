@@ -35,7 +35,7 @@ except ImportError as e:
 from common.config import CFG
 
 NAMESPACE = "edge-rl"
-WORKER_IMAGE = "CHANGE_ME/edge-worker:latest"  # *** بعد از push کردن image خودتان اینجا را عوض کنید
+WORKER_IMAGE = "192.168.1.30:5000/edge-worker:latest"
 NODE_LABEL_KEY = "edge-server-id"
 
 # *** تبدیل واحد انتزاعی cpu_demand این پروژه به میلی‌سی‌پی‌یوی واقعی K8s.
@@ -60,6 +60,17 @@ def _deployment_name(service_id: int, server_id: int) -> str:
     return f"svc{service_id}-srv{server_id}"
 
 
+def worker_port(service_id: int) -> int:
+    """
+    *** پورت اختصاصیِ هر سرویس (نه هر پاد). چون از این پس با hostNetwork=True
+    اجرا می‌کنیم، اگر چند سرویس روی یک نود زمان‌بندی بشن، همه روی IP واقعیِ
+    همان نود گوش می‌دهند و اگر همه پورت ثابت 8000 داشتند تداخل پیش می‌آمد؛
+    پس هر service_id پورت خودش را می‌گیرد (دقیقاً همان الگویی که در
+    پروژه‌ی قبلی‌تان با SERVICE_PORT = SERVICE_ID + 8000 کار می‌کرد).
+    """
+    return 8000 + service_id
+
+
 # ---------------------------------------------------------------------------
 # Deployment (رپلیکا) - ایجاد/حذف/وضعیت
 # ---------------------------------------------------------------------------
@@ -68,22 +79,24 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
     svc = CFG.services_info[service_id]
     name = _deployment_name(service_id, server_id)
     cpu_millicpu = svc["cpu_demand"] * CPU_UNIT_TO_MILLICPU
+    port = worker_port(service_id)
 
     container = client.V1Container(
         name="worker",
         image=WORKER_IMAGE,
-        ports=[client.V1ContainerPort(container_port=8000)],
+        ports=[client.V1ContainerPort(container_port=port, host_port=port)],
         env=[
             client.V1EnvVar(name="EXEC_TIME_SEC", value=str(svc["exec_time"])),
             client.V1EnvVar(name="SERVICE_ID", value=str(service_id)),
             client.V1EnvVar(name="SERVER_ID", value=str(server_id)),
+            client.V1EnvVar(name="SERVICE_PORT", value=str(port)),
         ],
         resources=client.V1ResourceRequirements(
             requests={"cpu": f"{cpu_millicpu}m", "memory": svc["memory"]},
             limits={"cpu": f"{cpu_millicpu}m", "memory": svc["memory"]},
         ),
         readiness_probe=client.V1Probe(
-            http_get=client.V1HTTPGetAction(path="/healthz", port=8000),
+            http_get=client.V1HTTPGetAction(path="/healthz", port=port),
             initial_delay_seconds=1, period_seconds=2, failure_threshold=3,
         ),
     )
@@ -94,6 +107,12 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
         spec=client.V1PodSpec(
             containers=[container],
             node_selector={NODE_LABEL_KEY: str(server_id)},
+            # *** کلید اصلی رفع مشکل timeout: با hostNetwork=True، پاد روی
+            # IP واقعی نود (192.168.1.x) گوش می‌دهد و pod.status.pod_ip هم
+            # همان IP واقعی نود را برمی‌گرداند - یعنی از ماشین base مستقیماً
+            # reachable است (برخلاف IP overlay شبکه‌ی CNI که قبلاً برمی‌گشت).
+            host_network=True,
+            dns_policy="ClusterFirstWithHostNet",
         ),
     )
 

@@ -397,7 +397,9 @@ class SimulationEngine:
         req.network_delay_ms = delay_ms
         req.assigned_server_id = server.id
 
-        if 2 * delay_ms > CFG.l0_ms:
+        # *** رفع باگ: قبلاً از CFG.l0_ms (ثابت پوشش اولیه، خیلی سخاوتمندانه)
+        # استفاده می‌شد که هرگز trigger نمی‌شد - نگاه کنید common/config.py:PROXIMITY_L0_MS.
+        if 2 * delay_ms > CFG.proximity_l0_ms:
             self._tick_proximity_violated[req.service_id] += 1
         
         

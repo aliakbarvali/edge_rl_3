@@ -85,7 +85,8 @@ def test_deployment_roundtrip():
         print(f"   ✓ پاد Ready شد، IP={ip}")
 
         print("   ... ارسال یک درخواست واقعی HTTP ...")
-        resp = httpx.post(f"http://{ip}:8000/process", json={"request_id": 1}, timeout=15)
+        port = k8s_client.worker_port(1)
+        resp = httpx.post(f"http://{ip}:{port}/process", json={"request_id": 1}, timeout=15)
         resp.raise_for_status()
         print(f"   ✓ پاسخ دریافت شد: {resp.json()}")
         return True

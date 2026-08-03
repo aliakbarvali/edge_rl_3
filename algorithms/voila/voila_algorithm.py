@@ -50,23 +50,23 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 
 class VoilaAlgorithm(AlgorithmBase):
     name = "voila"
-    OCC_UP_THRESHOLD = 0.75
+    OCC_UP_THRESHOLD = 0.68
     OCC_DOWN_THRESHOLD = 0.20
     SCALE_DOWN_PATIENCE_TICKS = 3
-    PROXIMITY_SUSTAIN_TICKS = 2 
-    # *** جدید: چند تیک بعد از یک نقض proximity، از SCALE_DOWN همان سرویس
-    # صرف‌نظر شود - تقریب محافظ‌کارانه‌ی مفهوم «رپلیکای vital» در Procedure 7
-    # مقاله (چون AlgorithmBase انتخاب قربانی SCALE_DOWN را به engine واگذار
-    # می‌کند - مشترک بین هر ۴ الگوریتم - Voila نمی‌تواند یک رپلیکای مشخص را
-    # مستقیماً "محافظت‌شده" اعلام کند؛ این نزدیک‌ترین معادل قابل‌اجرا است).
-    PROXIMITY_MEMORY_TICKS = 5
+    # *** رفع باگ: مقدار قبلی (۱) عملاً هیچ اثر sustain/debounce نداشت، چون
+    # streak=1 در همان اولین تیک نقض هم شرط streak<PROXIMITY_SUSTAIN_TICKS
+    # را رد می‌کرد. حالا با فعال‌شدن واقعی سیگنال proximity (common/config.py)،
+    # ۲ تیک متوالی لازم است تا از نویز لحظه‌ای تفکیک شود.
+    PROXIMITY_SUSTAIN_TICKS = 2
+    PROXIMITY_PROTECTION_TICKS = 3
+   
 
     def __init__(self):
         self._good_streak: Dict[int, int] = {}
-        self._proximity_recent: Dict[int, int] = {}
         self._last_snapshot: Optional[dict] = None
-         
-        self._proximity_violation_streak = {}  
+
+        self._proximity_violation_streak: Dict[int, int] = {} 
+        self._proximity_recent: Dict[int, int] = {}
 
     def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
         self._last_snapshot = metrics_snapshot
@@ -78,10 +78,10 @@ class VoilaAlgorithm(AlgorithmBase):
         # *** Vlo واقعی حالا از proximity_violation_rate (RTT>l0 خالص) می‌آید،
         # نه از deadline_violation_rate که پروکسی نویزی بود.
         proximity_violation = (not capacity_violation) and sv["proximity_violation_rate"] > 0.0
-
+        
         if capacity_violation:
             self._good_streak[service_id] = 0
-            self._proximity_recent[service_id] = 0
+            self._proximity_violation_streak[service_id] = 0
             return ScaleAction.SCALE_UP
 
         if proximity_violation:
@@ -89,9 +89,9 @@ class VoilaAlgorithm(AlgorithmBase):
             self._proximity_violation_streak[service_id] = streak
             self._good_streak[service_id] = 0
             if streak < self.PROXIMITY_SUSTAIN_TICKS:
-                return ScaleAction.NO_CHANGE   # هنوز به‌اندازه‌ی کافی پایدار نبوده
-            self._proximity_violation_streak[service_id] = 0
-            self._proximity_recent[service_id] = self.PROXIMITY_MEMORY_TICKS
+                return ScaleAction.NO_CHANGE   
+            self._proximity_violation_streak[service_id] = 0 
+            self._proximity_recent[service_id] = self.PROXIMITY_PROTECTION_TICKS
             return ScaleAction.SCALE_UP
 
         self._proximity_violation_streak[service_id] = 0
@@ -118,18 +118,21 @@ class VoilaAlgorithm(AlgorithmBase):
             return None
 
         centroid = None
+            
         if self._last_snapshot is not None:
             centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
         if centroid is None:
-            # هنوز داده‌ی کافی از موقعیت درخواست‌های این سرویس نداریم -> نزدیک‌ترین
-            # به مرکز ثقل سرورهای فعال فعلی (fallback معقول، مثل Greedy)
             active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
             clat = sum(s.lat for s in active) / len(active)
             clon = sum(s.long for s in active) / len(active)
             centroid = (clat, clon)
-
-        candidates.sort(key=lambda s: haversine_km(centroid[0], centroid[1], s.lat, s.long))
-        return candidates[0].id
+ 
+        distances = {s.id: haversine_km(centroid[0], centroid[1], s.lat, s.long) for s in candidates}
+        min_dist = min(distances.values()) 
+        near_pool = [s for s in candidates if distances[s.id] <= min_dist + 5.0]
+        return max(near_pool, key=lambda s: s.free_capacity()).id
+    
+ 
 
     # ------------------------------------------------------------------
     def provision_decision(self, servers: Dict[int, Server], metrics_snapshot: dict,
@@ -198,11 +201,17 @@ class VoilaAlgorithm(AlgorithmBase):
     
     
          
-    def select_scale_down_victim(self, service_id, ready_replicas, servers, now):
+   
+            
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
+        occupancy_fn = occupancy_fn or (lambda r: r.queue_occupancy(now))
         centroid = None
         if self._last_snapshot is not None:
             centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
         if centroid is None or len(ready_replicas) <= 1:
-            return super().select_scale_down_victim(service_id, ready_replicas, servers, now)
-        return max(ready_replicas, key=lambda r: haversine_km(
+            return super().select_scale_down_victim(service_id, ready_replicas, servers, now,
+                                                      occupancy_fn=occupancy_fn)
+        by_load = sorted(ready_replicas, key=occupancy_fn)
+        low_load_pool = by_load[:max(1, len(by_load) // 2)]
+        return max(low_load_pool, key=lambda r: haversine_km(
             centroid[0], centroid[1], servers[r.server_id].lat, servers[r.server_id].long))

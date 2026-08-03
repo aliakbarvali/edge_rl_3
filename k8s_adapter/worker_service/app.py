@@ -19,6 +19,7 @@ k8s_client.py:build_deployment_manifest).
 """
 
 import os
+import asyncio
 import time
 from datetime import datetime, timezone
 
@@ -30,6 +31,12 @@ app = FastAPI()
 EXEC_TIME_SEC = float(os.environ.get("EXEC_TIME_SEC", "1.0"))
 SERVICE_ID = os.environ.get("SERVICE_ID", "unknown")
 SERVER_ID = os.environ.get("SERVER_ID", "unknown")
+
+# *** محدودیت «هم‌زمان فقط ۱ درخواست پردازش می‌شود» حالا اینجا و فقط روی
+# /process اعمال می‌شود (نه در سطح کل uvicorn process با --limit-concurrency
+# که قبلاً حتی /healthz را هم گرفتار می‌کرد و باعث می‌شد پاد هیچ‌وقت Ready
+# نشود). درخواست‌های اضافه پشت این Semaphore صف می‌کشند (await)، رد نمی‌شوند.
+_process_semaphore = asyncio.Semaphore(1)
 
 
 class ProcessRequest(BaseModel):
@@ -43,14 +50,17 @@ def healthz():
 
 
 @app.post("/process")
-def process(req: ProcessRequest):
-    start = time.monotonic()
-    time.sleep(EXEC_TIME_SEC)
-    elapsed = time.monotonic() - start
-    return {
-        "request_id": req.request_id,
-        "service_id": SERVICE_ID,
-        "server_id": SERVER_ID,
-        "exec_time_sec": elapsed,
-        "processed_at": datetime.now(timezone.utc).isoformat(),
-    }
+async def process(req: ProcessRequest):
+    async with _process_semaphore:
+        start = time.monotonic()
+        # *** asyncio.sleep به‌جای time.sleep: کل event loop (و در نتیجه
+        # /healthz) دیگر در طول EXEC_TIME_SEC فریز نمی‌شود.
+        await asyncio.sleep(EXEC_TIME_SEC)
+        elapsed = time.monotonic() - start
+        return {
+            "request_id": req.request_id,
+            "service_id": SERVICE_ID,
+            "server_id": SERVER_ID,
+            "exec_time_sec": elapsed,
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+        }

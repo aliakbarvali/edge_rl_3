@@ -4,7 +4,13 @@ evaluation/aggregate_seeds.py
 برای هر معیار، تا در گزارش نهایی به‌جای یک عدد تک، بازه‌ی قابل‌اعتماد
 گزارش شود.
 
-اجرا:
+اجرا (برای هر seed، اول مدل مخصوص همان seed را آموزش/ارزیابی کنید - نگاه
+کنید common/config.py:EOTCH_SEED و algorithms/ppo/train.py:MODEL_PATH):
+    EOTCH_SEED=42 python3 -m algorithms.ppo.train
+    EOTCH_SEED=42 python3 -m evaluation.compare_runs --output-dir outputs/seed42
+    EOTCH_SEED=43 python3 -m algorithms.ppo.train
+    EOTCH_SEED=43 python3 -m evaluation.compare_runs --output-dir outputs/seed43
+    ... (تکرار برای هر seed)
     python3 -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs
 """
 from __future__ import annotations
@@ -65,4 +71,4 @@ if __name__ == "__main__":
     main()
     
     
-#python -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs    
+#python -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs

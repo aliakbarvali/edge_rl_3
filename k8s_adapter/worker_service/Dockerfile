@@ -19,5 +19,11 @@ EXPOSE 8000
 
 # *** --workers 1 --limit-concurrency 1: هر پاد واقعاً هم‌زمان فقط ۱
 # درخواست پردازش می‌کند (طبق بخش ۱.۲ سند)، بقیه در صف TCP معطل می‌مانند.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "1", "--limit-concurrency", "1"]
+# *** پورت از env var SERVICE_PORT خوانده می‌شود (نه ثابت 8000)، چون با
+# hostNetwork=True ممکن است چند سرویس مختلف روی یک نود اجرا شوند و باید
+# هرکدام پورت اختصاصی خودشان را بگیرند (k8s_client.py:worker_port).
+# *** توجه: --limit-concurrency دیگر اینجا ست نمی‌شود؛ آن فلگ در سطح کل
+# پروسه‌ی uvicorn اعمال می‌شد و /healthz را هم می‌گرفت (باعث می‌شد پاد
+# هیچ‌وقت Ready نشود). محدودیت «۱ درخواست هم‌زمان» حالا داخل app.py فقط
+# روی /process با asyncio.Semaphore پیاده شده.
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${SERVICE_PORT:-8000} --workers 1"]

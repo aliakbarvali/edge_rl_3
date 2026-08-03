@@ -88,24 +88,10 @@ class AlgorithmBase(ABC):
             if r.queue_occupancy(now) < r.queue_len:
                 return r
         return None
-
-    # ------------------------------------------------------------------
-    # بخش ۶.۱: انتخاب پروفایل سرور خاموش متناسب با میزان اضافه‌بار
-    # (پیاده‌سازی مشترک - چون معیارش «میزان اضافه‌بار فعلی سیستم» است، نه
-    # یک تصمیم مختص فلسفه‌ی هر الگوریتم؛ Greedy/Voila آن را با اولویت
-    # نزدیک‌ترین فاصله ترکیب می‌کنند، HPA به‌عمد بدون فاصله فراخوانی‌اش
-    # می‌کند تا location-unaware بماند - نگاه کنید hpa_algorithm.py).
-    # ------------------------------------------------------------------
+ 
     @staticmethod
     def _pick_profile_for_overload(overloaded_servers: List[Server], fallback_capacity: int) -> str:
-        """
-        بخش ۶.۱ سند: «با پروفایل ظرفیتی متناسب با میزان اضافه‌بار (تقاضای
-        بیشتر -> ترجیح large، تقاضای کم -> ترجیح edge_small)». سند مقدار
-        عددی دقیق آستانه را مشخص نکرده (بخش ۱۳: قابل کالیبراسیون)؛ از مجموع
-        ظرفیت سرورهای ACTIVه‌ی اشباع‌شده‌ی فعلی به‌عنوان proxy معقول برای
-        «میزان اضافه‌بار» استفاده شده - هرچه این مجموع بزرگ‌تر، سرور بزرگ‌تری
-        لازم است.
-        """
+     
         total = sum(s.capacity for s in overloaded_servers) if overloaded_servers else fallback_capacity
         if total >= 200:
             return "large"
@@ -119,19 +105,14 @@ class AlgorithmBase(ABC):
         return matching if matching else candidates  # اگر پروفایل دلخواه در دسترس نبود -> همه‌ی کاندیدها
 
     
-    def select_scale_down_victim(self, service_id, ready_replicas, servers, now): 
-        return min(ready_replicas, key=lambda r: r.queue_occupancy(now))
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
+ 
+        occupancy_fn = occupancy_fn or (lambda r: r.queue_occupancy(now))
+        return min(ready_replicas, key=occupancy_fn)
 
     @staticmethod
     def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server]) -> List[int]:
-        """
-        *** سیگنال مکمل نیاز به ظرفیت بیشتر: سرویس‌هایی که occ_ratio بالا یا
-        rejection>0 دارند ولی هیچ سرور ACTIVE ای جا برایشان ندارد (free_capacity
-        کافی). قبلاً فقط utilization لحظه‌ای (busy-fraction) چک می‌شد که یک
-        سرور کاملاً پر (free_capacity=0) را هم می‌تواند به‌اشتباه "غیراضافه‌بار"
-        نشان دهد. نگاه کنید simulator/engine.py:_any_service_capacity_starved
-        برای نسخه‌ی معادل سطح موتور.
-        """
+
         starved = []
         for svc_id, sv in metrics_snapshot["services"].items():
             occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
