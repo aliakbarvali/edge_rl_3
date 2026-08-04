@@ -23,6 +23,7 @@ k8s_adapter/k8s_client.py
 from __future__ import annotations
 import time
 from typing import Optional
+import time as _time
 
 try:
     from kubernetes import client, config
@@ -131,8 +132,8 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
 def create_deployment(service_id: int, server_id: int):
     """معادل _place_replica در simulator/engine.py؛ pod-create واقعی."""
     manifest = build_deployment_manifest(service_id, server_id)
-    try:
-        _apps_v1.create_namespaced_deployment(namespace=NAMESPACE, body=manifest)
+    try: 
+        _call_with_retry(_apps_v1.create_namespaced_deployment,namespace=NAMESPACE, body=manifest)
     except ApiException as e:
         if e.status == 409:  # از قبل وجود دارد
             return
@@ -142,22 +143,24 @@ def create_deployment(service_id: int, server_id: int):
 def delete_deployment(service_id: int, server_id: int):
     """معادل _handle_replica_terminated؛ pod-delete واقعی."""
     name = _deployment_name(service_id, server_id)
-    try:
-        _apps_v1.delete_namespaced_deployment(name=name, namespace=NAMESPACE)
+    try: 
+        _call_with_retry(_apps_v1.delete_namespaced_deployment,name=name, namespace=NAMESPACE)
     except ApiException as e:
         if e.status == 404:
             return
         raise
 
-
+ 
+ 
 def is_deployment_ready(service_id: int, server_id: int) -> bool:
     name = _deployment_name(service_id, server_id)
     try:
-        dep = _apps_v1.read_namespaced_deployment_status(name=name, namespace=NAMESPACE)
+        dep = _call_with_retry(_apps_v1.read_namespaced_deployment_status,
+                                name=name, namespace=NAMESPACE)
     except ApiException as e:
         if e.status == 404:
-            return False
-        raise
+            return False 
+        return False
     return (dep.status.ready_replicas or 0) >= 1
 
 
@@ -182,8 +185,25 @@ def list_all_deployments() -> list[dict]:
             "ready": (d.status.ready_replicas or 0) >= 1,
         })
     return out
+ 
 
-
+def _call_with_retry(func, *args, max_retries: int = 3, base_delay: float = 1.0, **kwargs):
+    """
+    *** لایه‌ی مقاومت در برابر خطاهای گذرای API Server (۵۰۰/۵۰۳/۴۲۹ - از
+    جمله «context deadline exceeded» که از etcd کند می‌آید). بدون این، یک
+    خطای گذرا کل کار (create/poll) را برای همیشه می‌کشد، چون بالادست
+    (asyncio task در realtime_dispatcher.py) هیچ retry ندارد.
+    """
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            return func(*args, **kwargs)
+        except ApiException as e:
+            last_exc = e
+            if e.status not in (500, 503, 429):
+                raise  # خطای غیرگذرا (مثلاً 404/401) - retry بی‌فایده است
+            _time.sleep(base_delay * (2 ** attempt))
+    raise last_exc
 # ---------------------------------------------------------------------------
 # Node (سرور) - cordon/uncordon (طبق پاسخ شما: بدون خاموشی فیزیکی واقعی)
 # ---------------------------------------------------------------------------

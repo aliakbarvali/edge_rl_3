@@ -205,15 +205,25 @@ class RealtimeEngine:
                                  timeout: float = 120.0):
         start = time.monotonic()
         while time.monotonic() - start < timeout:
-            if k8s_client.is_deployment_ready(service_id, server_id):
-                ip = k8s_client.get_pod_ip(service_id, server_id)
-                if ip:
-                    redis_state.set_pod_ip(service_id, server_id, ip)
-                    redis_state.set_replica_state(service_id, server_id, "READY")
-                    replica.state = ReplicaState.READY
-                    replica.ready_since = time.monotonic()
-                    self._log("pod_ready", server_id=server_id, service_id=service_id, pod_ip=ip)
-                    return
+            try:
+                if k8s_client.is_deployment_ready(service_id, server_id):
+                    ip = k8s_client.get_pod_ip(service_id, server_id)
+                    if ip:
+                        redis_state.set_pod_ip(service_id, server_id, ip)
+                        redis_state.set_replica_state(service_id, server_id, "READY")
+                        replica.state = ReplicaState.READY
+                        replica.ready_since = time.monotonic()
+                        self._log("pod_ready", server_id=server_id, service_id=service_id, pod_ip=ip)
+                        return
+            except Exception as e:
+                # *** قبلاً یک استثنای پیش‌بینی‌نشده اینجا کل task را بی‌صدا
+                # می‌کشت (asyncio.create_task بدون exception handler) تا
+                # هشدار "Task exception was never retrieved" دقیقه‌ها/ساعت‌ها
+                # بعد، بدون هیچ اطلاعاتی از این‌که کدام سرویس/سرور بوده، چاپ
+                # شود. حالا فوراً با شناسه‌ی کامل لاگ می‌شود و polling ادامه
+                # پیدا می‌کند تا timeout.
+                self._log("pod_ready_poll_error", server_id=server_id, service_id=service_id,
+                          error=str(e))
             await asyncio.sleep(1.0)
         self._log("pod_ready_timeout", server_id=server_id, service_id=service_id)
 
