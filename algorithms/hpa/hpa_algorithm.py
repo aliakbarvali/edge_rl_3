@@ -14,7 +14,12 @@ class HPAAlgorithm(AlgorithmBase):
 
     def scale_decision(self, service_id, metrics_snapshot):
         sv = metrics_snapshot["services"][service_id]
-        current_replicas = max(sv["n_replicas"], 1)
+        # *** رفع باگ: n_replicas شامل STARTING هم می‌شود (رپلیکایی که هنوز
+        # درخواست نمی‌گیرد). فرمول رسمی HPA بر پایه‌ی ظرفیت *واقعاً در
+        # سرویس* است، نه ظرفیت "در راه" - با n_replicas، اگر یک رپلیکا تازه
+        # STARTING باشد، current_replicas به‌غلط بالاتر حساب می‌شود و HPA
+        # کمتر از نیاز واقعی scale می‌کند.
+        current_replicas = max(sv["n_ready_replicas"], 1)
         current_util = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
         if current_util <= 0 and sv["rejection_rate"] <= 0:

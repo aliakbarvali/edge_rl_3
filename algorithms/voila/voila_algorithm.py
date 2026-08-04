@@ -118,7 +118,7 @@ class VoilaAlgorithm(AlgorithmBase):
             return ScaleAction.NO_CHANGE
 
         if (self._good_streak[service_id] >= self.SCALE_DOWN_PATIENCE_TICKS and
-                occ_ratio < self.OCC_DOWN_THRESHOLD and sv["n_replicas"] > 1):
+                occ_ratio < self.OCC_DOWN_THRESHOLD and sv["n_ready_replicas"] > 1):
             self._good_streak[service_id] = 0
             return ScaleAction.SCALE_DOWN
 

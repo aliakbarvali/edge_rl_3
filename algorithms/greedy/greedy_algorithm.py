@@ -16,7 +16,7 @@ class GreedyAlgorithm(AlgorithmBase):
         occ_ratio = svc["avg_queue_occupancy"] / queue_len if queue_len else 0.0
         if occ_ratio > 0.7 or svc["rejection_rate"] > 0:
             return ScaleAction.SCALE_UP
-        if occ_ratio < 0.1 and svc["n_replicas"] > 1:
+        if occ_ratio < 0.1 and svc["n_ready_replicas"] > 1:
             return ScaleAction.SCALE_DOWN
         return ScaleAction.NO_CHANGE
 

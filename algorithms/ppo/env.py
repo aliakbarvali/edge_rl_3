@@ -102,12 +102,21 @@ class EdgeResourceEnv(gym.Env):
 
         n_actions_taken = sum(1 for a in service_actions.values() if a != ScaleAction.NO_CHANGE)
         provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE)
-        for sid, ptype in server_actions.items():
-            if ptype != ProvisionActionType.NO_CHANGE:
-                provision_action = ProvisionAction(ptype, sid)
-                n_actions_taken += 1
-                break  # طبق بخش ۱۱.۳ در هر تیک حداکثر یک اکشن provisioning اعمال می‌شود
-
+        # *** رفع بایاس سیستماتیک: قبلاً همیشه اولین سرور غیر-NO_CHANGE به
+        # ترتیب id صعودی انتخاب می‌شد (چون dict/for ترتیب insertion=sorted
+        # id را حفظ می‌کند) - یعنی اگر عامل هم‌زمان برای دو سرور مختلف
+        # اکشن غیرصفر می‌زد، همیشه کمترین id برنده بود، صرف‌نظر از اهمیت
+        # واقعی. این یک بایاس مصنوعی و ثابت در سیگنال یادگیری ایجاد می‌کرد.
+        # حالا بین کاندیدهای هم‌زمان، با RNG خودِ محیط (بذردار، برای
+        # reproducibility) به‌صورت یکنواخت انتخاب می‌شود.
+        non_noop_servers = [sid for sid, ptype in server_actions.items()
+                             if ptype != ProvisionActionType.NO_CHANGE]
+        if non_noop_servers:
+            chosen_sid = int(self.np_random.choice(non_noop_servers))
+            provision_action = ProvisionAction(server_actions[chosen_sid], chosen_sid)
+            n_actions_taken += 1
+            
+            
         external = {"provision": provision_action, "scale": service_actions}
         snapshot, done = self.engine.step(external_actions=external)
 

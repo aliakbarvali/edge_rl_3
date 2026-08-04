@@ -16,6 +16,7 @@ provision_decision() *قبل* از حلقه‌ی scale_decision() هر سروی�
 from __future__ import annotations
 from typing import Dict, List, Optional
 
+import random as _tie_break_random
 from common.config import CFG
 from common.models import Server, ServerState
 from common.state_builder import build_state_vector
@@ -33,7 +34,7 @@ _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_
 class PPOAlgorithm(AlgorithmBase):
     name = "ppo"
  
-    def __init__(self, model_path, deterministic=True, latency_aware_routing=False):
+    def __init__(self, model_path, deterministic=True, latency_aware_routing=False): 
         try:
             from sb3_contrib import MaskablePPO
         except ImportError as e:
@@ -42,6 +43,10 @@ class PPOAlgorithm(AlgorithmBase):
             ) from e
         self.model = MaskablePPO.load(model_path)
         self.deterministic = deterministic
+        # *** هماهنگ با algorithms/ppo/env.py:step - رفع بایاس به‌سمت
+        # کمترین server_id، با تصادفی‌سازی بذردار (برای reproducibility
+        # ارزیابی نهایی) به‌جای انتخاب قطعی اولین سرور.
+        self._tie_break_rng = _tie_break_random.Random(CFG.seed)
         self._cached_tick_key: Optional[float] = None
         self._cached_scale: Dict[int, ScaleAction] = {}
         self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
@@ -58,12 +63,15 @@ class PPOAlgorithm(AlgorithmBase):
         action, _ = self.model.predict(obs, action_masks=action_masks, deterministic=self.deterministic)
 
         self._cached_scale = {sid: _SCALE_MAP[int(action[i])] for i, sid in enumerate(_SERVICE_IDS)}
-        provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
+        non_noop = []
         for j, sid in enumerate(_SERVER_IDS):
             ptype = _PROVISION_MAP[int(action[len(_SERVICE_IDS) + j])]
             if ptype != ProvisionActionType.NO_CHANGE:
-                provision = ProvisionAction(ptype, sid)
-                break
+                non_noop.append((sid, ptype))
+        provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
+        if non_noop:
+            chosen_sid, chosen_ptype = self._tie_break_rng.choice(non_noop)
+            provision = ProvisionAction(chosen_ptype, chosen_sid)
         self._cached_provision = provision
         self._cached_tick_key = now
 
