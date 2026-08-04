@@ -264,15 +264,17 @@ class RealtimeEngine:
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(redis_state.get_queue_occupancy(svc_id, r.server_id) for r in ready)
                        / len(ready)) if ready else 0.0
+        
             snapshot["services"][svc_id] = {
-                "n_replicas": len([r for r in reps if r.state in
-                                    (ReplicaState.READY, ReplicaState.STARTING)]),
+                "n_replicas": len([r for r in reps if r.state in (ReplicaState.READY, ReplicaState.STARTING)]),
+                "n_ready_replicas": len(ready),
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
                 "recent_arrivals": self._tick_total[svc_id],
-                "demand_centroid": None,  # *** ساده‌سازی فاز ۳: EMA مرکز ثقل پیاده نشده
+                "demand_centroid": None,
+                "proximity_violation_rate": 0.0, 
             }
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
                                "num_rejected_recent": sum(self._tick_rejected.values())}
