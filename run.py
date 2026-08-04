@@ -12,7 +12,7 @@ from common.logger import EventLogger
 from simulator.engine import SimulationEngine
 
 
-def build_algorithm(name: str):
+def build_algorithm(name: str, args):
     if name == "greedy":
         from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
         return GreedyAlgorithm()
@@ -28,7 +28,11 @@ def build_algorithm(name: str):
         if not os.path.exists(MODEL_PATH):
             raise SystemExit(f"مدل PPO پیدا نشد: {MODEL_PATH}\n"
                               f"اول آموزش بدهید: python3 -m algorithms.ppo.train")
-        return PPOAlgorithm(model_path=MODEL_PATH)
+        return PPOAlgorithm(
+            model_path=MODEL_PATH,
+            latency_aware_routing=args.latency_aware_routing,
+            use_solver_placement=not args.no_solver_placement,
+        )
     raise ValueError(f"الگوریتم ناشناخته: {name}")
 
 
@@ -43,12 +47,17 @@ def main():
     parser.add_argument("--mode", default="sim", choices=["sim", "k8s"])
     parser.add_argument("--data", default="test", choices=["train", "test"])
     parser.add_argument("--output-dir", default="outputs")
+    
+    parser.add_argument("--latency-aware-routing", action="store_true",
+                         help="PPO: مسیریابی بر پایه‌ی تخمین کل تأخیر (شبکه+صف+اجرا) به‌جای صرفاً فاصله‌ی جغرافیایی")
+    parser.add_argument("--no-solver-placement", action="store_true",
+                         help="PPO: غیرفعال‌کردن جای‌گذاری اولیه‌ی بهینه با ILP (fallback به پوشش حریصانه‌ی مشترک همه‌ی الگوریتم‌ها)")
     args = parser.parse_args()
-
 
     os.makedirs(args.output_dir, exist_ok=True)
     events = load_data(args.data)
-    algorithm = build_algorithm(args.algorithm)
+    algorithm = build_algorithm(args.algorithm, args)
+    
     logger = EventLogger(os.path.join(args.output_dir, f"{args.algorithm}_events.jsonl"),
                           algorithm=args.algorithm)
 

@@ -1,15 +1,3 @@
-"""
-evaluation/compare_runs.py
-اجرای همه‌ی الگوریتم‌های *در دسترس* (پیاده‌شده و آماده) روی داده‌ی یکسان
-(پیش‌فرض: Data4.csv طبق بخش ۱۱.۵) و تولید جدول مقایسه‌ی معیارهای بخش ۸.
-الگوریتم‌های فاز ۲ (Voila/HPA) و PPO بدون مدل آموزش‌دیده به‌طور خودکار با
-هشدار رد می‌شوند، نه با خطا - تا این اسکریپت همیشه با هر زیرمجموعه‌ای از
-الگوریتم‌های آماده قابل اجرا باشد.
-
-اجرا:
-    python3 -m evaluation.compare_runs [--data test|train]
-"""
-
 from __future__ import annotations
 import argparse
 import os
@@ -20,7 +8,7 @@ from common.logger import EventLogger
 from simulator.engine import SimulationEngine
 
 
-def _try_build(name: str):
+def _try_build(name: str, ppo_args=None):
     try:
         if name == "greedy":
             from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
@@ -38,7 +26,13 @@ def _try_build(name: str):
                 print(f"[رد شد] ppo: مدل آموزش‌دیده در {MODEL_PATH} پیدا نشد "
                       f"(python3 -m algorithms.ppo.train را اجرا کنید)")
                 return None
-            return PPOAlgorithm(model_path=MODEL_PATH)
+            ppo_args = ppo_args or {}
+            return PPOAlgorithm(
+                model_path=MODEL_PATH,
+                latency_aware_routing=ppo_args.get("latency_aware_routing", False),
+                use_solver_placement=ppo_args.get("use_solver_placement", True),
+                placement_weights=ppo_args.get("placement_weights"),
+            )
     except (ImportError, NotImplementedError) as e:
         print(f"[رد شد] {name}: {e}")
         return None
@@ -49,8 +43,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="test", choices=["train", "test"])
     parser.add_argument("--output-dir", default="outputs")
-    
+    # *** فقط برای PPO معنا دارند
+    parser.add_argument("--latency-aware-routing", action="store_true")
+    parser.add_argument("--no-solver-placement", action="store_true")
+    parser.add_argument("--w-count", type=float, default=1.0)
+    parser.add_argument("--w-energy", type=float, default=1.0)
+    parser.add_argument("--w-distance", type=float, default=1.0)
+
     args = parser.parse_args()
+
+    ppo_args = {
+        "latency_aware_routing": args.latency_aware_routing,
+        "use_solver_placement": not args.no_solver_placement,
+        "placement_weights": {"w_count": args.w_count, "w_energy": args.w_energy,
+                               "w_distance": args.w_distance},
+    }
 
     from data.loader import load_train, load_test
     events = load_train() if args.data == "train" else load_test()
@@ -58,7 +65,7 @@ def main():
 
     rows = []
     for name in ["greedy", "voila", "hpa", "ppo"]:
-        algo = _try_build(name)
+        algo = _try_build(name, ppo_args=ppo_args)
         if algo is None:
             continue
         print(f"در حال اجرای {name} ...")

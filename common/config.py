@@ -104,8 +104,13 @@ MIN_ACTIVE_DURATION_SEC = 300.0  # حداقل مدت ACTIVE بودن قبل از
 MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC = 120.0
 
 COLD_START_WINDOW_SEC = 10.0
-COLD_START_PENALTY_SEC = 1.0
-
+COLD_START_PENALTY_SEC = 1.0 
+# *** یادداشت طراحی (بخش ۲.۵/۱۰ سند): این جریمه به‌صورت افزایش واقعی
+# service_time اعمال می‌شود (common/models.py:Replica.try_admit)، نه فقط
+# افزودن عددی به response_time گزارش‌شده - یعنی روی wait_time درخواست‌های
+# بعدیِ همان replica، انرژی، و reward PPO هم اثر غیرمستقیم دارد. تصمیم
+# آگاهانه برای واقع‌گرایی بیشتر (replica در حال cold-start واقعاً کندتر
+# است)، نه یک باگ.
 E_BOOT_SERVER_J = 500.0
 E_POD_CREATE_J = 20.0
 

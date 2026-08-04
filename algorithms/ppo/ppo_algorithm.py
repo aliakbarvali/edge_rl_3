@@ -34,7 +34,7 @@ _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_
 class PPOAlgorithm(AlgorithmBase):
     name = "ppo"
  
-    def __init__(self, model_path, deterministic=True, latency_aware_routing=False): 
+    def __init__(self, model_path, deterministic=True, latency_aware_routing=False , use_solver_placement = True, placement_weights=None): 
         try:
             from sb3_contrib import MaskablePPO
         except ImportError as e:
@@ -54,6 +54,57 @@ class PPOAlgorithm(AlgorithmBase):
         self._helper = GreedyAlgorithm()
         self.latency_aware_routing = latency_aware_routing
 
+        # *** جای‌گذاری اولیه‌ی بهینه با ILP بر پایه‌ی داده‌ی آموزشی (نگاه کنید
+        # algorithms/ppo/optimal_placement.py). فقط یک‌بار در طول عمر این
+        # instance حل و کش می‌شود - چون همان چیزی است که یک engine واحد در
+        # ابتدای اجرا یک‌بار initial_placement صدا می‌زند.
+        self.use_solver_placement = use_solver_placement
+        self._solver_selected_servers: Optional[List[int]] = None
+ 
+        self._placement_weights = placement_weights or {"w_count": 1.0, "w_energy": 1.0, "w_distance": 1.0}
+      
+    # ------------------------------------------------------------------
+    def initial_placement(self, servers: Dict[int, Server], active_bts):
+        if not self.use_solver_placement:
+            return super().initial_placement(servers, active_bts)
+
+        if self._solver_selected_servers is None:
+            self._solver_selected_servers = self._solve_from_training_data(servers, active_bts)
+
+        return self._ensure_sufficient_capacity(servers, list(self._solver_selected_servers))
+
+
+    def _solve_from_training_data(self, servers, active_bts_fallback):
+        from algorithms.ppo.optimal_placement import aggregate_training_demand, solve_optimal_server_selection
+        try:
+            from data.loader import load_train
+            train_events = load_train()
+            demand_points = aggregate_training_demand(train_events)
+            selected = solve_optimal_server_selection(servers, demand_points, **self._placement_weights)
+            if selected:
+                print(f"[PPO] جای‌گذاری اولیه‌ی چندهدفه حل شد: {len(selected)} سرور، "
+                    f"سرورها: {sorted(selected)}")
+                return selected
+            print("[PPO] solver جواب قابل‌قبول پیدا نکرد؛ fallback به پوشش حریصانه‌ی مشترک.")
+        except Exception as e:
+            print(f"[PPO] حل ILP شکست خورد ({e}); fallback به پوشش حریصانه‌ی مشترک.")
+        return super(PPOAlgorithm, self).initial_placement(servers, active_bts_fallback)
+
+    @staticmethod
+    def _ensure_sufficient_capacity(servers: Dict[int, Server], selected: List[int]) -> List[int]:
+        """دقیقاً همان قید انتهای AlgorithmBase.initial_placement: اگر مجموع
+        ظرفیت سرورهای انتخابی کمتر از نیاز کل ۱۵ سرویس بود، نزدیک‌ترین
+        سرورهای باقی‌مانده را هم اضافه کن."""
+        total_cpu_needed = sum(s["cpu_demand"] for s in CFG.services_info.values())
+        if sum(servers[sid].capacity for sid in selected) >= total_cpu_needed:
+            return selected
+        remaining = [sid for sid in servers if sid not in selected]
+        remaining.sort(key=lambda sid: min(
+            haversine_km(servers[sid].lat, servers[sid].long, servers[s2].lat, servers[s2].long)
+            for s2 in selected) if selected else 0)
+        while sum(servers[sid].capacity for sid in selected) < total_cpu_needed and remaining:
+            selected.append(remaining.pop(0))
+        return selected
     # ------------------------------------------------------------------
     def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float):
         if self._cached_tick_key == now:
@@ -114,8 +165,6 @@ class PPOAlgorithm(AlgorithmBase):
     def migration_decision(self, draining_server: Server,
                             servers: Dict[int, Server]) -> List[MigrationStep]:
         return self._helper.migration_decision(draining_server, servers)
-
-
 
     def select_replica(self, request, candidate_replicas, servers, now):
         if not candidate_replicas:

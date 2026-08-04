@@ -61,6 +61,20 @@ class Replica:
         تلاش برای پذیرش یک درخواست در صف FIFO این رپلیکا.
         خروجی: None اگر صف پر بود (رد شود)، وگرنه dict شامل
         queue_enter_time, service_start_time, service_end_time, wait_time_sec.
+
+        *** تصمیم طراحی صریح (بخش ۲.۵ سند): cold_start_extra مستقیماً به
+        service_time اضافه می‌شود، یعنی self.available_at هم به همان اندازه
+        عقب می‌افتد. این یعنی جریمه‌ی cold-start فقط روی response_time
+        همین درخواست اثر نمی‌گذارد، بلکه wait_time تمام درخواست‌های بعدیِ
+        همین replica در صف را هم افزایش می‌دهد (اثر زنجیره‌ای)، و چون
+        instantaneous_utilization بر پایه‌ی is_idle/departures محاسبه
+        می‌شود، این مدت اضافه در محاسبه‌ی انرژی (busy تا مدت طولانی‌تر) و
+        reward PPO هم اثر غیرمستقیم دارد.
+        این عمداً واقع‌گرایانه نگه داشته شده (یک replica در حال cold-start
+        واقعاً کندتر است، نه فقط دیرتر پاسخ می‌دهد)؛ جداکردن این دو (فقط
+        اثر روی response_time گزارش‌شده، بدون تأخیر واقعی در available_at)
+        نیازمند حسابداری جدا برای departures/queue_occupancy می‌شد که
+        ریسک ناهماهنگی جدید بین "اشغال صف" و "زمان واقعی پاسخ" داشت.
         """
         occ = self.queue_occupancy(arrival_time)
         if occ >= self.queue_len:

@@ -393,6 +393,14 @@ class SimulationEngine:
 
         admit = chosen.try_admit(self.now, cold_start_extra=cold_start_extra)
         if admit is None:
+            # *** این شاخه با تمام پیاده‌سازی‌های فعلی select_replica
+            # (AlgorithmBase/Voila/PPO) هرگز نباید برسد، چون همه از قبل فقط
+            # replicaیی با جای خالی را برمی‌گردانند و بین چک و اینجا هیچ
+            # رویداد دیگری در موتور تک‌نخی پردازش نمی‌شود. اگر این لاگ
+            # دیدید، یعنی یک select_replica سفارشی این فرض را نقض کرده -
+            # بررسی کنید که آیا واقعاً race وجود دارد.
+            self._log("unexpected_admit_race", request_id=req.id, service_id=req.service_id,
+                      server_id=chosen.server_id)
             req.status = RequestStatus.REJECTED_QUEUE_FULL
             self._tick_rejected[req.service_id] += 1
             self._tick_violated[req.service_id] += 1
@@ -455,12 +463,15 @@ class SimulationEngine:
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
+            mature_ready = [r for r in ready
+                             if (self.now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(r.queue_occupancy(self.now) for r in ready) / len(ready)) if ready else 0.0
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
                 "n_ready_replicas": len(ready),
+                "n_mature_ready_replicas": len(mature_ready), 
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
@@ -492,6 +503,8 @@ class SimulationEngine:
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
+            mature_ready = [r for r in ready
+                             if (self.now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(r.queue_occupancy(self.now) for r in ready) / len(ready)) if ready else 0.0
             if self._tick_total[svc_id] > 0:
@@ -502,6 +515,7 @@ class SimulationEngine:
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
                 "n_ready_replicas": len(ready),
+                "n_mature_ready_replicas": len(mature_ready), 
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
@@ -704,22 +718,33 @@ class SimulationEngine:
                     skip_reason = "placement_failed"
             else:
                 skip_reason = "no_target_server"
-        elif decision == ScaleAction.SCALE_DOWN: 
-            since_last_up = self.now - self._service_last_scale_up_time[svc_id]
-            if since_last_up < CFG.min_replica_age_before_scale_down_sec:
-                skip_reason = "recent_scale_up"
-            else:
-                ready = [r for r in self.replicas_by_service.get(svc_id, [])
-                         if r.state == ReplicaState.READY]
-                if len(ready) > 1:  
-                    victim = self.algorithm.select_scale_down_victim(svc_id, ready, self.servers, self.now)
+        elif decision == ScaleAction.SCALE_DOWN:
+            # *** رفع باگ: قبلاً محافظت anti-flapping در سطح سرویس بود
+            # (since_last_up از _service_last_scale_up_time) - یعنی فقط از
+            # "scale-down بلافاصله بعد از هر scale-up" جلوگیری می‌کرد، بدون
+            # سنجش سن خودِ replica انتخاب‌شده به‌عنوان قربانی. پس بعد از
+            # MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC ثانیه از آخرین SCALE_UP،
+            # select_scale_down_victim (کمترین اشغال) می‌توانست دقیقاً همان
+            # replica تازه‌ساخته را انتخاب کند - چون تازه‌ساخته‌ها معمولاً
+            # کم‌بارترین‌اند - و هدف اصلی ضد-flapping دور زده می‌شد. حالا
+            # کاندیدهای حذف مستقیماً بر اساس created_at خودِ replica فیلتر
+            # می‌شوند.
+            ready = [r for r in self.replicas_by_service.get(svc_id, [])
+                     if r.state == ReplicaState.READY]
+            if len(ready) > 1:
+                mature = [r for r in ready
+                          if (self.now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
+                if not mature:
+                    skip_reason = "no_mature_replica"
+                else:
+                    victim = self.algorithm.select_scale_down_victim(svc_id, mature, self.servers, self.now)
                     self._start_replica_drain(victim)
                     self.metrics.record_scale_action("SCALE_DOWN")
                     self._service_last_scale_time[svc_id] = self.now
                     applied = True
                     self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
-                else:
-                    skip_reason = "only_one_replica_left"
+            else:
+                skip_reason = "only_one_replica_left"
 
         # *** بخش ۸: فرصت ازدست‌رفته - صرف‌نظر از تصمیم این تیک، آیا طبق
         # معیار مستقل واقعاً SCALE_UP/DOWN لازم بود ولی اعمال نشد؟

@@ -55,14 +55,17 @@ class MetricsCollector:
             self.completed_requests += 1
             self.response_times.append(req.response_time_sec)
             # *** رفع باگ: distances/network_delays فقط برای درخواست‌های
-            # واقعاً پذیرفته‌شده (COMPLETED) معنادارند - چون فقط برای
-            # این‌ها req._distance_km/network_delay_ms در engine._handle_arrival
-            # واقعاً محاسبه می‌شوند. برای REJECTED_* این فیلدها هرگز ست
-            # نمی‌شوند و مقدار پیش‌فرض 0.0 دارند؛ append کردنِ همیشگی این
-            # صفرها (نسخه‌ی قبلی) میانگین avg_distance_km/avg_network_delay_ms
-            # را به‌طور مصنوعی و به نسبت تعداد رد هر الگوریتم پایین می‌آورد -
-            # دقیقاً مثل response_times که از قبل درست فقط برای COMPLETED
-            # append می‌شد، این دو باید همان رفتار را داشته باشند.
+            # واقعاً پذیرفته‌شده (COMPLETED) در محاسبه‌ی میانگین لحاظ می‌شوند.
+            # دقت کن: این به این معنا نیست که این فیلدها همیشه صفر/محاسبه‌نشده
+            # می‌مانند برای REJECTED_* - در مسیر رایج فعلی (select_replica
+            # همه‌ی پیاده‌سازی‌های موجود فقط replica دارای جای خالی را
+            # برمی‌گرداند) این فیلدها واقعاً هرگز محاسبه نمی‌شوند، ولی اگر یک
+            # الگوریتم سفارشی آینده select_replica را طوری پیاده کند که
+            # try_admit بعد از انتخاب هم بتواند None برگرداند (مثلاً
+            # batch-selection با race واقعی)، این فیلدها *قبل* از آن شکست
+            # قبلاً ست شده‌اند اما همچنان عمداً نادیده گرفته می‌شوند - چون
+            # معیار شرکت در میانگین صرفاً status==COMPLETED است، نه اینکه
+            # فیلد ست شده یا نه.
             self.distances.append(self._distance_of(req))
             self.network_delays.append(req.network_delay_ms)
             if req.deadline_violated:
