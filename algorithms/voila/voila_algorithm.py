@@ -64,11 +64,19 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 class VoilaAlgorithm(AlgorithmBase):
     name = "voila"
     OCC_UP_THRESHOLD = 0.68
-    OCC_DOWN_THRESHOLD = 0.20
-    SCALE_DOWN_PATIENCE_TICKS = 3
-    PROXIMITY_SUSTAIN_TICKS = 1 
-    PROXIMITY_PROTECTION_TICKS = 3
+    OCC_DOWN_THRESHOLD = 0.20 
    
+    SCALE_DOWN_PATIENCE_TICKS = 3
+    PROXIMITY_SUSTAIN_TICKS = 2
+    # *** رفع باگ: مقدار قبلی (۳) دقیقاً برابر SCALE_DOWN_PATIENCE_TICKS بود.
+    # چون good_streak (که patience را می‌سنجد) و proximity_recent (که این
+    # محافظت را می‌سنجد) هر دو هم‌زمان و با نرخ یکسان (۱ واحد در هر تیک بدون
+    # violation) تغییر می‌کنند، محافظت دقیقاً همان تیکی صفر می‌شد که patience
+    # هم برآورده می‌شد - یعنی محافظت عملاً صفر تیک اضافه فراتر از آنچه
+    # patience به‌تنهایی نیاز داشت ایجاد می‌کرد. برای محافظت واقعی، این عدد
+    # باید اکیداً بزرگ‌تر از SCALE_DOWN_PATIENCE_TICKS باشد؛ ۲ تیک اضافه
+    # (SUSTAIN_TICKS به‌عنوان مقیاس مرجع) به‌عنوان مقدار معقول انتخاب شد.
+    PROXIMITY_PROTECTION_TICKS = 5
 
     def __init__(self):
         self._good_streak: Dict[int, int] = {}
