@@ -43,6 +43,12 @@ _SCALE_TO_INT = {ScaleAction.NO_CHANGE: 0, ScaleAction.SCALE_UP: 1, ScaleAction.
 _PROVISION_TO_INT = {ProvisionActionType.NO_CHANGE: 0, ProvisionActionType.TURN_ON: 1,
                       ProvisionActionType.TURN_OFF: 2}
 
+def model_path_for_seed(seed: int) -> str:
+    return os.path.join(os.path.dirname(__file__), f"ppo_model_seed{seed}.zip")
+
+MODEL_PATH = model_path_for_seed(CFG.seed)  
+
+
 
 def _encode_action(decisions: dict) -> np.ndarray:
     """تصمیمات خام موتور (dict برگردانده‌شده از engine._last_tick_decisions) را

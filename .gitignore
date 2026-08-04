@@ -38,6 +38,7 @@ htmlcov/
 *.log
 *.csv
 *.pkl
+*.html
 # OS files
 .DS_Store
 Thumbs.db

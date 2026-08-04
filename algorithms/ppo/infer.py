@@ -51,9 +51,17 @@ if __name__ == "__main__":
 
     args = _parse_args()
 
-    if not os.path.exists(MODEL_PATH):
-        raise SystemExit(f"مدل PPO پیدا نشد: {MODEL_PATH}\nاول آموزش بدهید: python3 -m algorithms.ppo.train")
-
+    from algorithms.ppo.train import model_path_for_seed
+    from common.config import CFG
+        
+    seed = getattr(args, "seed", None) or CFG.seed
+    resolved_path = model_path_for_seed(seed)
+    if not os.path.exists(resolved_path):
+        raise SystemExit(
+            f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
+            f"اول اجرا کنید: python -m algorithms.ppo.train"
+        ) 
+        
     test_events = load_test()
     os.makedirs(args.output_dir, exist_ok=True)
     result = run_ppo_inference(

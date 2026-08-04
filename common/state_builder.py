@@ -23,13 +23,30 @@ STATE_DIM = CFG.n_servers * 6 + CFG.n_services * 4 + 2
 
 _SERVER_STATE_ORDER = [ServerState.OFF, ServerState.BOOTING, ServerState.ACTIVE, ServerState.DRAINING]
 
-# ثابت‌های نرمال‌سازی (مقادیر معقول پیش‌فرض؛ در صورت نیاز کالیبره کنید - بخش ۱۳ سند)
-_NORM_RESPONSE_TIME_SEC = 300.0
-_NORM_ENERGY_JOULE = 12_000.0  # *** کالیبره‌شده با میانگین/حداکثر واقعی انرژی هر تیک
-# (اندازه‌گیری‌شده روی Data4.csv با Greedy: میانگین~۸۲۰۰J، صدک۹۰~۱۰۲۰۰J،
-# حداکثر~۱۲۷۰۰J؛ مقدار قبلی ۵۰۰۰۰J خیلی بزرگ بود و باعث می‌شد جریمه‌ی
-# انرژی در reward/observation عملاً بی‌اثر شود - نگاه کنید به بحث کالیبراسیون).
-_NORM_ARRIVAL_RATE = 20.0
+# ثابت‌های نرمال‌سازی - بازکالیبره‌شده با calibrate_constants.py روی
+# Data4.csv با Greedy، *بعد از* اعمال کل فیکس‌های موتور مشترک این دوره
+# (DRAINING در utilization/power، capacity-starved با BOOTING، drain
+# دینامیک، demand_centroid در لحظه‌ی ورود، ...). عدد انتخابی p95 است -
+# مقداری که ۹۵٪ تیک‌ها زیر آن هستند.
+_NORM_RESPONSE_TIME_SEC = 85.2   # *** بازکالیبره‌شده: p95 واقعی
+                                   # avg_response_time_recent (n=2875 تیک
+                                   # غیرصفر). مقدار قبلی (300.0) بدون
+                                   # کالیبراسیون مستند و ~3.5 برابر بزرگ‌تر
+                                   # از نیاز واقعی بود - این بُعد از
+                                   # state/reward عملاً همیشه دور از سقف
+                                   # کلمپ می‌ماند، یعنی کم‌تمایز بود.
+_NORM_ENERGY_JOULE = 20_843.65   # *** بازکالیبره‌شده: p95 واقعی
+                                   # energy_recent_joule (n=2882 تیک).
+                                   # تقریباً ۲ برابر مقدار قبلی (12000) -
+                                   # طبیعی و منتظره چون فیکس شمول DRAINING
+                                   # در instantaneous_utilization/power
+                                   # مصرف واقعی هر تیک را بالاتر نشان می‌دهد.
+_NORM_ARRIVAL_RATE = 3.0         # *** بازکالیبره‌شده: p95 واقعی recent_arrivals
+                                   # (هر سرویس، هر تیک؛ n=43230). مقدار
+                                   # قبلی (20.0) بیش از ۶ برابر بزرگ‌تر از
+                                   # نیاز واقعی بود (mean واقعی فقط ۰.۷۹) -
+                                   # این بُعد از state تقریباً همیشه نزدیک
+                                   # صفر و عملاً بی‌فایده برای عامل بود.
 
 
 def build_state_vector(snapshot: dict, servers: dict) -> np.ndarray:

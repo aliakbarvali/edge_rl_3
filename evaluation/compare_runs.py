@@ -22,10 +22,16 @@ def _try_build(name: str, ppo_args=None):
         if name == "ppo":
             from algorithms.ppo.ppo_algorithm import PPOAlgorithm
             from algorithms.ppo.train import MODEL_PATH
-            if not os.path.exists(MODEL_PATH):
-                print(f"[رد شد] ppo: مدل آموزش‌دیده در {MODEL_PATH} پیدا نشد "
-                      f"(python3 -m algorithms.ppo.train را اجرا کنید)")
-                return None
+            from algorithms.ppo.train import model_path_for_seed
+            from common.config import CFG
+                
+            seed = getattr(ppo_args, "seed", None) or CFG.seed
+            resolved_path = model_path_for_seed(seed)
+            if not os.path.exists(resolved_path):
+                raise SystemExit(
+                    f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
+                    f"اول اجرا کنید: python -m algorithms.ppo.train"
+                ) 
             ppo_args = ppo_args or {}
             return PPOAlgorithm(
                 model_path=MODEL_PATH,
@@ -68,7 +74,8 @@ def main():
         algo = _try_build(name, ppo_args=ppo_args)
         if algo is None:
             continue
-        print(f"در حال اجرای {name} ...")
+        print(f"در حال اجرای {name} ...",args.output_dir)
+        
         logger = EventLogger(os.path.join(args.output_dir, f"{name}_events.jsonl"), algorithm=name)
         engine = SimulationEngine(events, algo, name, event_logger=logger)
         try:
@@ -87,7 +94,7 @@ def main():
         return
 
     df = pd.DataFrame(rows)
-    print("\n" + df.T.to_string())
+    #print("\n" + df.T.to_string())
     df.to_csv(os.path.join(args.output_dir, "comparison_summary.csv"), index=False)
     print(f"\nجدول مقایسه ذخیره شد: {args.output_dir}/comparison_summary.csv")
 
