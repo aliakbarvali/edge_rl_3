@@ -51,7 +51,7 @@ class HPAAlgorithm(AlgorithmBase):
         # *** بخش ۶.۱ / یافته‌ی جدید: مثل Greedy/Voila، سیگنال «کاملاً پر ولی
         # busy-fraction<0.95» هم اضافه شد تا مقایسه‌ی چهارگانه منصفانه بماند.
         # همچنان location-unaware (بدون haversine) طبق تعریف صریح سند از HPA.
-        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)
 
         if avg_util > CFG.util_scale_up_threshold or starved_services:
             off_servers = sorted([s for s in servers.values() if s.state == ServerState.OFF],

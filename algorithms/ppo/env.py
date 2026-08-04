@@ -155,13 +155,21 @@ class EdgeResourceEnv(gym.Env):
     # ------------------------------------------------------------------
     def action_masks(self) -> np.ndarray:
         """اینترفیس مورد انتظار sb3_contrib.common.wrappers.ActionMasker /
-        MaskableMultiDiscrete: یک آرایه‌ی بولی مسطح به طول sum(nvec)."""
+        MaskableMultiDiscrete: یک آرایه‌ی بولی مسطح به طول sum(nvec).
+
+        *** رفع باگ عدم‌تطابق mask/اجرای واقعی: قبلاً can_up فقط can_host()
+        (ظرفیت خام، بدون چک state) را می‌سنجید، در حالی‌که select_placement_server
+        واقعی فقط سرورهای ACTIVE را کاندید می‌کند - یعنی mask گاهی SCALE_UP
+        را "مجاز" نشان می‌داد در حالی‌که موقع اجرا با no_target_server شکست
+        می‌خورد (روی سرور OFF/BOOTING/DRAINING با ظرفیت خالی). همچنین
+        can_down از n_replicas (شامل STARTING) به n_ready_replicas تغییر
+        کرد چون اجرای واقعی SCALE_DOWN فقط رپلیکاهای READY را می‌شمارد."""
         masks = []
         snapshot = self._last_snapshot
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
             can_up = self._any_server_can_host(sid)
-            can_down = sv["n_replicas"] > 1
+            can_down = sv["n_ready_replicas"] > 1
             masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
         for sid in _SERVER_IDS:
             st = snapshot["servers"][sid]["state"]
@@ -172,7 +180,12 @@ class EdgeResourceEnv(gym.Env):
 
     def _any_server_can_host(self, service_id: int) -> bool:
         cpu = CFG.services_info[service_id]["cpu_demand"]
-        return any(s.can_host(service_id, cpu) for s in self.engine.servers.values())
+        # *** فقط سرور ACTIVE می‌تواند واقعاً میزبان replica جدید شود -
+        # هماهنگ با select_placement_server در _MinimalSharedAlgorithm/
+        # سایر الگوریتم‌ها که همگی state == ACTIVE را شرط می‌گذارند.
+        return any(s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)
+                   for s in self.engine.servers.values())
+
 
 
 class _MinimalSharedAlgorithm:

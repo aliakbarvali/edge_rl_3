@@ -222,7 +222,20 @@ class RealtimeEngine:
         redis_state.set_replica_state(service_id, server_id, "DRAINING")
         self._log("pod_drain_started", server_id=server_id, service_id=service_id)
 
-        await asyncio.sleep(CFG.graceful_termination_delay_sec)  # فرصت برای اتمام درخواست‌های درحال‌پردازش
+        # *** رفع ریسک از‌دست‌رفتن درخواست‌های درون‌پرواز: به‌جای sleep ثابت
+        # (که برای سرویس‌های کند مثل سرویس ۱۵ با exec_time=120 کاملاً
+        # ناکافی بود)، منتظر خالی‌شدن واقعی صف (از طریق Redis) با یک سقف
+        # زمانی ایمن بر پایه‌ی worst-case این سرویس می‌مانیم.
+        svc = CFG.services_info[service_id]
+        max_wait = svc["queue_len"] * svc["exec_time"] + CFG.graceful_termination_delay_sec
+        start = time.monotonic()
+        while time.monotonic() - start < max_wait:
+            if redis_state.get_queue_occupancy(service_id, server_id) <= 0:
+                break
+            await asyncio.sleep(1.0)
+        else:
+            self._log("pod_drain_timeout_forced", server_id=server_id, service_id=service_id,
+                      reason="max_wait_exceeded")
 
         k8s_client.delete_deployment(service_id, server_id)
         redis_state.remove_replica(service_id, server_id)

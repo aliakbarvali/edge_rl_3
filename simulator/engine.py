@@ -1,28 +1,12 @@
 """
 simulator/engine.py
-موتور discrete-event. طبق بخش ۱۰ سند باید از simpy استفاده می‌شد؛ چون simpy در
-محیط توسعه/اجرای من قابل‌نصب نبود (بدون دسترسی شبکه به pypi برای این پکیج
-خاص)، یک موتور سبک و کاملاً معادل با heapq پیاده‌سازی شده که همان مدل
-رویداد-محور را با اولویت زمانی انجام می‌دهد. اگر روی سیستم خودتان simpy در
-دسترس بود و ترجیح می‌دهید از آن استفاده شود، فقط همین فایل باید بازنویسی
-شود؛ common/، algorithms/، data/ نیازی به تغییر ندارند.
-
-*** CHANGELOG (بازبینی ۲): دو اصلاح مهم نسبت به نسخه‌ی قبلی:
-
-1) Migration اکنون واقعاً به‌سبک «Make-Before-Break» است (طبق بخش ۶.۲ سند):
-   قبلاً رپلیکای جدید STARTING می‌شد *و هم‌زمان* رپلیکای قدیم هم بلافاصله
+قبلاً رپلیکای جدید STARTING می‌شد و هم‌زمان رپلیکای قدیم هم بلافاصله
    DRAINING می‌شد. چون رپلیکای DRAINING فوراً از کاندیدهای Router حذف
    می‌شود ولی رپلیکای جدید تا POD_STARTUP_DELAY_SEC ثانیه بعد READY نیست،
    یک پنجره‌ی واقعی وجود داشت که هیچ رپلیکای READY از آن سرویس در دسترس
    نبود -> REJECTED_NO_REPLICA غیرواقعی. حالا رپلیکای قدیم READY می‌ماند و
-   فقط *پس از* READY شدن رپلیکای جدید وارد DRAINING می‌شود (نگاه کنید
-   self._pending_migrations و _handle_replica_ready).
+   فقط پس از READY شدن رپلیکای جدید وارد DRAINING می‌شود ( self._pending_migrations و _handle_replica_ready).
 
-2) رویدادهای scale_decision، provision_decision، migration_started،
-   migration_completed که بخش ۱۲ سند به‌عنوان حداقل رویدادهای لاگ اجباری
-   نام می‌برد، قبلاً اصلاً لاگ نمی‌شدند؛ اضافه شدند. همچنین
-   REJECTED_NO_REPLICA (که قبلاً فقط در متریک‌ها شمارش می‌شد بدون رکورد
-   JSONL) اکنون مثل REJECTED_QUEUE_FULL لاگ می‌شود.
 """
 
 from __future__ import annotations
@@ -58,7 +42,6 @@ class SimulationEngine:
         self._energy_last_update: Dict[int, float] = {sid: 0.0 for sid in self.servers}
         self._low_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
 
-        # آمار «از آخرین تیک تصمیم» برای متریک‌های ورودی scale_decision
         self._tick_total = defaultdict(int)
         self._tick_rejected = defaultdict(int)
         self._tick_lat_sum = defaultdict(float)
@@ -73,29 +56,16 @@ class SimulationEngine:
         self._request_seq = 0
         self._service_demand_centroid: Dict[int, tuple] = {}
 
-        # *** بخش ۶.۲: migration های در انتظار تکمیل (make-before-break).
-        # کلید: (target_server_id, service_id) -> مقدار: server_id مبدأ (در حال drain)
-        # وقتی رپلیکای مقصد READY شد، رپلیکای مبدأ همان‌جا وارد DRAINING می‌شود.
         self._pending_migrations: Dict[Tuple[int, int], int] = {}
-        # *** بخش ۶.۲ سند: «اگر هیچ سرور ACTIVE مناسبی پیدا نشد، یک سرور
-        # OFF جدید Boot اضطراری شود». ردیابی سرویس‌هایی که فعلاً منتظر
-        # تکمیل یک boot اضطراری‌اند تا هر تیک دوباره یک سرور اضافی برایشان
-        # boot نشود. کلید: service_id -> server_id سروری که به‌خاطر همین
-        # سرویس در حال BOOTING است.
         self._emergency_boot_for_service: Dict[int, int] = {}
-        # *** بخش ۶.۱: ردیابی «تداوم overload» متقارن با _low_util_since،
-        # چون قبلاً فقط سمت پایین (scale-down/turn-off) تداوم چند-تیکی
-        # داشت و سمت بالا با یک نمونه‌ی لحظه‌ای فوراً trigger می‌شد.
         self._high_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
 
-        # *** بخش ۷: «Cooldown مشابه ۶.۱ برای هر service_id» - قبلاً اصلاً
-        # پیاده نشده بود (فقط سرور cooldown داشت، نه سرویس). آخرین لحظه‌ای
-        # که یک اکشن SCALE_UP/DOWN واقعاً روی هر سرویس اعمال شد.
+     
         self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
         self._service_last_scale_up_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
         self._recent_positions: Dict[int, deque] = defaultdict(lambda: deque(maxlen=30))
         
-    # ------------------------------------------------------------------
+    
     def _init_servers(self) -> Dict[int, Server]:
         servers = {}
         for sid, info in CFG.server_info.items():
@@ -108,9 +78,6 @@ class SimulationEngine:
         self._seq += 1
         heapq.heappush(self._heap, Event(time, self._seq, etype, payload))
 
-    # ------------------------------------------------------------------
-    # انرژی: انتگرال‌گیری پله‌ای (piecewise-constant) بین رویدادها
-    # ------------------------------------------------------------------
     def _advance_energy_to(self, t: float):
         for sid, s in self.servers.items():
             last = self._energy_last_update[sid]
@@ -119,9 +86,8 @@ class SimulationEngine:
                 s.cumulative_energy_joule += power * (t - last)
                 self._energy_last_update[sid] = t
 
-    # ------------------------------------------------------------------
-    # بخش ۴: جایگذاری اولیه
-    # ------------------------------------------------------------------
+    
+    # جایگذاری اولیه
     def _initial_placement(self):
         first_window = self.events_df[self.events_df.global_start_sec <=
                                        self.events_df.global_start_sec.min() + CFG.monitor_window_sec]
@@ -343,7 +309,15 @@ class SimulationEngine:
         r.state = ReplicaState.DRAINING
         r.drain_started_at = self.now
         self._log("pod_drain_started", server_id=r.server_id, service_id=r.service_id)
-        self._push(self.now + CFG.graceful_termination_delay_sec, EventType.REPLICA_TERMINATED,
+        # *** بخش ۲.۴/۹: به‌جای تأخیر ثابت یکسان برای هر ۱۵ سرویس، منتظر
+        # زمان واقعی خالی‌شدن این replica می‌مانیم (r.available_at = زمان
+        # اتمام آخرین درخواست پذیرفته‌شده، از try_admit). سرویس‌های کند با
+        # صف پر (مثلاً سرویس ۱۵: exec_time=120, queue_len=10) می‌توانند تا
+        # ۱۲۰۰ ثانیه واقعی برای خالی‌شدن نیاز داشته باشند - در برابر
+        # GRACEFUL_TERMINATION_DELAY_SEC=10s ثابت قبلی که فقط برای صف خالی
+        # کافی بود.
+        drain_wait = max(CFG.graceful_termination_delay_sec, r.available_at - self.now)
+        self._push(self.now + drain_wait, EventType.REPLICA_TERMINATED,
                     (r.server_id, r.service_id))
 
     def _handle_replica_terminated(self, key):
@@ -369,6 +343,13 @@ class SimulationEngine:
         self._tick_total[req.service_id] += 1
         self._tick_lat_sum[req.service_id] += req.bts_lat
         self._tick_lon_sum[req.service_id] += req.bts_long
+        # *** رفع حلقه‌ی بازخورد خودتقویت‌شونده (بخش ۵ سند - فلسفه‌ی VOILA):
+        # قبلاً موقعیت فقط برای درخواست‌های COMPLETED ثبت می‌شد؛ یعنی
+        # مناطقی که به‌خاطر نبود پوشش دائم رد می‌شدند هرگز در demand_centroid
+        # دیده نمی‌شدند (کمبود پوشش -> رد شدن -> centroid کور به همان کمبود
+        # -> کمبود ادامه‌دار). حالا موقعیت در لحظه‌ی ورود ثبت می‌شود، صرف‌نظر
+        # از نتیجه‌ی نهایی (موفق یا رد).
+        self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
         self._log("request_arrived", request_id=req.id, service_id=req.service_id)
 
         candidates = [r for r in self.replicas_by_service.get(req.service_id, [])
@@ -425,7 +406,13 @@ class SimulationEngine:
         req.service_end_time = admit["service_end_time"]
         req.wait_time_sec = admit["wait_time_sec"]
         self._log("request_queued", request_id=req.id, service_id=req.service_id,
-                  server_id=server.id, wait_time_sec=req.wait_time_sec)        
+                  server_id=server.id, wait_time_sec=req.wait_time_sec)
+        # *** بخش ۲.۴: بدون این رویداد، _advance_energy_to فقط در لحظه‌ی
+        # رویداد بعدی (که می‌تواند تا DECISION_INTERVAL_SEC=30s دیرتر باشد)
+        # صدا زده می‌شد - یعنی دوره‌ی idle-شدنِ واقعیِ این replica با توانِ
+        # "مشغول" محاسبه می‌شد. این رویداد سبک صرفاً موتور را دقیقاً در لحظه‌ی
+        # اتمام واقعی این درخواست "بیدار" می‌کند.
+        self._push(req.service_end_time, EventType.ENERGY_RESYNC, None)        
         # بخش ۳: response_time = ۲×network_delay (رفت+برگشت) + wait + exec (+cold start در exec لحاظ شد)
         req.response_time_sec = (2 * delay_ms / 1000.0) + req.wait_time_sec + \
                                  (req.service_end_time - req.service_start_time)
@@ -433,13 +420,12 @@ class SimulationEngine:
         req.status = RequestStatus.COMPLETED
         if req.deadline_violated:
             self._tick_violated[req.service_id] += 1
+ 
         self._tick_response_times.append(req.response_time_sec)
         self._log("request_completed", request_id=req.id, service_id=req.service_id,
                   server_id=server.id, response_time_sec=req.response_time_sec)
-        self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
 
         self._finalize_request(req)
-
     def _finalize_request(self, req: Request):
         self.metrics.record_request(req)
 
@@ -474,6 +460,7 @@ class SimulationEngine:
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
+                "n_ready_replicas": len(ready),
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
@@ -485,7 +472,7 @@ class SimulationEngine:
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
                                "num_rejected_recent": 0}
         return snapshot
-
+        
     def _build_metrics_snapshot(self) -> dict:
         snapshot = {"servers": {}, "services": {}, "global": {}}
         for sid, s in self.servers.items():
@@ -514,6 +501,7 @@ class SimulationEngine:
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
+                "n_ready_replicas": len(ready),
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
@@ -531,7 +519,7 @@ class SimulationEngine:
         }
         self._energy_at_last_tick = current_energy
         return snapshot
-
+        
     def _apply_provisioning(self, action, snapshot: dict):
         self._last_tick_decisions["provision"] = action      
         applied = False
@@ -620,15 +608,18 @@ class SimulationEngine:
         3500 از 3508 تلاش SCALE_UP واقعی با no_target_server شکست خورده
         بودند (نگاه کنید greedy_events.jsonl). این تابع سیگنال مکمل است.
         """
+   
         for svc_id in CFG.active_services:
             if not self._was_scale_up_necessary(svc_id, snapshot):
                 continue
             cpu = CFG.services_info[svc_id]["cpu_demand"]
-            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+            # *** هماهنگ با algorithms/base.py:_capacity_starved_services -
+            # سرور BOOTING هم می‌تواند به‌زودی این starvation را رفع کند،
+            # نباید نادیده گرفته شود.
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
                        for s in self.servers.values()):
                 return True
         return False
-
     def _any_active_server_sustained_underloaded(self) -> bool:
         """قرینه‌ی بالا برای TURN_OFF: آیا حداقل یک سرور ACTIVE (غیر از آخرین
         سرور فعال سیستم) برای مدت کافی زیر آستانه بوده؟ برای «فرصت ازدست‌رفته»ی
@@ -655,14 +646,11 @@ class SimulationEngine:
 
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
         sv = snapshot["services"][svc_id]
-        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
-        # *** رفع باگ: قبلاً n_replicas>1 چک نمی‌شد. وقتی سرویسی از قبل فقط
-        # ۱ رپلیکا دارد، SCALE_DOWN اصلاً امکان‌پذیر نیست (بخش ۲.۲: حداقل ۱
-        # رپلیکا همیشه باید بماند)؛ بدون این چک، هر تیکی که occ_ratio پایین
-        # بود ولی فقط ۱ رپلیکا وجود داشت به‌غلط "فرصت ازدست‌رفته" ثبت می‌شد -
-        # همین باعث اعداد missed_opportunities غیرواقعی (~۲۶٬۰۰۰) شده بود.
-        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold and sv["n_replicas"] > 1
-
+        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0 
+        # *** هماهنگ با اجرای واقعی SCALE_DOWN که فقط READY را می‌شمارد،
+        # نه n_replicas (که STARTING را هم شامل می‌شود).
+        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold and sv["n_ready_replicas"] > 1
+    
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):
         self._last_tick_decisions["scale"][svc_id] = decision
             
@@ -826,4 +814,6 @@ class SimulationEngine:
                 self._handle_replica_ready(ev.payload)
             elif ev.type == EventType.REPLICA_TERMINATED:
                 self._handle_replica_terminated(ev.payload)
+            elif ev.type == EventType.ENERGY_RESYNC:
+                pass  # فقط برای دقیق‌کردن _advance_energy_to (بالای همین حلقه) لازم بود
         return None, True

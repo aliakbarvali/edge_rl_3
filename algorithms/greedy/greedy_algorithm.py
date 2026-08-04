@@ -24,7 +24,7 @@ class GreedyAlgorithm(AlgorithmBase):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)
         if overloaded or starved_services:
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:

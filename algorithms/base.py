@@ -102,7 +102,7 @@ class AlgorithmBase(ABC):
     @staticmethod
     def _filter_by_profile_with_fallback(candidates: List[Server], desired_profile: str) -> List[Server]:
         matching = [s for s in candidates if s.profile == desired_profile]
-        return matching if matching else candidates  # اگر پروفایل دلخواه در دسترس نبود -> همه‌ی کاندیدها
+        return matching if matching else candidates 
 
     
     def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
@@ -111,15 +111,25 @@ class AlgorithmBase(ABC):
         return min(ready_replicas, key=occupancy_fn)
 
     @staticmethod
-    def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server]) -> List[int]:
-
+    def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server],
+                                    occ_threshold: float = 0.7) -> List[int]:
+        """
+        *** دو اصلاح نسبت به نسخه‌ی قبلی:
+        ۱) occ_threshold اکنون پارامتر است (نه هاردکد ۰.۷) تا هر الگوریتم
+           بتواند threshold داخلی خودش را پاس بدهد (مثلاً Voila با ۰.۶۸) و
+           بین تشخیص نیاز و trigger شدن سیگنال starvation ناهماهنگی نباشد.
+        ۲) سرور BOOTING هم پذیرفته می‌شود، نه فقط ACTIVE - چون سروری که در
+           حال boot شدن است به‌زودی این starvation را رفع می‌کند؛ بدون این
+           تغییر، تیک تصمیم بعدی (که هنوز BOOTING تمام نشده) دوباره همان
+           starvation را می‌بیند و یک سرور اضافه‌ی غیرضروری boot می‌کند.
+        """
         starved = []
         for svc_id, sv in metrics_snapshot["services"].items():
             occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
-            if not (occ_ratio > 0.7 or sv["rejection_rate"] > 0.0):
+            if not (occ_ratio > occ_threshold or sv["rejection_rate"] > 0.0):
                 continue
             cpu = CFG.services_info[svc_id]["cpu_demand"]
-            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
                        for s in servers.values()):
                 starved.append(svc_id)
         return starved

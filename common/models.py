@@ -120,16 +120,16 @@ class Server:
     def in_cooldown(self, now: float, cooldown_sec: float) -> bool:
         return (now - self.last_transition_time) < cooldown_sec
 
+
+    
     def instantaneous_utilization(self, now: float) -> float:
-        """utilization(t) طبق بخش ۲.۴: فقط رپلیکاهای *در حال پردازش* در لحظه‌ی now."""
         busy_cpu = 0
         for r in self.hosted_replicas.values():
-            if r.state == ReplicaState.READY and not r.is_idle(now):
+            if r.state in (ReplicaState.READY, ReplicaState.DRAINING) and not r.is_idle(now):
                 busy_cpu += self._cpu_of(r)
         return busy_cpu / self.capacity if self.capacity > 0 else 0.0
-
+    
     def instantaneous_power_w(self, now: float) -> float:
-        """بخش ۲.۴: مدل توان لحظه‌ای بر اساس state."""
         if self.state == ServerState.OFF:
             return 0.0
         if self.state == ServerState.BOOTING:

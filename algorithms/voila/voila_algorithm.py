@@ -145,7 +145,11 @@ class VoilaAlgorithm(AlgorithmBase):
         # "غیراضافه‌بار" نشان دهد (چون busy-fraction آن لزوماً >0.95 نیست).
         # Greedy همین سیگنال را گرفته؛ اینجا هم اضافه شد تا مقایسه‌ی چهارگانه
         # منصفانه بماند - نگاه کنید algorithms/base.py:_capacity_starved_services.
-        starved_services = self._capacity_starved_services(metrics_snapshot, servers)
+        # *** هماهنگ با threshold داخلی خودِ Voila (OCC_UP_THRESHOLD=0.68)،
+        # نه ۰.۷ هاردکد Greedy - تا سیگنال starvation دقیقاً همان لحظه‌ای
+        # trigger شود که scale_decision خودِ Voila هم نیاز را تشخیص می‌دهد.
+        starved_services = self._capacity_starved_services(metrics_snapshot, servers,
+                                                             occ_threshold=self.OCC_UP_THRESHOLD)
         if overloaded or starved_services:
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:

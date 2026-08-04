@@ -19,6 +19,11 @@ class EventType(Enum):
     SERVER_DRAIN_DONE = auto()      # DRAINING -> OFF
     REPLICA_READY = auto()          # STARTING -> READY
     REPLICA_TERMINATED = auto()     # DRAINING -> TERMINATED
+    ENERGY_RESYNC = auto()          # *** رویداد سبک، فقط برای دقیق‌کردن
+                                     # محاسبه‌ی انرژی در لحظه‌ی اتمام دقیق هر
+                                     # درخواست (بدون این، انرژی فقط در لحظه‌ی
+                                     # رویداد بعدی -که تا ۳۰ ثانیه دیرتر باشد-
+                                     # به‌روزرسانی می‌شد)
 
 
 @dataclass(order=True)

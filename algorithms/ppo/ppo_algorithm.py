@@ -66,13 +66,17 @@ class PPOAlgorithm(AlgorithmBase):
         self._cached_tick_key = now
 
     def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict):
+        """*** باید دقیقاً هم‌راستا با algorithms/ppo/env.py:action_masks()
+        باشد - همان باگ (can_host بدون چک ACTIVE) اینجا هم بود، چون این
+        تابع مسیر inference/ارزیابی نهایی است (نه فقط آموزش)."""
         import numpy as np
         masks = []
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
             cpu = CFG.services_info[sid]["cpu_demand"]
-            can_up = any(s.can_host(sid, cpu) for s in servers.values())
-            can_down = sv["n_replicas"] > 1
+            can_up = any(s.state == ServerState.ACTIVE and s.can_host(sid, cpu)
+                         for s in servers.values())
+            can_down = sv["n_ready_replicas"] > 1
             masks.extend([True, can_up, can_down])
         for sid in _SERVER_IDS:
             st = snapshot["servers"][sid]["state"]

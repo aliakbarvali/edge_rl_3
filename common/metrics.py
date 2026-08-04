@@ -82,10 +82,19 @@ class MetricsCollector:
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         self._snapshot_times.append(now)
         self._active_server_counts.append(len(active))
-        if len(active) >= 2:
+        # *** رفع بایاس: قبلاً تیک‌هایی با فقط ۱ سرور فعال کاملاً از میانگین
+        # حذف می‌شدند (نه این‌که CV=0 حساب شوند) - این باعث می‌شد الگوریتمی
+        # که بیشتر وقتش تک‌سروره (مثل Greedy) به‌طور مصنوعی avg_load_balance_cv
+        # بهتری نشان دهد، چون دقیقاً تیک‌های "بی‌معنی برای توازن" را از
+        # میانگین‌گیری حذف می‌کرد، نه این‌که واقعاً بی‌طرف حسابشان کند.
+        if len(active) == 1:
+            self._load_balance_cvs.append(0.0)
+        elif len(active) >= 2:
             loads = np.array([s.instantaneous_utilization(now) for s in active])
             if loads.mean() > 0:
                 self._load_balance_cvs.append(float(loads.std() / loads.mean()))
+            else:
+                self._load_balance_cvs.append(0.0)
 
     def record_transition(self, kind):
         if kind == "server_boot":

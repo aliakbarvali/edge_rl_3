@@ -1,10 +1,6 @@
 """
 run.py
-نقطه‌ی ورود اصلی، طبق بخش ۱۰ سند:
-    python3 run.py --algorithm {greedy,voila,hpa,ppo} --mode {sim,k8s} [--data test|train]
 
-این فایل فقط بر اساس --algorithm نمونه‌ی مناسب از AlgorithmBase می‌سازد و به
-موتور شبیه‌سازی می‌دهد؛ خودش هیچ منطق تصمیم‌گیری‌ای ندارد.
 """
 
 from __future__ import annotations
