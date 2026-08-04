@@ -544,10 +544,12 @@ class SimulationEngine:
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
                 applied = True
-                # *** بخش ۸: چون gate بالا خودش دقیقاً همان معیار ممیزی است،
-                # هر TURN_ON اعمال‌شده به‌تعریف "correct" است؛ ارزش این ثبت
-                # بیشتر برای تأیید یکنواختی رفتار گیت روی هر ۴ الگوریتم است.
-                self.metrics.record_decision_correctness("TURN_ON", True)
+                # *** رفع خودارجاعی: به‌جای True ثابت (که چون gate بالا خودش
+                # پیش‌شرط اعمال بود، نتیجه از پیش تضمین می‌شد)، از یک معیار
+                # لحظه‌ای و مستقل استفاده می‌شود - نگاه کنید
+                # _was_turn_on_necessary_audit.
+                self.metrics.record_decision_correctness(
+                    "TURN_ON", self._was_turn_on_necessary_audit(snapshot))
         elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
@@ -566,7 +568,9 @@ class SimulationEngine:
                 if self._start_server_drain(action.server_id):
                     self.metrics.record_scale_action("TURN_OFF")
                     applied = True
-                    self.metrics.record_decision_correctness("TURN_OFF", True)
+                    # *** رفع خودارجاعی، مشابه TURN_ON بالا.
+                    self.metrics.record_decision_correctness(
+                        "TURN_OFF", self._was_turn_off_necessary_audit(action.server_id, snapshot))
                 else:
                     skip_reason = "migration_incomplete"
 
@@ -635,7 +639,28 @@ class SimulationEngine:
     def _was_turn_off_necessary(self, server_id: int) -> bool:
         since = self._low_util_since.get(server_id)
         return since is not None and (self.now - since) >= CFG.sustain_low_sec
+    def _was_turn_on_necessary_audit(self, snapshot: dict) -> bool:
+        """بخش ۸: معیار ممیزی *مستقل* برای TURN_ON. برخلاف turn_on_necessary
+        در _apply_provisioning (که به‌عنوان gate عمل می‌کند و نیاز به تداوم
+        SUSTAIN_HIGH_SEC ثانیه‌ای overload دارد)، این تابع فقط وضعیت
+        *لحظه‌ای* همین snapshot را می‌سنجد - بدون نیاز به تداوم. بدون این
+        تفکیک، هر TURN_ON اعمال‌شده (که فقط بعد از عبور از gate ممکن
+        می‌شود) به‌تعریف correct ثبت می‌شد؛ یک خودارجاعی بدون ارزش ممیزی
+        واقعی. حالا ممکن است gate اجازه دهد (چون تداوم ۳۰ ثانیه‌ای برقرار
+        بوده) ولی audit بگوید در همین لحظه‌ی خاص دیگر overloaded نیست -
+        این دقیقاً نشانه‌ی استقلال واقعی دو معیار است.
+        """
+        overloaded_now = any(
+            snapshot["servers"][sid]["utilization"] > CFG.util_scale_up_threshold
+            for sid, s in self.servers.items() if s.state == ServerState.ACTIVE
+        )
+        return overloaded_now or self._any_service_capacity_starved(snapshot)
 
+    def _was_turn_off_necessary_audit(self, server_id: int, snapshot: dict) -> bool:
+        """قرینه‌ی بالا برای TURN_OFF: وضعیت لحظه‌ای utilization همین سرور
+        خاص، مستقل از تداوم SUSTAIN_LOW_SEC که در گیت واقعی (_low_util_since)
+        لازم است."""
+        return snapshot["servers"][server_id]["utilization"] < CFG.util_scale_down_threshold
     def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
         """بخش ۸: معیار ممیزی *مستقل* از threshold داخلی هر الگوریتم (Greedy،
         Voila، HPA، PPO هر کدام threshold/فرمول خودشان را دارند) - یک خط‌کش
@@ -647,8 +672,6 @@ class SimulationEngine:
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0 
-        # *** هماهنگ با اجرای واقعی SCALE_DOWN که فقط READY را می‌شمارد،
-        # نه n_replicas (که STARTING را هم شامل می‌شود).
         return occ_ratio < CFG.decision_audit_scale_down_occ_threshold and sv["n_ready_replicas"] > 1
     
     def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict):

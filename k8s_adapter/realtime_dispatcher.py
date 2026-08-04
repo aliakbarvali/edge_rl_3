@@ -62,8 +62,12 @@ class RealtimeEngine:
         # آمار «از آخرین تیک تصمیم» - دقیقاً مثل simulator/engine.py
         self._tick_total = defaultdict(int)
         self._tick_rejected = defaultdict(int)
-        self._tick_violated = defaultdict(int)
-
+        self._tick_violated = defaultdict(int)  
+        # *** رفع کمبود: نسخه‌ی شبیه‌ساز (simulator/engine.py) این شمارنده
+        # را داشت ولی اینجا فراموش شده بود؛ باعث می‌شد proximity_violation_rate
+        # همیشه صفر/غایب باشد و common/state_builder.py نتواند از همان
+        # snapshot این‌جا برای PPO استفاده کند بدون KeyError.
+        self._tick_proximity_violated = defaultdict(int)
     # ------------------------------------------------------------------
     def _init_shadow_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -266,15 +270,16 @@ class RealtimeEngine:
                        / len(ready)) if ready else 0.0
         
             snapshot["services"][svc_id] = {
-                "n_replicas": len([r for r in reps if r.state in (ReplicaState.READY, ReplicaState.STARTING)]),
+                "n_replicas": len([r for r in reps if r.state in
+                                    (ReplicaState.READY, ReplicaState.STARTING)]),
                 "n_ready_replicas": len(ready),
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
                 "recent_arrivals": self._tick_total[svc_id],
-                "demand_centroid": None,
-                "proximity_violation_rate": 0.0, 
+                "demand_centroid": None, 
+                "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
             }
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
                                "num_rejected_recent": sum(self._tick_rejected.values())}
@@ -332,6 +337,7 @@ class RealtimeEngine:
             self._tick_total.clear()
             self._tick_rejected.clear()
             self._tick_violated.clear()
+            self._tick_proximity_violated.clear()
 
     # ------------------------------------------------------------------
     # dispatcher واقعی: replay با زمان‌بندی واقعی + HTTP واقعی
@@ -382,6 +388,11 @@ class RealtimeEngine:
         setattr(req, "_distance_km", distance_km)
         req.network_delay_ms = delay_ms
         req.assigned_server_id = server.id
+        # *** دقیقاً مثل simulator/engine.py:_handle_arrival - نقض proximity
+        # یعنی رفت‌وبرگشت تأخیر شبکه از PROXIMITY_L0_MS (نه L0_MS پوشش
+        # اولیه) بیشتر شده.
+        if 2 * delay_ms > CFG.proximity_l0_ms:
+            self._tick_proximity_violated[req.service_id] += 1
         self._log("request_routed", request_id=req.id, server_id=server.id, distance_km=distance_km)
 
         ip = redis_state.get_pod_ip(req.service_id, chosen.server_id)
