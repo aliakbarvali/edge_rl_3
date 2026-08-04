@@ -37,14 +37,27 @@ SCALE_UP بی‌مورد فقط جلوی SCALE_DOWN اشتباه گرفته می
 قبل از select_placement_server برای همان سرویس در همان تیک صدا زده می‌شود -
 نگاه کنید به simulator/engine.py:_apply_scale_decision) آخرین snapshot را
 کش می‌کند.
+
+*** انحراف عمدی از بخش ۵ سند (مستند، با تأیید صریح): سند صراحتاً می‌گوید
+routing/instance-selection بین هر ۴ الگوریتم مشترک و صرفاً بر پایه‌ی فاصله‌ی
+جغرافیایی *واقعی* (oracle) است، نه latency واقعاً اندازه‌گیری‌شده مثل مقاله‌ی
+اصلی VOILA (که از Vivaldi/Serf استفاده می‌کند). طبق درخواست صریح برای
+مقایسه‌ی وفادارتر به مقاله، *فقط* VoilaAlgorithm.select_replica اینجا override
+شده تا به‌جای فاصله‌ی جغرافیایی واقعی، از یک سیستم مختصات Vivaldi واقعی
+(common/network_coordinates.py) استفاده کند - یعنی هیچ دانش پیشینی از موقعیت
+BTS ندارد و فقط از طریق RTT مشاهده‌شده‌ی درخواست‌های قبلی یاد می‌گیرد.
+Greedy/HPA/PPO دست‌نخورده می‌مانند و همچنان از AlgorithmBase.select_replica
+(oracle) استفاده می‌کنند - این عمداً یک مقایسه‌ی نامتقارن‌تر ولی وفادارتر به
+مقاله‌ی هرکدام ایجاد می‌کند: Voila دیگر oracle نیست.
 """
 
 from __future__ import annotations
 from typing import Dict, List, Optional
 
 from common.config import CFG
-from common.geo import haversine_km
-from common.models import Server, ServerState, ReplicaState
+from common.geo import haversine_km, network_delay_ms
+from common.models import Server, ServerState, ReplicaState, Replica, Request
+from common.network_coordinates import VivaldiNetwork
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
 
 
@@ -53,11 +66,7 @@ class VoilaAlgorithm(AlgorithmBase):
     OCC_UP_THRESHOLD = 0.68
     OCC_DOWN_THRESHOLD = 0.20
     SCALE_DOWN_PATIENCE_TICKS = 3
-    # *** رفع باگ: مقدار قبلی (۱) عملاً هیچ اثر sustain/debounce نداشت، چون
-    # streak=1 در همان اولین تیک نقض هم شرط streak<PROXIMITY_SUSTAIN_TICKS
-    # را رد می‌کرد. حالا با فعال‌شدن واقعی سیگنال proximity (common/config.py)،
-    # ۲ تیک متوالی لازم است تا از نویز لحظه‌ای تفکیک شود.
-    PROXIMITY_SUSTAIN_TICKS = 2
+    PROXIMITY_SUSTAIN_TICKS = 1 
     PROXIMITY_PROTECTION_TICKS = 3
    
 
@@ -67,6 +76,12 @@ class VoilaAlgorithm(AlgorithmBase):
 
         self._proximity_violation_streak: Dict[int, int] = {} 
         self._proximity_recent: Dict[int, int] = {}
+
+        # *** lazy: چون ساخت VivaldiNetwork نیاز به دیکشنری servers دارد که
+        # در __init__ الگوریتم در دسترس نیست (VoilaAlgorithm() بدون آرگومان
+        # ساخته می‌شود - نگاه کنید run.py/compare_runs.py)، اولین بار که
+        # select_replica صدا زده شود ساخته می‌شود.
+        self._vivaldi: Optional[VivaldiNetwork] = None
 
     def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
         self._last_snapshot = metrics_snapshot
@@ -110,6 +125,47 @@ class VoilaAlgorithm(AlgorithmBase):
         return ScaleAction.NO_CHANGE
 
     # ------------------------------------------------------------------
+    def select_replica(self, request: Request, candidate_replicas: List[Replica],
+                        servers: Dict[int, Server], now: float) -> Optional[Replica]:
+        """
+        بازنویسی instance-selection (بخش ۳ و ۵ سند) طبق مقاله‌ی اصلی VOILA:
+        رتبه‌بندی رپلیکاها بر پایه‌ی RTT *تخمینی* (Vivaldi، ممکن است هنوز
+        ناهمگرا/ناقص باشد)، نه فاصله‌ی جغرافیایی واقعی. بعد از انتخاب نهایی،
+        RTT *واقعی* رپلیکای انتخاب‌شده به‌عنوان یک نمونه‌ی مشاهده به سیستم
+        Vivaldi بازخورد داده می‌شود تا تخمین آینده دقیق‌تر شود - دقیقاً مثل
+        یک client واقعی که فقط با peerهایی که واقعاً باهاشان تعامل کرده RTT
+        اندازه می‌گیرد.
+
+        قید صف (queue_occupancy < queue_len) دقیقاً مثل نسخه‌ی مشترک حفظ
+        شده - فقط معیار *ترتیب* رپلیکاها عوض شده، نه قید پذیرش.
+        """
+        if not candidate_replicas:
+            return None
+        if self._vivaldi is None:
+            self._vivaldi = VivaldiNetwork(servers, CFG.base_latency_ms, CFG.k_ms_per_km,
+                                            seed=CFG.seed)
+
+        ranked = sorted(
+            candidate_replicas,
+            key=lambda r: self._vivaldi.estimate_rtt_ms(request.bts_lat, request.bts_long, r.server_id),
+        )
+        chosen = None
+        for r in ranked:
+            if r.queue_occupancy(now) < r.queue_len:
+                chosen = r
+                break
+
+        if chosen is not None:
+            # *** بازخورد پس از انتخاب: تنها اینجا RTT واقعی (نه تخمینی) در
+            # دسترس است - چون فقط برای رپلیکای واقعاً انتخاب‌شده معنادار است.
+            true_dist_km = haversine_km(request.bts_lat, request.bts_long,
+                                         servers[chosen.server_id].lat, servers[chosen.server_id].long)
+            true_rtt_ms = 2 * network_delay_ms(true_dist_km, CFG.base_latency_ms, CFG.k_ms_per_km)
+            self._vivaldi.observe(request.bts_lat, request.bts_long, chosen.server_id, true_rtt_ms)
+
+        return chosen
+
+    # ------------------------------------------------------------------
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
         cpu = CFG.services_info[service_id]["cpu_demand"]
         candidates = [s for s in servers.values()
@@ -140,11 +196,7 @@ class VoilaAlgorithm(AlgorithmBase):
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-        # *** بخش ۶.۱ / یافته‌ی جدید: قبلاً این‌جا فقط utilization لحظه‌ای چک
-        # می‌شد که یک سرور کاملاً پر (free_capacity=0) را می‌توانست به‌اشتباه
-        # "غیراضافه‌بار" نشان دهد (چون busy-fraction آن لزوماً >0.95 نیست).
-        # Greedy همین سیگنال را گرفته؛ اینجا هم اضافه شد تا مقایسه‌ی چهارگانه
-        # منصفانه بماند - نگاه کنید algorithms/base.py:_capacity_starved_services.
+       
         # *** هماهنگ با threshold داخلی خودِ Voila (OCC_UP_THRESHOLD=0.68)،
         # نه ۰.۷ هاردکد Greedy - تا سیگنال starvation دقیقاً همان لحظه‌ای
         # trigger شود که scale_decision خودِ Voila هم نیاز را تشخیص می‌دهد.
@@ -207,15 +259,13 @@ class VoilaAlgorithm(AlgorithmBase):
          
    
             
-    def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
-        occupancy_fn = occupancy_fn or (lambda r: r.queue_occupancy(now))
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now):
         centroid = None
         if self._last_snapshot is not None:
             centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
         if centroid is None or len(ready_replicas) <= 1:
-            return super().select_scale_down_victim(service_id, ready_replicas, servers, now,
-                                                      occupancy_fn=occupancy_fn)
-        by_load = sorted(ready_replicas, key=occupancy_fn)
+            return super().select_scale_down_victim(service_id, ready_replicas, servers, now) 
+        by_load = sorted(ready_replicas, key=lambda r: r.queue_occupancy(now))
         low_load_pool = by_load[:max(1, len(by_load) // 2)]
         return max(low_load_pool, key=lambda r: haversine_km(
             centroid[0], centroid[1], servers[r.server_id].lat, servers[r.server_id].long))

@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>edge_rl_3 — مدیریت پویای منابع محاسباتی لبه</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F6F7FA;
+  --paper-2:#EEF1F6;
+  --ink:#0C1B2A;
+  --ink-soft:#54627A;
+  --ink-faint:#93A0B4;
+  --line:#DCE1EA;
+  --card:#FFFFFF;
+  --blue:#2F6FED;
+  --blue-soft:#E8EFFE;
+  --green:#0F9E86;
+  --green-soft:#E3F6F1;
+  --coral:#F0623C;
+  --coral-soft:#FDEAE3;
+  --amber:#E7A730;
+  --amber-soft:#FBF1DD;
+  --radius:18px;
+  --shadow: 0 1px 2px rgba(12,27,42,.04), 0 8px 24px rgba(12,27,42,.06);
+}
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{height:100%;}
+body{
+  font-family:'Vazirmatn', sans-serif;
+  background:var(--paper);
+  color:var(--ink);
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+.mono{ font-family:'JetBrains Mono', monospace; direction:ltr; unicode-bidi:isolate; }
+
+/* ===== Deck ===== */
+#deck{
+  height:100vh;
+  overflow-y:scroll;
+  scroll-snap-type:y mandatory;
+  scroll-behavior:smooth;
+}
+.slide{
+  position:relative;
+  height:100vh;
+  width:100%;
+  scroll-snap-align:start;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  padding:64px 88px;
+  overflow:hidden;
+}
+.slide-inner{ width:100%; max-width:1180px; margin:0 auto; }
+.eyebrow{
+  display:flex; align-items:center; gap:10px;
+  font-family:'JetBrains Mono', monospace;
+  font-size:12.5px; letter-spacing:.06em;
+  color:var(--blue); font-weight:600;
+  margin-bottom:18px; direction:ltr; justify-content:flex-end;
+}
+.eyebrow .dot{ width:6px; height:6px; border-radius:50%; background:var(--blue); }
+h1.big{
+  font-size:56px; font-weight:900; line-height:1.18; letter-spacing:-.01em;
+  margin-bottom:18px;
+}
+h2.title{
+  font-size:38px; font-weight:800; line-height:1.25; margin-bottom:14px;
+}
+p.lead{
+  font-size:18px; color:var(--ink-soft); line-height:1.9; max-width:820px; font-weight:500;
+}
+.kicker{ font-size:15px; color:var(--ink-faint); font-weight:600; margin-bottom:6px; }
+
+/* ===== Nav ===== */
+#progress-rail{
+  position:fixed; top:0; bottom:0; left:26px; z-index:50;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px;
+}
+#progress-rail button{
+  width:8px; height:8px; border-radius:50%; border:none; background:var(--line);
+  cursor:pointer; transition:all .25s ease; padding:0;
+}
+#progress-rail button.active{ background:var(--blue); width:8px; height:24px; border-radius:5px; }
+
+#slide-counter{
+  position:fixed; bottom:28px; right:88px; z-index:50;
+  font-family:'JetBrains Mono', monospace; font-size:12.5px; color:var(--ink-faint);
+  direction:ltr;
+}
+#slide-counter b{ color:var(--ink); }
+
+.nav-btn{
+  position:fixed; left:24px; z-index:50; width:38px; height:38px; border-radius:50%;
+  border:1px solid var(--line); background:var(--card); color:var(--ink-soft);
+  display:flex; align-items:center; justify-content:center; cursor:pointer;
+  box-shadow:var(--shadow); transition:transform .15s ease, color .15s ease, border-color .15s ease;
+}
+.nav-btn:hover{ color:var(--blue); border-color:var(--blue); transform:scale(1.06);}
+#nav-up{ bottom:78px; }
+#nav-down{ bottom:32px; }
+
+/* ===== Reusable bits ===== */
+.badge{
+  display:inline-flex; align-items:center; gap:6px;
+  font-family:'JetBrains Mono', monospace; font-size:12px; font-weight:600;
+  padding:6px 12px; border-radius:100px; border:1px solid var(--line); background:var(--card);
+  color:var(--ink-soft); direction:ltr;
+}
+.card{
+  background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+  padding:26px; box-shadow:var(--shadow);
+}
+.grid{ display:grid; gap:18px; }
+.g2{ grid-template-columns:1fr 1fr; }
+.g3{ grid-template-columns:repeat(3,1fr); }
+.g4{ grid-template-columns:repeat(4,1fr); }
+
+.num-tag{
+  width:34px; height:34px; border-radius:10px; display:flex; align-items:center; justify-content:center;
+  font-family:'JetBrains Mono', monospace; font-weight:700; font-size:14px; color:#fff; flex-shrink:0;
+}
+
+.footline{ margin-top:22px; font-size:14px; color:var(--ink-faint); font-weight:500; }
+
+.section-index{
+  position:absolute; top:64px; left:88px; font-family:'JetBrains Mono', monospace;
+  font-size:78px; font-weight:800; color:var(--paper-2); z-index:0; user-select:none;
+}
+
+/* net pattern */
+.net-bg{ position:absolute; inset:0; z-index:0; opacity:.55; }
+
+/* code block */
+.code{
+  background:#0C1B2A; color:#DCE7F5; border-radius:14px; padding:18px 20px;
+  font-family:'JetBrains Mono', monospace; font-size:13.5px; line-height:1.85;
+  direction:ltr; text-align:left; overflow-x:auto; box-shadow:var(--shadow);
+}
+.code .c1{ color:#6BE6C1; }
+.code .c2{ color:#8FB8FF; }
+.code .c3{ color:#F5C36B; }
+.code .c4{ color:#7C8CA6; }
+
+table.tbl{ width:100%; border-collapse:collapse; font-size:14.5px; }
+table.tbl th{
+  text-align:right; font-family:'JetBrains Mono', monospace; font-size:11.5px; letter-spacing:.04em;
+  color:var(--ink-faint); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--line);
+}
+table.tbl td{ padding:12px 10px; border-bottom:1px solid var(--line); color:var(--ink-soft); font-weight:500; }
+table.tbl td.k{ color:var(--ink); font-weight:700; font-family:'JetBrains Mono', monospace; font-size:13px; }
+table.tbl tr:last-child td{ border-bottom:none; }
+
+@media (max-width:900px){
+  .slide{ padding:40px 24px; }
+  h1.big{ font-size:34px; } h2.title{ font-size:26px; }
+  .g2,.g3,.g4{ grid-template-columns:1fr; }
+  #slide-counter{ right:24px; }
+  .section-index{ display:none; }
+}
+</style>
+</head>
+<body>
+
+<div id="progress-rail"></div>
+<button class="nav-btn" id="nav-up" title="اسلاید قبلی">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M18 15l-6-6-6 6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</button>
+<button class="nav-btn" id="nav-down" title="اسلاید بعدی">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+</button>
+<div id="slide-counter"><b id="cur">01</b> / <span id="tot">15</span></div>
+
+<div id="deck">
+
+<!-- 0 — TITLE -->
+<section class="slide" id="s0">
+  <svg class="net-bg" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice">
+    <g id="netgroup" stroke="#2F6FED" stroke-width="1"></g>
+  </svg>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow" style="justify-content:flex-start;"><span class="dot"></span>edge_rl_3 · edge resource management</div>
+    <h1 class="big">مدیریت پویای منابع<br>محاسباتی لبه</h1>
+    <p class="lead">شبیه‌سازی و مقایسه‌ی چهار الگوریتم تصمیم‌گیری هوشمند برای Edge Computing،
+    روی داده‌ی واقعی ترافیک شبکه‌ی موبایل — با یک معماری واحد که هم در شبیه‌سازی و هم روی
+    کلاستر Kubernetes واقعی اجرا می‌شود.</p>
+    <div style="display:flex; gap:10px; margin-top:32px; flex-wrap:wrap;">
+      <span class="badge">Greedy</span>
+      <span class="badge" style="color:#0F9E86; border-color:#bfe9df;">VOILA</span>
+      <span class="badge" style="color:#2F6FED; border-color:#c7d8fc;">Kubernetes‑HPA</span>
+      <span class="badge" style="color:#F0623C; border-color:#f6cfc0;">PPO‑DRL</span>
+    </div>
+  </div>
+</section>
+
+<!-- 1 — PROBLEM -->
+<section class="slide" id="s1">
+  <div class="section-index">01</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>مسئله چیست؟</div>
+    <h2 class="title">۱۰ سرور، ۱۵ سرویس، یک تصمیم هر ۳۰ ثانیه</h2>
+    <p class="lead" style="margin-bottom:30px;">۱۰ سرور لبه در نقاط مختلف یک شهر، باید به درخواست‌های ۱۵ نوع سرویس که از
+    ایستگاه‌های پایه‌ی موبایل (BTS) می‌رسند پاسخ دهند. سه سؤال، مدام باید پاسخ داده شوند:</p>
+    <div class="grid g3">
+      <div class="card">
+        <div class="num-tag" style="background:var(--blue); margin-bottom:14px;">۱</div>
+        <div style="font-weight:800; font-size:16.5px; margin-bottom:6px;">چه زمانی سرور روشن/خاموش شود؟</div>
+        <div style="color:var(--ink-soft); font-size:14px; line-height:1.8;">تصمیم Provisioning — تعادل بین آماده‌بودن ظرفیت و مصرف انرژی</div>
+      </div>
+      <div class="card">
+        <div class="num-tag" style="background:var(--green); margin-bottom:14px;">۲</div>
+        <div style="font-weight:800; font-size:16.5px; margin-bottom:6px;">چند نمونه از هر سرویس اجرا شود؟</div>
+        <div style="color:var(--ink-soft); font-size:14px; line-height:1.8;">تصمیم Auto‑scaling — افزایش یا کاهش replica بر اساس بار واقعی</div>
+      </div>
+      <div class="card">
+        <div class="num-tag" style="background:var(--coral); margin-bottom:14px;">۳</div>
+        <div style="font-weight:800; font-size:16.5px; margin-bottom:6px;">درخواست به کدام سرور برود؟</div>
+        <div style="color:var(--ink-soft); font-size:14px; line-height:1.8;">تصمیم Placement — انتخاب مقصد بر اساس نزدیکی و ظرفیت</div>
+      </div>
+    </div>
+    <div class="footline">هدف هم‌زمان: تأخیر پاسخ‌دهی پایین  ·  عدم نقض سررسید (deadline)  ·  مصرف انرژی کنترل‌شده</div>
+  </div>
+</section>
+
+<!-- 2 — SYSTEM MODEL -->
+<section class="slide" id="s2">
+  <div class="section-index">02</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>ایده‌ی کلی سیستم</div>
+    <h2 class="title" style="margin-bottom:26px;">هر سرور و هر نمونه‌ی سرویس، یک ماشین‌حالت است</h2>
+
+    <div class="grid g3" style="margin-bottom:26px;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:30px; font-weight:900; color:var(--blue);">۱۰</div>
+        <div style="font-size:13px; color:var(--ink-soft); font-weight:600; margin-top:4px;">سرور ناهمگن<br>(small / medium / large)</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:30px; font-weight:900; color:var(--green);">۱۵</div>
+        <div style="font-size:13px; color:var(--ink-soft); font-weight:600; margin-top:4px;">سرویس، هرکدام با<br>CPU، صف و سررسید مشخص</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:30px; font-weight:900; color:var(--coral);">۳۰s</div>
+        <div style="font-size:13px; color:var(--ink-soft); font-weight:600; margin-top:4px;">فاصله‌ی هر «تیک تصمیم»<br>در شبیه‌سازی</div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:24px 28px;">
+      <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:16px;">حالت‌های سرور</div>
+      <svg viewBox="0 0 980 90" width="100%" height="90">
+        <g font-family="JetBrains Mono, monospace" font-size="13" font-weight="600">
+        <!-- boxes ltr order but content persian; keep visual left-to-right chain -->
+        <g id="serverchain"></g>
+        </g>
+      </svg>
+      <div style="height:1px; background:var(--line); margin:20px 0;"></div>
+      <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:16px;">حالت‌های هر نمونه‌ی سرویس (replica)</div>
+      <svg viewBox="0 0 980 90" width="100%" height="90">
+        <g id="replicachain" font-family="JetBrains Mono, monospace" font-size="13" font-weight="600"></g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- 3 — ROUTING & LATENCY -->
+<section class="slide" id="s3">
+  <div class="section-index">03</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>مسیریابی و تأخیر</div>
+    <h2 class="title" style="margin-bottom:8px;">مسیریابی بر اساس نزدیکی جغرافیایی</h2>
+    <p class="lead" style="margin-bottom:26px;">درخواست‌ها بر اساس فاصله‌ی هاورسین بین BTS و سرور، و در دسترس‌بودن صف، مسیریابی می‌شوند.</p>
+
+    <div class="grid g2" style="align-items:stretch;">
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:14px;">مدل تأخیر شبکه</div>
+        <div class="code" style="font-size:13px;">network_delay_ms = <span class="c2">BASE_LATENCY_MS</span> + <span class="c3">K_MS_PER_KM</span> × distance_km</div>
+        <svg viewBox="0 0 400 140" width="100%" height="140" style="margin-top:18px;">
+          <g id="bts-server-diagram"></g>
+        </svg>
+      </div>
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:14px;">اجزای زمان پاسخ کامل</div>
+        <svg viewBox="0 0 400 210" width="100%" height="210">
+          <g id="response-stack"></g>
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 — THREE DECISIONS -->
+<section class="slide" id="s4">
+  <div class="section-index">04</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>چرخه‌ی تصمیم</div>
+    <h2 class="title" style="margin-bottom:30px;">هر ۳۰ ثانیه، سه نوع تصمیم گرفته می‌شود</h2>
+    <svg viewBox="0 0 1000 300" width="100%" height="300">
+      <g id="decision-cycle"></g>
+    </svg>
+  </div>
+</section>
+
+<!-- 5 — FOUR ALGORITHMS -->
+<section class="slide" id="s5">
+  <div class="section-index">05</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>چهار الگوریتم</div>
+    <h2 class="title" style="margin-bottom:26px;">یک اینترفیس مشترک، چهار فلسفه‌ی متفاوت</h2>
+    <div class="grid g4">
+      <div class="card">
+        <div style="width:36px;height:36px;border-radius:10px;background:var(--paper-2);display:flex;align-items:center;justify-content:center;margin-bottom:14px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 20V10M12 20V4M20 20v-7" stroke="#54627A" stroke-width="2.3" stroke-linecap="round"/></svg>
+        </div>
+        <div style="font-weight:800; font-size:16px; margin-bottom:8px;">Greedy</div>
+        <div style="font-size:13px; color:var(--ink-soft); line-height:1.85;">آستانه‌ساده و مکان‌آگاه؛ نزدیک‌ترین سرور به مرکز سرورهای فعال. baseline پروژه.</div>
+      </div>
+      <div class="card" style="border-color:#bfe9df;">
+        <div style="width:36px;height:36px;border-radius:10px;background:var(--green-soft);display:flex;align-items:center;justify-content:center;margin-bottom:14px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="3" stroke="#0F9E86" stroke-width="2.2"/><circle cx="5" cy="6" r="1.6" fill="#0F9E86"/><circle cx="19" cy="6" r="1.6" fill="#0F9E86"/><circle cx="5" cy="18" r="1.6" fill="#0F9E86"/></svg>
+        </div>
+        <div style="font-weight:800; font-size:16px; margin-bottom:8px; color:#0F9E86;">VOILA</div>
+        <div style="font-size:13px; color:var(--ink-soft); line-height:1.85;">بر اساس مرکز ثقل تقاضای واقعی هر سرویس؛ ضدنوسان با «streak» چند‌تیکی برای scale‑down.</div>
+      </div>
+      <div class="card" style="border-color:#c7d8fc;">
+        <div style="width:36px;height:36px;border-radius:10px;background:var(--blue-soft);display:flex;align-items:center;justify-content:center;margin-bottom:14px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="7" height="7" rx="1.5" stroke="#2F6FED" stroke-width="2"/><rect x="13" y="4" width="7" height="7" rx="1.5" stroke="#2F6FED" stroke-width="2"/><rect x="4" y="13" width="7" height="7" rx="1.5" stroke="#2F6FED" stroke-width="2"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="#2F6FED" stroke-width="2"/></svg>
+        </div>
+        <div style="font-weight:800; font-size:16px; margin-bottom:8px; color:#2F6FED;">Kubernetes‑HPA</div>
+        <div style="font-size:13px; color:var(--ink-soft); line-height:1.85;">کاملاً location‑unaware؛ فقط بر اساس نسبت اشغال صف به هدف ثابت (۷۰٪).</div>
+      </div>
+      <div class="card" style="border-color:#f6cfc0;">
+        <div style="width:36px;height:36px;border-radius:10px;background:var(--coral-soft);display:flex;align-items:center;justify-content:center;margin-bottom:14px;">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke="#F0623C" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="12" r="4.5" stroke="#F0623C" stroke-width="2.2"/></svg>
+        </div>
+        <div style="font-weight:800; font-size:16px; margin-bottom:8px; color:#F0623C;">PPO‑DRL</div>
+        <div style="font-size:13px; color:var(--ink-soft); line-height:1.85;">عامل RL که هر سه تصمیم را از یک بردار حالت ۱۲۲بعدی یاد می‌گیرد؛ warm‑start از دموی Greedy.</div>
+      </div>
+    </div>
+    <div class="footline">هر چهار الگوریتم از همان منطق مشترک برای جای‌گذاری اولیه و مسیریابی درخواست استفاده می‌کنند تا مقایسه منصفانه بماند.</div>
+  </div>
+</section>
+
+<!-- 6 — QUALITATIVE COMPARISON RADAR -->
+<section class="slide" id="s6">
+  <div class="section-index">06</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>مقایسه‌ی کیفی</div>
+    <h2 class="title" style="margin-bottom:6px;">چهار الگوریتم از نگاه چهار ویژگی طراحی</h2>
+    <p class="lead" style="margin-bottom:20px; font-size:14.5px;">مقایسه‌ی کیفی بر اساس طراحی هر الگوریتم (نه نتایج عددی اندازه‌گیری‌شده).</p>
+    <div class="grid g2" style="align-items:center;">
+      <svg viewBox="0 0 420 380" width="100%" height="380"><g id="radar"></g></svg>
+      <div style="display:flex; flex-direction:column; gap:12px;">
+        <div style="display:flex; align-items:center; gap:10px;"><span style="width:11px;height:11px;border-radius:3px;background:#54627A;display:inline-block;"></span><span style="font-size:14px; font-weight:700;">Greedy</span></div>
+        <div style="display:flex; align-items:center; gap:10px;"><span style="width:11px;height:11px;border-radius:3px;background:#0F9E86;display:inline-block;"></span><span style="font-size:14px; font-weight:700;">VOILA</span></div>
+        <div style="display:flex; align-items:center; gap:10px;"><span style="width:11px;height:11px;border-radius:3px;background:#2F6FED;display:inline-block;"></span><span style="font-size:14px; font-weight:700;">Kubernetes‑HPA</span></div>
+        <div style="display:flex; align-items:center; gap:10px;"><span style="width:11px;height:11px;border-radius:3px;background:#F0623C;display:inline-block;"></span><span style="font-size:14px; font-weight:700;">PPO‑DRL</span></div>
+        <div class="footline" style="margin-top:8px;">محورها: مکان‌آگاهی · مقاومت به نوسان · یادگیری‌پذیری · سادگی پیاده‌سازی</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 7 — PROJECT STRUCTURE -->
+<section class="slide" id="s7">
+  <div class="section-index">07</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>ساختار پروژه</div>
+    <h2 class="title" style="margin-bottom:24px;">منطق مشترک، پیاده‌سازی‌های جدا</h2>
+    <div class="grid g2">
+      <div class="code" style="line-height:2;">
+<span class="c2">common/</span>       <span class="c4"># مدل‌ها، config، فاصله/تأخیر، متریک</span>
+<span class="c2">data/</span>         <span class="c4"># خواندن و آماده‌سازی CSV</span>
+<span class="c2">simulator/</span>    <span class="c4"># موتور discrete-event</span>
+<span class="c1">algorithms/</span>
+  <span class="c1">├─ greedy/</span>
+  <span class="c1">├─ voila/</span>
+  <span class="c1">├─ hpa/</span>
+  <span class="c1">└─ ppo/</span>      <span class="c4"># env · train · infer</span>
+<span class="c3">k8s_adapter/</span>  <span class="c4"># فاز ۳: اجرای واقعی</span>
+<span class="c2">evaluation/</span>   <span class="c4"># مقایسه و تجمیع نتایج</span>
+run.py           <span class="c4"># نقطه‌ی ورود CLI</span>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:14px;">
+        <div class="card" style="padding:16px 20px; display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:13px; font-weight:700; color:var(--ink-faint); min-width:66px;">مشترک</div>
+          <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.85;">مدل‌های داده، محاسبه‌ی فاصله/تأخیر، موتور رویدادمحور و متریک‌ها — هیچ الگوریتمی لازم نیست بازنویسی کند.</div>
+        </div>
+        <div class="card" style="padding:16px 20px; display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:13px; font-weight:700; color:var(--ink-faint); min-width:66px;">جداشده</div>
+          <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.85;">فقط منطق تصمیم‌گیری هر الگوریتم (<span class="mono" style="font-size:12.5px;">AlgorithmBase</span>) از هم مستقل است.</div>
+        </div>
+        <div class="card" style="padding:16px 20px; display:flex; gap:14px; align-items:flex-start;">
+          <div style="font-size:13px; font-weight:700; color:var(--ink-faint); min-width:66px;">فاز ۳</div>
+          <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.85;">همان منطق تصمیم روی کلاستر Kubernetes واقعی هم بدون تغییر اجرا می‌شود.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 8 — INSTALL & DATA -->
+<section class="slide" id="s8">
+  <div class="section-index">08</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>نصب و آماده‌سازی داده</div>
+    <h2 class="title" style="margin-bottom:24px;">شروع در سه دستور</h2>
+    <div class="grid g2">
+      <div class="code">
+<span class="c4">$</span> python3 -m venv venv
+<span class="c4">$</span> source venv/bin/activate
+<span class="c4">$</span> pip install -r requirements.txt
+
+<span class="c4"># فاز ۳ (Kubernetes):</span>
+<span class="c4">$</span> pip install kubernetes redis httpx paramiko
+      </div>
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:12px;">داده‌ی ورودی</div>
+        <div style="font-size:13.5px; color:var(--ink-soft); line-height:1.9;">
+        داده‌ی واقعی ترافیک BTS شانگهای — ستون‌های
+        <span class="mono" style="font-size:12px;">id, BTSID, Lat, Long, ServiceID, startSec</span>
+        </div>
+        <div style="height:1px; background:var(--line); margin:14px 0;"></div>
+        <div style="display:flex; justify-content:space-between; font-size:13.5px; padding:6px 0;">
+          <span class="mono" style="font-size:12.5px; color:var(--blue); font-weight:700;">Data1–3.csv</span>
+          <span style="color:var(--ink-soft);">آموزش — سه‌شنبه‌ی متوالی</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:13.5px; padding:6px 0;">
+          <span class="mono" style="font-size:12.5px; color:var(--coral); font-weight:700;">Data4.csv</span>
+          <span style="color:var(--ink-soft);">تست — شنبه‌ی مستقل</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 — RUN SIMULATION -->
+<section class="slide" id="s9">
+  <div class="section-index">09</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>اجرای شبیه‌سازی</div>
+    <h2 class="title" style="margin-bottom:22px;">یک الگوریتم، یک دستور</h2>
+    <div class="code" style="margin-bottom:22px;">
+<span class="c4">$</span> python3 run.py --algorithm <span class="c1">greedy</span> --data test
+<span class="c4">$</span> python3 run.py --algorithm <span class="c1">voila</span>  --data test
+<span class="c4">$</span> python3 run.py --algorithm <span class="c1">hpa</span>    --data test
+<span class="c4">$</span> python3 run.py --algorithm <span class="c1">ppo</span>    --data test   <span class="c4"># نیاز به مدل آموزش‌دیده</span>
+    </div>
+    <table class="tbl">
+      <tr><th>آرگومان</th><th>مقادیر</th><th>توضیح</th></tr>
+      <tr><td class="k">--algorithm</td><td>greedy / voila / hpa / ppo</td><td>الگوریتم مورد استفاده</td></tr>
+      <tr><td class="k">--mode</td><td>sim (پیش‌فرض) / k8s</td><td>شبیه‌سازی یا اجرای واقعی</td></tr>
+      <tr><td class="k">--data</td><td>test (پیش‌فرض) / train</td><td>مجموعه‌ی داده</td></tr>
+      <tr><td class="k">--output-dir</td><td>outputs/ (پیش‌فرض)</td><td>محل ذخیره‌ی لاگ‌ها و نتایج</td></tr>
+    </table>
+  </div>
+</section>
+
+<!-- 10 — PPO TRAINING PIPELINE -->
+<section class="slide" id="s10">
+  <div class="section-index">10</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>آموزش عامل PPO</div>
+    <h2 class="title" style="margin-bottom:30px;">از دموی Greedy تا فاین‌تیون با RL</h2>
+    <svg viewBox="0 0 1000 190" width="100%" height="190"><g id="ppo-pipeline"></g></svg>
+    <div class="footline">پارامترها با <span class="mono" style="font-size:12.5px;">EOTCH_SEED</span> قابل تنظیم‌اند تا چند مدل با seed مختلف آموزش داده شود؛ منحنی یادگیری با TensorBoard قابل مشاهده است.</div>
+  </div>
+</section>
+
+<!-- 11 — OUTPUT METRICS -->
+<section class="slide" id="s11">
+  <div class="section-index">11</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>معیارهای خروجی</div>
+    <h2 class="title" style="margin-bottom:26px;">چهار دسته‌ی معیار، در هر اجرا</h2>
+    <div class="grid g4">
+      <div class="card">
+        <div style="font-size:12px; font-weight:700; color:var(--blue); margin-bottom:10px;">کیفیت سرویس</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:2;">زمان پاسخ p95/p99<br>نقض سررسید<br>فاصله‌ی جغرافیایی<br>درخواست‌های ردشده</div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px; font-weight:700; color:var(--green); margin-bottom:10px;">منابع و انرژی</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:2;">انرژی مصرفی تجمعی<br>میانگین سرورهای فعال<br>ضریب تغییرات توازن بار</div>
+      </div>
+      <div class="card">
+        <div style="font-size:12px; font-weight:700; color:var(--amber); margin-bottom:10px;">عملیاتی</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:2;">boot / shutdown سرور<br>pod create / delete<br>scale up/down، turn on/off</div>
+      </div>
+      <div class="card" style="border-color:#f6cfc0;">
+        <div style="font-size:12px; font-weight:700; color:var(--coral); margin-bottom:10px;">کیفیت تصمیم</div>
+        <div style="font-size:12.5px; color:var(--ink-soft); line-height:2;">ممیزی مستقل و یکسان<br>برای هر ۴ الگوریتم<br>correctness_rate_pct</div>
+      </div>
+    </div>
+    <div class="footline">⚠ ممیزی «همسویی با یک قاعده‌ی ثابت» را می‌سنجد، نه لزوماً «کیفیت مطلق» تصمیم.</div>
+  </div>
+</section>
+
+<!-- 12 — DECISION QUALITY ANALYSIS -->
+<section class="slide" id="s12">
+  <div class="section-index">12</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>ابزار تحلیل کیفیت تصمیم</div>
+    <h2 class="title" style="margin-bottom:6px;">فراتر از درست/غلط ساده</h2>
+    <div class="code" style="margin-bottom:24px; font-size:13px;">$ python3 analyze_decision_quality.py outputs/ppo_events.jsonl</div>
+    <div class="grid g2">
+      <div class="card">
+        <div style="font-weight:800; font-size:15.5px; margin-bottom:12px;">طبقه‌بندی تصمیمات زودهنگام</div>
+        <div style="display:flex; gap:10px; margin-bottom:10px;">
+          <span class="badge" style="color:#0F9E86; border-color:#bfe9df;">پیش‌بینانه</span>
+          <span style="font-size:12.5px; color:var(--ink-soft); align-self:center;">SCALE_UP که نیاز واقعی کمی بعد رخ داد</span>
+        </div>
+        <div style="display:flex; gap:10px; margin-bottom:10px;">
+          <span class="badge" style="color:var(--ink-faint);">نویز</span>
+          <span style="font-size:12.5px; color:var(--ink-soft); align-self:center;">SCALE_UP بی‌مورد</span>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <span class="badge" style="color:#F0623C; border-color:#f6cfc0;">مخاطره‌آمیز</span>
+          <span style="font-size:12.5px; color:var(--ink-soft); align-self:center;">SCALE_DOWN که فوراً کمبود ظرفیت ایجاد کرد</span>
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-weight:800; font-size:15.5px; margin-bottom:12px;">تحلیل نوسان (flapping) سرور</div>
+        <p style="font-size:13px; color:var(--ink-soft); line-height:1.9;">چرخه‌های <span class="mono" style="font-size:12px;">TURN_ON → TURN_OFF</span> هر سرور سنجیده می‌شود؛
+        اگر مدت فعالیت (dwell) کمتر از آستانه‌ی پیش‌فرض باشد، flapping علامت می‌خورد.</p>
+        <div style="margin-top:14px; display:flex; align-items:center; gap:8px;">
+          <div class="badge" style="color:var(--coral);">۳۰۰s</div>
+          <span style="font-size:12.5px; color:var(--ink-faint);">آستانه‌ی پیش‌فرض dwell</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 13 — K8S REAL DEPLOYMENT -->
+<section class="slide" id="s13">
+  <div class="section-index">13</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>فاز ۳ — اجرای واقعی</div>
+    <h2 class="title" style="margin-bottom:22px;">همان تصمیم‌ها، روی کلاستر واقعی Kubernetes</h2>
+    <div class="grid g2" style="align-items:stretch;">
+      <svg viewBox="0 0 460 260" width="100%" height="260"><g id="k8s-diagram"></g></svg>
+      <div class="card">
+        <div style="font-size:13px; font-weight:700; color:var(--ink-faint); margin-bottom:12px;">پیش‌نیازها</div>
+        <div style="font-size:13px; color:var(--ink-soft); line-height:2.1;">
+        ۱. لیبل‌گذاری ۱۰ نود worker با شناسه‌ی سرور<br>
+        ۲. ساخت namespace اختصاصی<br>
+        ۳. build و push ایمیج worker<br>
+        ۴. دسترسی kube‑config + یک نمونه‌ی Redis
+        </div>
+        <div class="code" style="margin-top:14px; font-size:12px;">$ python3 -m k8s_adapter.smoke_test</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 14 — CONFIG + EXTEND + CLOSING -->
+<section class="slide" id="s14">
+  <div class="section-index">14</div>
+  <div class="slide-inner" style="position:relative; z-index:1;">
+    <div class="eyebrow"><span class="dot"></span>پیکربندی و توسعه</div>
+    <h2 class="title" style="margin-bottom:22px;">همه‌چیز در یک فایل، افزودن الگوریتم در پنج متد</h2>
+    <div class="grid g2">
+      <table class="tbl">
+        <tr><th>پارامتر</th><th>پیش‌فرض</th></tr>
+        <tr><td class="k">DECISION_INTERVAL_SEC</td><td>۳۰</td></tr>
+        <tr><td class="k">UTIL_SCALE_UP/DOWN</td><td>۰.۹۵ / ۰.۴۵</td></tr>
+        <tr><td class="k">MIN_ACTIVE_DURATION_SEC</td><td>۳۰۰</td></tr>
+        <tr><td class="k">COOLDOWN_SEC</td><td>۶۰</td></tr>
+      </table>
+      <div class="code" style="font-size:12.5px;">
+<span class="c1">class</span> MyAlgorithm(AlgorithmBase):
+    name = <span class="c3">"my_algo"</span>
+
+    <span class="c1">def</span> scale_decision(...): ...
+    <span class="c1">def</span> provision_decision(...): ...
+    <span class="c1">def</span> select_placement_server(...): ...
+    <span class="c1">def</span> migration_decision(...): ...
+      </div>
+    </div>
+    <div class="footline" style="margin-top:26px; font-size:15px; color:var(--ink);">
+    موتور شبیه‌سازی و adapter کلاستر هیچ تغییری نیاز ندارند — فقط الگوریتم را در <span class="mono" style="font-size:13px;">run.py</span> ثبت کنید.
+    </div>
+  </div>
+</section>
+
+</div><!-- /deck -->
+
+<script>
+const NS = "http://www.w3.org/2000/svg";
+function el(tag, attrs, parent){
+  const e = document.createElementNS(NS, tag);
+  for(const k in attrs) e.setAttribute(k, attrs[k]);
+  if(parent) parent.appendChild(e);
+  return e;
+}
+function text(x,y,str,attrs,parent){
+  const t = el('text', Object.assign({x,y}, attrs), parent);
+  t.textContent = str;
+  return t;
+}
+
+/* ---- 0. background network pattern ---- */
+(function(){
+  const g = document.getElementById('netgroup');
+  const pts = [];
+  for(let i=0;i<26;i++){
+    pts.push([Math.random()*1200, Math.random()*800]);
+  }
+  pts.forEach((p,i)=>{
+    for(let j=i+1;j<pts.length;j++){
+      const q = pts[j];
+      const d = Math.hypot(p[0]-q[0], p[1]-q[1]);
+      if(d < 170){
+        el('line', {x1:p[0],y1:p[1],x2:q[0],y2:q[1], opacity:0.10}, g);
+      }
+    }
+  });
+  pts.forEach(p=>{
+    el('circle', {cx:p[0], cy:p[1], r:2.4, fill:'#2F6FED', opacity:0.35}, g);
+  });
+})();
+
+/* ---- 2. server state chain ---- */
+(function(){
+  const g = document.getElementById('serverchain');
+  const states = ["OFF","BOOTING","ACTIVE","DRAINING","OFF"];
+  const colors = ["#93A0B4","#E7A730","#0F9E86","#F0623C","#93A0B4"];
+  const n = states.length;
+  const w = 980, boxW = 150, gap = (w - n*boxW)/(n-1);
+  states.forEach((s,i)=>{
+    const x = i*(boxW+gap);
+    el('rect', {x, y:20, width:boxW, height:44, rx:10, fill:'#FFFFFF', stroke:colors[i], 'stroke-width':1.6}, g);
+    text(x+boxW/2, y_center(20,44), s, {'text-anchor':'middle', fill:'#0C1B2A', 'font-size':12.5}, g);
+    if(i<n-1){
+      el('line', {x1:x+boxW, y1:42, x2:x+boxW+gap, y2:42, stroke:'#DCE1EA', 'stroke-width':2, 'marker-end':'url(#arrow1)'}, g);
+    }
+  });
+  function y_center(y,h){ return y+h/2+4; }
+  addArrowMarker('arrow1', g.ownerSVGElement);
+})();
+
+/* ---- 2b. replica state chain ---- */
+(function(){
+  const g = document.getElementById('replicachain');
+  const states = ["STARTING","READY","DRAINING","TERMINATED"];
+  const colors = ["#E7A730","#0F9E86","#F0623C","#93A0B4"];
+  const n = states.length;
+  const w = 980, boxW = 200, gap = (w - n*boxW)/(n-1);
+  states.forEach((s,i)=>{
+    const x = i*(boxW+gap);
+    el('rect', {x, y:20, width:boxW, height:44, rx:10, fill:'#FFFFFF', stroke:colors[i], 'stroke-width':1.6}, g);
+    text(x+boxW/2, 46, s, {'text-anchor':'middle', fill:'#0C1B2A', 'font-size':12.5}, g);
+    if(i<n-1){
+      el('line', {x1:x+boxW, y1:42, x2:x+boxW+gap, y2:42, stroke:'#DCE1EA', 'stroke-width':2, 'marker-end':'url(#arrow2)'}, g);
+    }
+  });
+  addArrowMarker('arrow2', g.ownerSVGElement);
+})();
+
+function addArrowMarker(id, svg){
+  let defs = svg.querySelector('defs');
+  if(!defs){ defs = el('defs', {}, svg); svg.insertBefore(defs, svg.firstChild); }
+  const marker = el('marker', {id, markerWidth:8, markerHeight:8, refX:6, refY:3, orient:'auto'}, defs);
+  el('path', {d:'M0,0 L6,3 L0,6 Z', fill:'#93A0B4'}, marker);
+}
+
+/* ---- 3. BTS -> server diagram ---- */
+(function(){
+  const g = document.getElementById('bts-server-diagram');
+  const svg = g.ownerSVGElement;
+  addArrowMarker('arrowBts', svg);
+  // BTS tower left
+  el('circle', {cx:60, cy:70, r:22, fill:'#E8EFFE', stroke:'#2F6FED', 'stroke-width':1.6}, g);
+  text(60,75,'BTS',{'text-anchor':'middle','font-size':11,'font-weight':700, fill:'#2F6FED'}, g);
+  // server right
+  el('rect', {x:300, y:48, width:70, height:44, rx:9, fill:'#E3F6F1', stroke:'#0F9E86', 'stroke-width':1.6}, g);
+  text(335,74,'سرور',{'text-anchor':'middle','font-size':12,'font-weight':700, fill:'#0F9E86'}, g);
+  el('line', {x1:86, y1:70, x2:296, y2:70, stroke:'#DCE1EA', 'stroke-width':2, 'stroke-dasharray':'5,5', 'marker-end':'url(#arrowBts)'}, g);
+  text(190,58,'distance_km',{'text-anchor':'middle','font-size':11, fill:'#93A0B4', 'font-family':'JetBrains Mono, monospace'}, g);
+})();
+
+/* ---- 3b. response time stacked bar ---- */
+(function(){
+  const g = document.getElementById('response-stack');
+  const parts = [
+    {label:'تأخیر شبکه', v:30, color:'#2F6FED'},
+    {label:'انتظار در صف', v:26, color:'#E7A730'},
+    {label:'زمان اجرا', v:32, color:'#0F9E86'},
+    {label:'جریمه‌ی cold-start', v:12, color:'#F0623C'},
+  ];
+  const total = parts.reduce((a,b)=>a+b.v,0);
+  let y = 20;
+  const barX = 20, barW = 200, fullH = 150;
+  let curY = y;
+  parts.forEach(p=>{
+    const h = fullH * p.v/total;
+    el('rect', {x:barX, y:curY, width:barW, height:h-3, rx:5, fill:p.color, opacity:0.85}, g);
+    curY += h;
+  });
+  let legendY = 26;
+  parts.forEach(p=>{
+    el('rect', {x:250, y:legendY-10, width:10, height:10, rx:2, fill:p.color}, g);
+    text(266, legendY-1, p.label, {'font-size':11.5, fill:'#54627A'}, g);
+    legendY += 26;
+  });
+})();
+
+/* ---- 4. decision cycle ---- */
+(function(){
+  const g = document.getElementById('decision-cycle');
+  const svg = g.ownerSVGElement;
+  addArrowMarker('arrowCycle', svg);
+  const cx=500, cy=150, r=95;
+  el('circle', {cx, cy, r, fill:'none', stroke:'#DCE1EA', 'stroke-width':1.6, 'stroke-dasharray':'4,6'}, g);
+  el('circle', {cx, cy, r:44, fill:'#FFFFFF', stroke:'#2F6FED', 'stroke-width':1.6}, g);
+  text(cx, cy-4, 'هر ۳۰ ثانیه', {'text-anchor':'middle','font-size':13,'font-weight':800, fill:'#0C1B2A'}, g);
+  text(cx, cy+16, 'تیک تصمیم', {'text-anchor':'middle','font-size':11.5, fill:'#54627A'}, g);
+
+  const items = [
+    {label:'Auto-scaling', sub:'تعداد replica هر سرویس', color:'#2F6FED', angle:-90},
+    {label:'Provisioning', sub:'روشن/خاموش کردن سرور', color:'#0F9E86', angle:30},
+    {label:'Placement', sub:'انتخاب سرور مقصد', color:'#F0623C', angle:150},
+  ];
+  items.forEach(it=>{
+    const rad = it.angle*Math.PI/180;
+    const x = cx + Math.cos(rad)*r*2.05;
+    const y = cy + Math.sin(rad)*r*1.05;
+    const bx = cx + Math.cos(rad)*(r+34);
+    const by = cy + Math.sin(rad)*(r+34);
+    el('line', {x1:cx+Math.cos(rad)*44, y1:cy+Math.sin(rad)*44, x2:bx, y2:by, stroke:it.color, 'stroke-width':1.8, opacity:0.6}, g);
+    const card = el('g', {}, g);
+    el('rect', {x:bx-95, y:by-28, width:190, height:56, rx:12, fill:'#FFFFFF', stroke:it.color, 'stroke-width':1.6}, card);
+    text(bx, by-4, it.label, {'text-anchor':'middle','font-size':13.5,'font-weight':800, fill:it.color, 'font-family':'JetBrains Mono, monospace'}, card);
+    text(bx, by+15, it.sub, {'text-anchor':'middle','font-size':11, fill:'#54627A'}, card);
+  });
+})();
+
+/* ---- 6. radar chart ---- */
+(function(){
+  const g = document.getElementById('radar');
+  const cx=210, cy=175, R=140;
+  const axes = ['مکان‌آگاهی','ضدنوسان','یادگیری‌پذیری','سادگی'];
+  const N = axes.length;
+  // rings
+  [0.25,0.5,0.75,1].forEach(f=>{
+    let pts=[];
+    for(let i=0;i<N;i++){
+      const ang = -Math.PI/2 + i*(2*Math.PI/N);
+      pts.push([cx+Math.cos(ang)*R*f, cy+Math.sin(ang)*R*f]);
+    }
+    el('polygon', {points:pts.map(p=>p.join(',')).join(' '), fill:'none', stroke:'#DCE1EA', 'stroke-width':1}, g);
+  });
+  // axis lines + labels
+  for(let i=0;i<N;i++){
+    const ang = -Math.PI/2 + i*(2*Math.PI/N);
+    const x = cx+Math.cos(ang)*R, y = cy+Math.sin(ang)*R;
+    el('line', {x1:cx,y1:cy,x2:x,y2:y, stroke:'#DCE1EA', 'stroke-width':1}, g);
+    const lx = cx+Math.cos(ang)*(R+34), ly = cy+Math.sin(ang)*(R+34);
+    text(lx, ly, axes[i], {'text-anchor':'middle','font-size':12, fill:'#54627A', 'font-weight':700}, g);
+  }
+  // data: [location, anti-flap, learnability, simplicity] scaled 0-1
+  const series = [
+    {name:'Greedy', color:'#54627A', v:[0.55,0.25,0.05,0.95]},
+    {name:'VOILA', color:'#0F9E86', v:[0.95,0.85,0.05,0.55]},
+    {name:'HPA', color:'#2F6FED', v:[0.05,0.35,0.05,0.85]},
+    {name:'PPO', color:'#F0623C', v:[0.7,0.7,0.98,0.2]},
+  ];
+  series.forEach(s=>{
+    let pts=[];
+    for(let i=0;i<N;i++){
+      const ang = -Math.PI/2 + i*(2*Math.PI/N);
+      const rr = R*s.v[i];
+      pts.push([cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr]);
+    }
+    el('polygon', {points:pts.map(p=>p.join(',')).join(' '), fill:s.color, opacity:0.10, stroke:s.color, 'stroke-width':2}, g);
+  });
+})();
+
+/* ---- 10. PPO pipeline ---- */
+(function(){
+  const g = document.getElementById('ppo-pipeline');
+  const svg = g.ownerSVGElement;
+  addArrowMarker('arrowPpo', svg);
+  const steps = [
+    {t:'اجرای Greedy', s:'ثبت دموی (state, action)', color:'#54627A'},
+    {t:'BC Warm-start', s:'یادگیری تحت‌نظارت', color:'#E7A730'},
+    {t:'RL Fine-tune', s:'MaskablePPO · ۸ محیط موازی', color:'#F0623C'},
+    {t:'مدل آموزش‌دیده', s:'ppo_model_seed<N>.zip', color:'#0F9E86'},
+    {t:'ارزیابی Inference', s:'روی داده‌ی تست', color:'#2F6FED'},
+  ];
+  const n = steps.length, boxW=170, boxH=64, gap=(1000-n*boxW)/(n-1);
+  steps.forEach((s,i)=>{
+    const x = i*(boxW+gap);
+    el('rect', {x, y:60, width:boxW, height:boxH, rx:12, fill:'#FFFFFF', stroke:s.color, 'stroke-width':1.7}, g);
+    text(x+boxW/2, 88, s.t, {'text-anchor':'middle','font-size':13, 'font-weight':800, fill:'#0C1B2A'}, g);
+    text(x+boxW/2, 107, s.s, {'text-anchor':'middle','font-size':10.5, fill:'#54627A'}, g);
+    if(i<n-1){
+      el('line', {x1:x+boxW, y1:92, x2:x+boxW+gap, y2:92, stroke:'#DCE1EA', 'stroke-width':2, 'marker-end':'url(#arrowPpo)'}, g);
+    }
+  });
+})();
+
+/* ---- 13. k8s architecture ---- */
+(function(){
+  const g = document.getElementById('k8s-diagram');
+  const svg = g.ownerSVGElement;
+  addArrowMarker('arrowK8s', svg);
+  function box(x,y,w,h,label,sub,color){
+    el('rect', {x,y,width:w,height:h,rx:11, fill:'#FFFFFF', stroke:color, 'stroke-width':1.6}, g);
+    text(x+w/2, y+h/2-2, label, {'text-anchor':'middle','font-size':12.5,'font-weight':800, fill:'#0C1B2A'}, g);
+    if(sub) text(x+w/2, y+h/2+15, sub, {'text-anchor':'middle','font-size':10, fill:'#54627A'}, g);
+  }
+  box(30,20,170,54,'decision_loop','هر ۳۰ ثانیه واقعی','#2F6FED');
+  box(30,110,170,54,'dispatch_loop','رویدادهای CSV realtime','#0F9E86');
+  box(250,65,80,54,'Redis','هماهنگی وضعیت','#E7A730');
+  box(360,65,90,54,'کلاستر K8s','worker pods','#F0623C');
+  el('line', {x1:200,y1:47,x2:250,y2:80, stroke:'#DCE1EA','stroke-width':1.8, 'marker-end':'url(#arrowK8s)'}, g);
+  el('line', {x1:200,y1:137,x2:250,y2:100, stroke:'#DCE1EA','stroke-width':1.8, 'marker-end':'url(#arrowK8s)'}, g);
+  el('line', {x1:330,y1:92,x2:360,y2:92, stroke:'#DCE1EA','stroke-width':1.8, 'marker-end':'url(#arrowK8s)'}, g);
+})();
+
+/* ---- deck navigation ---- */
+const deck = document.getElementById('deck');
+const slides = Array.from(document.querySelectorAll('.slide'));
+const rail = document.getElementById('progress-rail');
+const curEl = document.getElementById('cur');
+document.getElementById('tot').textContent = String(slides.length).padStart(2,'0');
+
+slides.forEach((s,i)=>{
+  const b = document.createElement('button');
+  b.addEventListener('click', ()=> s.scrollIntoView({behavior:'smooth'}));
+  rail.appendChild(b);
+});
+const dots = Array.from(rail.children);
+
+function currentIndex(){
+  let idx = 0, best = Infinity;
+  slides.forEach((s,i)=>{
+    const d = Math.abs(s.getBoundingClientRect().top);
+    if(d < best){ best = d; idx = i; }
+  });
+  return idx;
+}
+function updateUI(){
+  const idx = currentIndex();
+  dots.forEach((d,i)=> d.classList.toggle('active', i===idx));
+  curEl.textContent = String(idx+1).padStart(2,'0');
+}
+deck.addEventListener('scroll', ()=> requestAnimationFrame(updateUI));
+updateUI();
+
+function goto(delta){
+  const idx = Math.min(slides.length-1, Math.max(0, currentIndex()+delta));
+  slides[idx].scrollIntoView({behavior:'smooth'});
+}
+document.getElementById('nav-up').addEventListener('click', ()=>goto(-1));
+document.getElementById('nav-down').addEventListener('click', ()=>goto(1));
+window.addEventListener('keydown', (e)=>{
+  if(['ArrowDown','PageDown',' '].includes(e.key)){ e.preventDefault(); goto(1); }
+  if(['ArrowUp','PageUp'].includes(e.key)){ e.preventDefault(); goto(-1); }
+});
+</script>
+</body>
+</html>

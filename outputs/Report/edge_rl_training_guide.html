@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>راهنمای کامل پروژه‌ی مدیریت پویای منابع لبه — نسخه‌ی نهایی (پس از دور دوم اصلاح)</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2e; --panel2:#1c2439; --border:#2a3350;
+    --fg:#e6e9f2; --fg-dim:#9aa4c2; --accent:#5b8cff; --accent2:#7ee0c3;
+    --code-bg:#0b0f1a; --warn:#f5b942; --warn-bg:#2b2410; --fix:#4ade80; --fix-bg:#0f2418;
+    --new:#7ee0c3; --new-bg:#0e2a26; --danger:#f87171; --danger-bg:#2a1414;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--fg);
+    font-family:"Vazirmatn","Tahoma","Segoe UI",system-ui,sans-serif;
+    line-height:1.9; font-size:16px;
+  }
+  header.hero{
+    padding:48px 24px 32px; text-align:center; border-bottom:1px solid var(--border);
+    background:linear-gradient(180deg,#141b2e 0%, var(--bg) 100%);
+  }
+  header.hero h1{font-size:1.9rem; margin:0 0 10px; color:#fff}
+  header.hero p{color:var(--fg-dim); margin:6px 0; font-size:1rem}
+  .badges{display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:18px}
+  .badge{padding:6px 14px; border-radius:999px; font-size:.82rem; border:1px solid var(--border)}
+  .badge.v2{background:var(--new-bg); color:var(--new); border-color:#1c5049}
+  .layout{display:flex; max-width:1320px; margin:0 auto; align-items:flex-start}
+  nav.toc{
+    position:sticky; top:0; width:260px; flex:0 0 260px; padding:28px 18px;
+    max-height:100vh; overflow-y:auto; border-left:1px solid var(--border);
+  }
+  nav.toc h3{color:var(--fg-dim); font-size:.8rem; text-transform:uppercase; letter-spacing:.05em; margin:18px 0 8px}
+  nav.toc a{display:block; color:var(--fg-dim); text-decoration:none; font-size:.88rem; padding:5px 8px; border-radius:6px}
+  nav.toc a:hover{background:var(--panel2); color:var(--fg)}
+  main{flex:1; padding:28px 36px 80px; min-width:0}
+  section{margin-bottom:56px; scroll-margin-top:20px}
+  h2.phase-title{
+    font-size:1.5rem; color:#fff; border-bottom:2px solid var(--accent);
+    padding-bottom:10px; margin-bottom:22px; display:flex; align-items:center; gap:12px;
+  }
+  h2.phase-title .num{
+    background:var(--accent); color:#fff; width:34px; height:34px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:.95rem; flex:0 0 34px;
+  }
+  h3{color:var(--accent2); font-size:1.15rem; margin-top:30px}
+  h4{color:var(--fg); font-size:1rem; margin-top:22px}
+  p{color:#d3d8e8}
+  .card{background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; margin:16px 0}
+  .card.tip{border-color:#2a4a3a}
+  .analogy{
+    background:var(--panel2); border-right:3px solid var(--accent); border-radius:6px;
+    padding:12px 16px; margin:14px 0; font-size:.95rem; color:var(--fg-dim);
+  }
+  .analogy b{color:var(--fg)}
+  pre{
+    background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+    padding:14px 16px; overflow-x:auto; direction:ltr; text-align:left; font-size:.85rem;
+    line-height:1.6;
+  }
+  code{font-family:"Fira Code","Consolas",monospace; color:#c9d6f5}
+  pre code{color:#c9d6f5}
+  table{width:100%; border-collapse:collapse; margin:16px 0; font-size:.9rem}
+  th, td{border:1px solid var(--border); padding:9px 12px; text-align:right}
+  th{background:var(--panel2); color:var(--fg)}
+  tr:nth-child(even){background:#141b2e}
+  .fixed-tag{
+    display:inline-flex; align-items:center; gap:6px; background:var(--fix-bg); color:var(--fix);
+    border:1px solid #1c4a30; border-radius:999px; padding:3px 12px; font-size:.78rem; margin:4px 0;
+  }
+  .new-tag{
+    display:inline-flex; align-items:center; gap:6px; background:var(--new-bg); color:var(--new);
+    border:1px solid #1c5049; border-radius:999px; padding:3px 12px; font-size:.78rem; margin:4px 0;
+  }
+  .warn-box{
+    background:var(--warn-bg); border:1px solid #6b5320; border-radius:8px;
+    padding:14px 18px; margin:16px 0; color:#f0d38a; font-size:.92rem;
+  }
+  .warn-box b{color:var(--warn)}
+  .danger-box{
+    background:var(--danger-bg); border:1px solid #6b2a2a; border-radius:8px;
+    padding:14px 18px; margin:16px 0; color:#f5b3b3; font-size:.92rem;
+  }
+  .qa{background:var(--panel); border:1px solid var(--border); border-radius:8px; margin:10px 0; overflow:hidden}
+  .qa summary{
+    cursor:pointer; padding:13px 18px; font-weight:600; color:var(--fg); list-style:none;
+    display:flex; gap:8px; align-items:flex-start;
+  }
+  .qa summary::before{content:"س:"; color:var(--accent); flex:0 0 auto}
+  .qa summary::-webkit-details-marker{display:none}
+  .qa[open] summary{border-bottom:1px solid var(--border)}
+  .qa .a{padding:13px 18px; color:#d3d8e8; font-size:.94rem}
+  .qa .a::before{content:"ج: "; color:var(--accent2); font-weight:600}
+  .diagram{
+    background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+    padding:16px; font-family:monospace; font-size:.82rem; direction:ltr; text-align:left;
+    color:#9fb0d9; white-space:pre; overflow-x:auto;
+  }
+  .checklist{list-style:none; padding:0}
+  .checklist li{
+    padding:9px 14px; margin:6px 0; background:var(--panel2); border-radius:6px;
+    display:flex; gap:10px; align-items:flex-start; font-size:.92rem;
+  }
+  .checklist li::before{content:"☐"; color:var(--accent2)}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+  @media (max-width:900px){ .layout{flex-direction:column} nav.toc{position:static; width:100%; max-height:none; border-left:none; border-bottom:1px solid var(--border)} .grid2{grid-template-columns:1fr} }
+  .top-link{position:fixed; bottom:24px; left:24px; background:var(--accent); color:#fff; width:42px; height:42px;
+    border-radius:50%; display:flex; align-items:center; justify-content:center; text-decoration:none; box-shadow:0 4px 14px rgba(0,0,0,.4)}
+  footer{text-align:center; padding:30px; color:var(--fg-dim); font-size:.85rem; border-top:1px solid var(--border)}
+  .diff-add{color:#4ade80}
+  .diff-rem{color:#f87171; text-decoration:line-through; opacity:.7}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <h1>مدیریت پویای منابع لبه (Edge Resource Management)</h1>
+  <p>Greedy / VOILA / Kubernetes-HPA / PPO-DRL — راهنمای کامل آموزشی برای ارائه و دفاع</p>
+  <p style="color:var(--fg-dim); font-size:.85rem">نسخه‌ی نهایی — شامل تاریخچه‌ی کامل دور اول (توسعه‌ی اولیه) و دور دوم (بازبینی عمیق و اصلاح)</p>
+  <div class="badges">
+    <span class="badge v2">✓ همه‌ی فیکس‌های دور دوم اعمال و تست شده</span>
+    <span class="badge v2">۸ فاز آموزشی + Q&amp;A کامل</span>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc">
+  <h3>شروع</h3>
+  <a href="#legend">راهنمای نشانه‌ها</a>
+  <a href="#training-update">به‌روزرسانی آموزش PPO</a>
+  <h3>۸ فاز آموزشی</h3>
+  <a href="#phase1">۱. تصویر کلی پروژه</a>
+  <a href="#phase2">۲. مدل دامنه</a>
+  <a href="#phase3">۳. چرخه‌ی درخواست</a>
+  <a href="#phase4">۴. موتور و چرخه‌ی تصمیم</a>
+  <a href="#phase5">۵. سه الگوریتم قاعده‌محور</a>
+  <a href="#phase6">۶. PPO-DRL کامل</a>
+  <a href="#phase7">۷. تاریخچه‌ی باگ‌ها</a>
+  <a href="#phase8">۸. نتایج و دفاع نهایی</a>
+  <h3>پیوست‌ها</h3>
+  <a href="#qa-full">بانک کامل پرسش و پاسخ</a>
+  <a href="#final-checklist">چک‌لیست اجرای نهایی</a>
+</nav>
+
+<main>
+
+<section id="legend">
+  <h2 class="phase-title"><span class="num">§</span>راهنمای نشانه‌ها</h2>
+  <p>در این سند از سه نشانه استفاده شده تا مشخص باشد هر بخش نسبت به نسخه‌ی اولیه‌ی پروژه چه وضعیتی دارد:</p>
+  <p>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span> — منطقی که در بررسی عمیق دوم پیدا و اصلاح شد.<br>
+    <span class="new-tag">＋ فیلد/رویداد جدید</span> — چیزی که کاملاً تازه اضافه شده (نه اصلاح یک باگ قدیمی).<br>
+    <span class="badge" style="background:var(--danger-bg); color:var(--danger); border-color:#6b2a2a">⚠ نیازمند اقدام شما</span> — کاری که هنوز باید دستی انجام بدی (مثل بازآموزی مدل).
+  </p>
+</section>
+
+<section id="training-update">
+  <h2 class="phase-title"><span class="num">!</span>به‌روزرسانی پایپ‌لاین آموزش PPO — پاسخ مستقیم</h2>
+  <p>قبل از ورود به فازها، به سؤال مستقیم پاسخ می‌دیم: <b>بله</b>، پایپ‌لاین آموزش در سه نقطه نیاز به توجه دارد.</p>
+
+  <div class="warn-box">
+    <b>⚠ نکته‌ی حیاتی:</b> مدل ذخیره‌شده‌ی قبلی (<code>ppo_model_seed42.zip</code>) دیگر با محیط فعلی سازگار نیست —
+    نه از نظر فایل (لود می‌شود، خطا نمی‌دهد)، بلکه از نظر رفتاری، چون معنای mask و دینامیک انرژی/ظرفیت عوض شده.
+    استفاده از این مدل قدیمی برای ارزیابی نهایی، نتایج را نامعتبر می‌کند.
+  </div>
+
+  <h4>۱. بازآموزی کامل (BC + RL) الزامی است</h4>
+  <p>چون فضای action mask (فاز ۶) و دینامیک موتور مشترک (فازهای ۲، ۳، ۴) هر دو تغییر کرده‌اند، باید کل پایپ‌لاین دوباره اجرا شود:</p>
+  <pre><code># تغییر نام برای جلوگیری از قاطی‌شدن با مدل قدیمی (common/config.py را می‌توان دستی ویرایش کرد،
+# یا مسیر MODEL_PATH در algorithms/ppo/train.py را موقتاً override کرد)
+python -m algorithms.ppo.train
+python -m algorithms.ppo.infer
+python -m evaluation.compare_runs --data test --output-dir outputs/final_after_all_fixes</code></pre>
+
+  <h4>۲. کالیبراسیون انرژی احتمالاً نیاز به تجدیدنظر دارد</h4>
+  <p>دو ثابت نرمال‌سازی، با داده‌ی <b>قبل از فیکس DRAINING/ENERGY_RESYNC</b> کالیبره شده بودند:</p>
+  <pre><code># common/state_builder.py
+_NORM_ENERGY_JOULE = 12_000.0   # میانگین قدیم ~۸۲۰۰J - قبل از شمول DRAINING در توان
+
+# algorithms/ppo/env.py — همین عدد، جدا کالیبره‌شده
+norm_energy = min(g["energy_recent_joule"] / 12_000.0, 2.0)</code></pre>
+  <p>چون حالا رپلیکای DRAINING هم در توان لحظه‌ای حساب می‌شود و انرژی با <code>ENERGY_RESYNC</code> دقیق‌تر اندازه‌گیری می‌شود،
+  انرژی واقعی هر تیک احتمالاً <b>بیشتر</b> از قبل خواهد بود. اگر این عدد ثابت بماند، ممکن است <code>norm_energy</code> زودتر به سقف ۲.۰ برسد
+  (saturate شود) و سیگنال یادگیری تمایزدهندگی خود را از دست بدهد.</p>
+  <div class="card tip">
+    <b>راهکار عملی:</b> قبل از آموزش نهایی، یک اجرای Greedy با کد فیکس‌شده بگیرید،
+    میانگین/صدک۹۰ انرژی هر تیک را دوباره اندازه بگیرید (دقیقاً همان روش کالیبراسیون اولیه)،
+    و هر دو ثابت را با عدد جدید هماهنگ به‌روزرسانی کنید.
+  </div>
+
+  <h4>۳. دموی BC نیاز به تغییر کد ندارد، فقط باید دوباره جمع‌آوری شود</h4>
+  <p><code>collect_greedy_demonstrations</code> به‌طور خودکار از <code>GreedyAlgorithm</code> فیکس‌شده (با threshold و شمول BOOTING جدید) استفاده می‌کند —
+  با اجرای مجدد <code>train.py</code> به‌روز می‌شود، بدون نیاز به تغییر دستی.</p>
+
+  <table>
+    <tr><th>مورد</th><th>نیاز به تغییر کد؟</th><th>نیاز به اجرای مجدد؟</th></tr>
+    <tr><td>مدل PPO (BC + RL)</td><td>خیر (کد قبلاً فیکس شد)</td><td><b>بله، الزامی</b></td></tr>
+    <tr><td>ثابت‌های نرمال‌سازی انرژی</td><td>احتمالاً بله (بعد از اندازه‌گیری مجدد)</td><td>بله، قبل از آموزش نهایی</td></tr>
+    <tr><td>دموی BC (Greedy)</td><td>خیر</td><td>بله (خودکار ضمن train.py)</td></tr>
+    <tr><td>STATE_DIM (۱۲۲ بعد)</td><td>خیر — بدون تغییر</td><td>خیر</td></tr>
+  </table>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase1">
+  <h2 class="phase-title"><span class="num">۱</span>تصویر کلی پروژه</h2>
+
+  <h3>مسئله در یک جمله</h3>
+  <p>یک شبکه‌ی «لبه» (Edge) داریم: ۱۰ سرور فیزیکی پخش‌شده در نقاط مختلف شهر شانگهای، و ۱۵ نوع سرویس که باید روی این سرورها اجرا شوند.
+  درخواست‌های واقعی کاربران (از دیتاست واقعی BTS شانگهای) با نرخ متغیر در طول روز می‌رسند. سؤال اصلی:
+  <b>کدام سرورها روشن باشند، چند نسخه (replica) از هر سرویس کجا مستقر باشد، و هر درخواست به کدام replica برود</b> —
+  طوری که هم زمان پاسخ کم باشد، هم انرژی کمتر مصرف شود، هم بار بین سرورها متوازن باشد؟</p>
+
+  <p>این یعنی سه تصمیم هم‌زمان:</p>
+  <table>
+    <tr><th>تصمیم</th><th>توضیح</th></tr>
+    <tr><td><b>Provisioning</b></td><td>کدام سرور روشن/خاموش باشد</td></tr>
+    <tr><td><b>Auto-scaling</b></td><td>هر سرویس چند replica داشته باشد</td></tr>
+    <tr><td><b>Placement</b></td><td>replica جدید روی کدام سرور مستقر شود</td></tr>
+  </table>
+
+  <h3>چرا مقایسه‌ی ۴ الگوریتم؟</h3>
+  <ul>
+    <li><b>Greedy</b> — baseline ساده، تصمیم بر اساس آستانه‌های ثابت</li>
+    <li><b>VOILA</b> — الگوریتم دانشگاهی واقعی (مقاله‌ی MASCOTS 2020) که مکان تقاضای واقعی را در نظر می‌گیرد</li>
+    <li><b>HPA</b> — دقیقاً منطق Kubernetes Horizontal Pod Autoscaler، کاملاً کور به مکان</li>
+    <li><b>PPO</b> — یاد می‌گیرد به‌جای قانون ثابت</li>
+  </ul>
+
+  <h3>معماری نرم‌افزاری — چرا اینطور طراحی شده</h3>
+  <p>نکته‌ی کلیدی: یک اینترفیس مشترک (<code>AlgorithmBase</code>) داریم که هر ۴ الگوریتم پیاده‌سازی می‌کنند، و یک <b>موتور شبیه‌سازی مشترک</b>
+  که هیچ‌وقت نمی‌داند دارد کدام الگوریتم را اجرا می‌کند. این یعنی وقتی یک باگ در موتور مشترک رفع می‌شود، دقیقاً و به‌طور یکسان روی هر ۴ الگوریتم
+  اثر می‌گذارد — این برای مقایسه‌ی منصفانه حیاتی است.</p>
+
+  <div class="diagram">داده‌ی CSV (درخواست‌های واقعی)
+        ↓
+موتور شبیه‌سازی discrete-event (simulator/engine.py)
+        ↓  هر ۳۰ ثانیه یک بار
+   تصمیم‌گیری (الگوریتم انتخاب‌شده: scale/provision/migration)
+        ↓  هر درخواست که می‌رسد
+   مسیریابی به نزدیک‌ترین replica با صف خالی
+        ↓
+   ثبت متریک (response time, انرژی, ...)
+        ↓
+جدول مقایسه‌ی نهایی ۴ الگوریتم</div>
+
+  <details class="qa"><summary>چرا discrete-event به‌جای شبیه‌سازی زمان-گسسته (time-stepped)؟</summary>
+    <div class="a">چون رویدادها (رسیدن درخواست، پایان صف، آماده شدن replica) در لحظات نامنظم اتفاق می‌افتند.
+    اگه زمان با گام ثابت جلو می‌رفت، یا باید گام خیلی ریز می‌گرفتیم (کند) یا دقت از دست می‌رفت.
+    با heapq رویدادها دقیقاً به ترتیب زمان وقوعشان پردازش می‌شوند — معادل دقیق simpy (که در محیط توسعه قابل نصب نبود).</div>
+  </details>
+  <details class="qa"><summary>چرا PPO باید state/action/reward خاص این مسئله داشته باشد؟</summary>
+    <div class="a">چون تصمیمات (scale/provision) روی هر سرویس/سرور مستقل به‌نظر می‌آیند ولی به هم وابسته‌اند
+    (مثلاً روشن‌کردن سرور باید قبل از SCALE_UP باشد). به همین خاطر MultiDiscrete با action masking لازم بود.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase2">
+  <h2 class="phase-title"><span class="num">۲</span>مدل دامنه (Server / Replica / Request)</h2>
+  <p>سه موجودیت اصلی سیستم، در <code>common/models.py</code>.</p>
+
+  <h3>۱. Server — سرور فیزیکی</h3>
+  <div class="analogy">تشبیه: یک <b>ساختمان</b> با ظرفیت محدود که می‌تواند چند «مستأجر» (سرویس) داخلش جا بدهد.</div>
+  <pre><code>class ServerState(Enum):
+    OFF = auto()       # خاموش، هیچ انرژی مصرف نمی‌کند
+    BOOTING = auto()   # داره روشن میشه (۳۰ ثانیه طول می‌کشد)
+    ACTIVE = auto()    # روشن و آماده‌ی کار
+    DRAINING = auto()  # داره خاموش میشه (باید اول خالی بشه)</code></pre>
+  <p>چهار حالت یک چرخه‌ی یک‌طرفه هستند: <code>OFF → BOOTING → ACTIVE → DRAINING → OFF</code></p>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span>
+    محاسبه‌ی توان لحظه‌ای — شمول رپلیکای DRAINING
+  </h4>
+  <p>متن صریح سند (بخش ۲.۴): «در طول DRAINING مصرف انرژی مثل ACTIVE محاسبه می‌شود». ولی کد قبلی فقط رپلیکای <code>READY</code> را می‌شمرد،
+  یعنی سروری که همه‌ی رپلیکاهایش DRAINING بودند به‌غلط idle حساب می‌شد.</p>
+  <pre><code>def instantaneous_utilization(self, now: float) -> float:
+    """رپلیکاهای READY *و* DRAINING هر دو اگر در حال پردازش باشند شرکت می‌کنند."""
+    busy_cpu = 0
+    for r in self.hosted_replicas.values():
+        <span class="diff-add">if r.state in (ReplicaState.READY, ReplicaState.DRAINING) and not r.is_idle(now):</span>
+        <span class="diff-rem">if r.state == ReplicaState.READY and not r.is_idle(now):  # قبلی</span>
+            busy_cpu += self._cpu_of(r)
+    return busy_cpu / self.capacity if self.capacity > 0 else 0.0</code></pre>
+  <p><b>اثر روی نتایج:</b> این فیکس متقارن روی موتور مشترک است، پس روی هر ۴ الگوریتم اعمال می‌شود.
+  <code>cumulative_energy_joule</code> برای هر ۴ الگوریتم افزایش می‌یابد (چون قبلاً دوره‌ی DRAININگِ پرکار به‌غلط انرژی صفر/idle حساب می‌شد)،
+  با شدت متفاوت بسته به الگوی drain هر الگوریتم.</p>
+
+  <h3>۲. Replica — یک نسخه از یک سرویس، روی یک سرور</h3>
+  <div class="analogy">تشبیه: یک <b>باجه‌ی تحویل</b> با یک صف انتظار جلوش، که فقط یک نفر پشتش کار می‌کند.</div>
+  <pre><code>def try_admit(self, arrival_time, cold_start_extra=0.0):
+    occ = self.queue_occupancy(arrival_time)
+    if occ >= self.queue_len:
+        return None   # صف پره → رد میشه
+    start = max(arrival_time, self.available_at)   # کِی نوبتش میشه
+    finish = start + (self.exec_time + cold_start_extra)
+    self.available_at = finish
+    self.departures.append(finish)
+    return {...}</code></pre>
+  <p>این دقیقاً منطق یک صف FIFO تک‌سرور است: اگر باجه‌دار (replica) مشغول کار قبلی است، درخواست جدید باید صبر کند تا نوبتش شود.</p>
+
+  <h3>۳. Request — یک درخواست کاربر</h3>
+  <p>یک رکورد داده‌ای که سفر یک درخواست را از اول تا آخر ثبت می‌کند:
+  <code>arrival_time → queue_enter_time → service_start_time → service_end_time</code> و در نهایت
+  <code>response_time_sec</code>، <code>deadline_violated</code> و <code>status</code>.</p>
+
+  <details class="qa"><summary>چرا صف با شبیه‌سازی دقیق پیاده شده، نه فرمول تحلیلی (M/M/1)؟</summary>
+    <div class="a">چون فرمول‌های تحلیلی فرض می‌کنند ورود درخواست‌ها تصادفی با نرخ ثابت (Poisson) است. در این پروژه الگوی ورود واقعی و متغیر است
+    (از دیتاست واقعی BTS)، و اندازه‌ی صف محدود است. پس باید هر درخواست واقعاً event-by-event شبیه‌سازی شود تا نتایج دقیق باشند.</div>
+  </details>
+  <details class="qa"><summary>چرا Replica یک deque برای departures نگه می‌دارد؟</summary>
+    <div class="a">برای این‌که در هر لحظه بشود فهمید صف چقدر پر است (queue_occupancy) — با پاک کردن اونایی که زمانشان گذشته.
+    یک ترفند ساده برای شبیه‌سازی کارآمد اشغال صف بدون شمارش دستی هر لحظه.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase3">
+  <h2 class="phase-title"><span class="num">۳</span>چرخه‌ی کامل یک درخواست</h2>
+  <p>هفت مرحله، در <code>simulator/engine.py:_handle_arrival</code> و <code>algorithms/base.py:select_replica</code>.</p>
+
+  <div class="diagram">۱. درخواست می‌رسد (از CSV، با Lat/Long و ServiceID)
+۲. لیست replicaهای READY آن سرویس پیدا می‌شود
+۳. بر اساس فاصله‌ی جغرافیایی مرتب می‌شوند (نزدیک‌ترین اول)
+۴. یکی‌یکی چک می‌شود: صفش خالیه؟ → انتخاب می‌شود
+۵. اگه هیچ‌کدوم صف خالی نداشتن یا اصلاً replica‌ای نبود → رد می‌شود
+۶. اگه پذیرفته شد → وارد صف FIFO می‌شود
+۷. نوبتش که شد، پردازش می‌شود و response_time محاسبه می‌شود</div>
+
+  <h3>انتخاب replica (مشترک بین هر ۴ الگوریتم)</h3>
+  <pre><code>def select_replica(self, request, candidate_replicas, servers, now):
+    ranked = sorted(candidate_replicas,
+        key=lambda r: haversine_km(request.bts_lat, request.bts_long,
+                                    servers[r.server_id].lat, servers[r.server_id].long))
+    for r in ranked:
+        if r.queue_occupancy(now) < r.queue_len:
+            return r
+    return None</code></pre>
+  <p>این تابع در <code>AlgorithmBase</code> مشترک است چون Routing یک تصمیم بلادرنگ برای هر درخواست است، نه یک تصمیم مدیریت منابع —
+  بخشی که الگوریتم‌ها روش رقابت می‌کنند نیست.</p>
+
+  <h3>فرمول response_time</h3>
+  <div class="diagram">response_time = (۲ × تأخیر شبکه) + زمان انتظار در صف + زمان پردازش واقعی</div>
+  <p><b>چرا ۲ برابر تأخیر شبکه؟</b> چون deadline یعنی end-to-end: درخواست باید برود سرور و جواب باید برگردد — تأخیر رفت + برگشت.</p>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span>
+    ثبت موقعیت درخواست برای demand_centroid — انتقال به لحظه‌ی ورود
+  </h4>
+  <p>قبلاً موقعیت جغرافیایی فقط برای درخواست‌های <b>موفق (COMPLETED)</b> ثبت می‌شد. این یک حلقه‌ی بازخورد خودتقویت‌شونده ایجاد می‌کرد:
+  منطقه‌ای با کمبود پوشش دائم رد می‌شود ← موقعیتش هرگز وارد <code>demand_centroid</code> نمی‌شود ← VOILA کور به همان کمبود می‌ماند ← کمبود ادامه‌دار.</p>
+  <pre><code>def _handle_arrival(self, row):
+    self._request_seq += 1
+    req = Request(...)
+    self._tick_total[req.service_id] += 1
+    <span class="diff-add">self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))  # حالا در لحظه‌ی ورود</span>
+    self._log("request_arrived", ...)
+    # (خط تکراری قبلی که فقط بعد از COMPLETED بود، حذف شد)</code></pre>
+  <p>چون <code>deque(maxlen=30)</code> از قبل یک پنجره‌ی recency-based بود، با انتقال ثبت به لحظه‌ی ورود، همه‌ی درخواست‌ها
+  (موفق و رد شده) به‌طور طبیعی وارد همین پنجره می‌شوند — بدون نیاز به ساختار موازی جدید.</p>
+
+  <h4>
+    <span class="new-tag">＋ رویداد جدید</span>
+    ENERGY_RESYNC — دقت محاسبه‌ی انرژی
+  </h4>
+  <p>هیچ رویداد صریحی برای «اتمام پردازش یک درخواست» در heap نبود. یعنی توان لحظه‌ای فقط وقتی رویداد دیگری (arrival بعدی یا DECISION_TICK)
+  اتفاق می‌افتاد دوباره محاسبه می‌شد — تا ۳۰ ثانیه تأخیر در دقت. یک رویداد سبک اضافه شد که دقیقاً در لحظه‌ی اتمام هر درخواست موتور را «بیدار» می‌کند:</p>
+  <pre><code># simulator/events.py
+ENERGY_RESYNC = auto()   # صرفاً برای بیدار کردن _advance_energy_to
+
+# simulator/engine.py — بعد از admit موفق:
+self._push(req.service_end_time, EventType.ENERGY_RESYNC, None)
+
+# در step():
+elif ev.type == EventType.ENERGY_RESYNC:
+    pass  # فقط برای دقیق‌کردن _advance_energy_to لازم بود</code></pre>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span>
+    مدت Graceful Termination — دینامیک به‌جای ثابت
+  </h4>
+  <p>مقدار قبلی (<code>GRACEFUL_TERMINATION_DELAY_SEC=10</code>) برای هر ۱۵ سرویس یکسان بود. برای سرویس‌های کند
+  (مثلاً سرویس ۱۵: <code>exec_time=120</code>, <code>queue_len=10</code>) خالی‌شدن واقعی صف می‌تواند تا <b>۱۲۰۰ ثانیه</b> طول بکشد —
+  بیش از ۱۲۰ برابر مقدار ثابت قبلی.</p>
+  <pre><code>def _start_replica_drain(self, r: Replica):
+    ...
+    <span class="diff-add">drain_wait = max(CFG.graceful_termination_delay_sec, r.available_at - self.now)</span>
+    <span class="diff-rem">self._push(self.now + CFG.graceful_termination_delay_sec, ...)  # قبلی: همیشه ۱۰ ثانیه</span>
+    self._push(self.now + drain_wait, EventType.REPLICA_TERMINATED, (r.server_id, r.service_id))</code></pre>
+
+  <div class="warn-box">
+    <b>⚠ فاز ۳ (Kubernetes واقعی):</b> همین ریسک در <code>k8s_adapter/realtime_dispatcher.py</code> جدی‌تر است —
+    قطع شدن پاد واقعی وسط پردازش یک درخواست HTTP یعنی از‌دست‌رفتن واقعی داده، نه فقط خطای متریک شبیه‌سازی.
+    فیکس مشابه (انتظار پویا بر اساس اشغال واقعی صف در Redis، با سقف زمانی ایمن) اعمال شده، ولی چون این بخش هرگز روی کلاستر واقعی
+    تست نشده، این محدودیت باید صریحاً در مستندات ذکر شود.
+  </div>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase4">
+  <h2 class="phase-title"><span class="num">۴</span>موتور شبیه‌سازی و چرخه‌ی تصمیم‌گیری</h2>
+
+  <h3>۴.۱ موتور discrete-event</h3>
+  <div class="analogy">به‌جای این‌که ساعت را ثانیه‌به‌ثانیه جلو ببریم، یک <b>تقویم رویدادها</b> داریم که مرتب‌شده بر اساس زمان است،
+  و فقط می‌پریم به رویداد بعدی.</div>
+  <pre><code>class EventType(Enum):
+    REQUEST_ARRIVAL; DECISION_TICK; SERVER_BOOT_DONE; SERVER_DRAIN_DONE
+    REPLICA_READY; REPLICA_TERMINATED
+    <span class="new-tag" style="display:inline">ENERGY_RESYNC</span>  # جدید — فاز ۳</code></pre>
+
+  <h3>۴.۲ چرخه‌ی تصمیم (هر DECISION_TICK)</h3>
+  <pre><code>def _handle_decision_tick(self, external_actions=None):
+    snapshot = self._build_metrics_snapshot()
+    self._update_sustain_tracking(snapshot)
+
+    action = self.algorithm.provision_decision(...)   # اول: provisioning
+    self._apply_provisioning(action, snapshot)
+
+    for svc_id in CFG.active_services:                 # بعد: هر سرویس scale می‌شود یا نه
+        decision = self.algorithm.scale_decision(svc_id, snapshot)
+        self._apply_scale_decision(svc_id, decision, snapshot)</code></pre>
+  <p><b>چرا provisioning اول؟</b> چون اگر سرویسی بخواهد SCALE_UP کند ولی هیچ سروری جا نداشته باشد، اول باید سرور جدید روشن شود.</p>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span>
+    Capacity-Starved — شمول سرور BOOTING + پارامتری‌کردن آستانه
+  </h4>
+  <p>دو مشکل مجزا در <code>_capacity_starved_services</code> پیدا شد:</p>
+  <p><b>مشکل ۱ — عدم شمول BOOTING:</b> چون <code>DECISION_INTERVAL_SEC=30</code> دقیقاً برابر <code>BOOT_DELAY_SEC=30</code>،
+  هر starvation دقیقاً یک تیک اضافه را «می‌بیند» قبل از این‌که سرور boot‌شده به کمکش برسد — و در آن یک تیک، یک سرور دیگر هم به‌اشتباه روشن می‌شد.</p>
+  <p><b>مشکل ۲ — آستانه‌ی هاردکد ۰.۷:</b> برای VOILA که <code>OCC_UP_THRESHOLD=0.68</code> دارد، این ناهماهنگی واقعی بود —
+  در <code>occ_ratio=0.69</code>، خودِ VOILA می‌گفت SCALE_UP لازم است ولی سیگنال starvation trigger نمی‌شد.</p>
+  <pre><code>@staticmethod
+def _capacity_starved_services(metrics_snapshot, servers, <span class="diff-add">occ_threshold: float = 0.7</span>):
+    starved = []
+    for svc_id, sv in metrics_snapshot["services"].items():
+        occ_ratio = ...
+        if not (occ_ratio > <span class="diff-add">occ_threshold</span> or sv["rejection_rate"] > 0.0):
+            continue
+        cpu = CFG.services_info[svc_id]["cpu_demand"]
+        <span class="diff-add">if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)</span>
+        <span class="diff-rem">if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)  # قبلی</span>
+                   for s in servers.values()):
+            starved.append(svc_id)
+    return starved</code></pre>
+  <p>هر سه الگوریتم threshold خودشان را صریح پاس می‌دهند: Greedy و HPA با <code>0.7</code>، VOILA با <code>self.OCC_UP_THRESHOLD (0.68)</code>.
+  همین منطق در <code>simulator/engine.py::_any_service_capacity_starved</code> (نسخه‌ی PPO) هم اعمال شد.</p>
+  <p><b>اثر:</b> کاهش <code>num_server_boots</code> برای هر ۴ الگوریتم (به‌خصوص Greedy/Voila/HPA)، و در نتیجه بهبود انرژی — بدون تأخیر واقعی در رفع starvation.</p>
+
+  <h3>۴.۳ Gateهای ضد-نوسان (anti-flapping)</h3>
+  <table>
+    <tr><th>Gate</th><th>هدف</th></tr>
+    <tr><td><code>SUSTAIN_HIGH_SEC=30s</code></td><td>overload باید مداوم باشد، نه یک لحظه</td></tr>
+    <tr><td><code>MIN_ACTIVE_DURATION_SEC=300s</code></td><td>سرور باید حداقل ۵ دقیقه ACTIVE مانده باشد قبل از TURN_OFF</td></tr>
+    <tr><td><code>COOLDOWN_SEC=60s</code></td><td>بعد از هر boot/drain، مدتی رویداد معکوس مسدود می‌شود</td></tr>
+  </table>
+
+  <h3>۴.۴ Migration هنگام Drain (Make-Before-Break)</h3>
+  <p>وقتی سروری با تنها replica یک سرویس در کل سیستم می‌خواهد خاموش شود، اول باید نسخه‌ی جدید جای دیگر ساخته شود.
+  replica قدیمی READY می‌ماند تا replica جدید واقعاً READY شود — این جلوی یک پنجره‌ی زمانی از <code>REJECTED_NO_REPLICA</code> غیرواقعی را می‌گیرد.</p>
+
+  <details class="qa"><summary>چرا cooldown هم روی سرور هست هم روی سرویس؟</summary>
+    <div class="a">چون این‌ها دو تصمیم مستقل‌اند. یک سرویس می‌تواند SCALE_UP/DOWN بخورد بدون این‌که هیچ سروری روشن/خاموش شود
+    (چون replica جدید روی سرور از قبل روشن جا می‌گیرد). پس باید هر کدام cooldown خودشان را داشته باشند.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase5">
+  <h2 class="phase-title"><span class="num">۵</span>سه الگوریتم قاعده‌محور: Greedy، VOILA، HPA</h2>
+
+  <h3>۵.۱ Greedy — baseline ساده</h3>
+  <div class="analogy">تشبیه: مدیر ساده با دو قانون: «اگر صف بیشتر از ۷۰٪ پره، کارگر اضافه کن؛ اگر کمتر از ۱۰٪، کارگر کم کن.»</div>
+  <pre><code>if occ_ratio > 0.7 or svc["rejection_rate"] > 0:
+    return ScaleAction.SCALE_UP
+if occ_ratio < 0.1 and svc["n_replicas"] > 1:
+    return ScaleAction.SCALE_DOWN</code></pre>
+  <p>برای provisioning، <b>heterogeneity-aware</b>: پروفایل سرور جدید (edge_small/medium/large) با شدت اضافه‌بار تطبیق داده می‌شود.</p>
+
+  <h3>۵.۲ VOILA — الگوریتم مکان‌آگاه</h3>
+  <div class="analogy">تشبیه: مدیر باهوش‌تر که می‌بیند از کجای شهر بیشترین تقاضا می‌آید و replica را آنجا مستقر می‌کند.</div>
+  <p>مفهوم کلیدی: <code>demand_centroid</code> — medoid موقعیت آخرین درخواست‌های هر سرویس (نه میانگین ساده، چون میانگین
+  می‌تواند نقطه‌ای غیرواقعی وسط دریا بسازد؛ medoid همیشه یک نقطه‌ی واقعی از داده است).</p>
+  <p>دو معیار نقض (طبق Procedure 4 مقاله):</p>
+  <ul>
+    <li><b>Vco (Capacity violation)</b> — صف پر یا رد شده → فوری SCALE_UP</li>
+    <li><b>Vlo (Location violation)</b> — صف خالی ولی درخواست‌ها از دور دست می‌آیند → بعد از چند تیک متوالی SCALE_UP</li>
+  </ul>
+  <p>صبر برای scale-down (<code>SCALE_DOWN_PATIENCE_TICKS=3</code>) جلوی نوسان زودهنگام را می‌گیرد.</p>
+
+  <h3>۵.۳ HPA — دقیقاً منطق Kubernetes واقعی</h3>
+  <pre><code>TARGET_UTILIZATION = 0.70
+desired = math.ceil(current_replicas * (current_util / TARGET_UTILIZATION))</code></pre>
+  <p>کاملاً <b>location-unaware</b> طبق تعریف صریح سند — انتخاب سرور صرفاً بر اساس id، بدون هیچ haversine.</p>
+
+  <h3>جدول مقایسه‌ی فلسفی</h3>
+  <table>
+    <tr><th></th><th>Greedy</th><th>VOILA</th><th>HPA</th></tr>
+    <tr><td>معیار scale</td><td>آستانه‌ی ثابت صف</td><td>صف + مکان (Vco+Vlo)</td><td>فرمول نسبت util</td></tr>
+    <tr><td>مکان‌آگاه؟</td><td>نیمه</td><td>کامل (demand_centroid)</td><td>خیر</td></tr>
+    <tr><td>صبر scale-down</td><td>فوری</td><td>۳ تیک صبر</td><td>فوری</td></tr>
+    <tr><td>پروفایل سرور</td><td>متناسب با شدت اضافه‌بار</td><td>نزدیک‌ترین</td><td>نزدیک‌ترین (location-unaware)</td></tr>
+  </table>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم</span>
+    threshold مخصوص هر الگوریتم در فراخوانی _capacity_starved_services
+  </h4>
+  <pre><code># algorithms/greedy/greedy_algorithm.py
+starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)
+
+# algorithms/voila/voila_algorithm.py
+starved_services = self._capacity_starved_services(metrics_snapshot, servers,
+                                                     occ_threshold=self.OCC_UP_THRESHOLD)  # 0.68
+
+# algorithms/hpa/hpa_algorithm.py
+starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)</code></pre>
+
+  <details class="qa"><summary>چرا VOILA از medoid استفاده می‌کند نه میانگین ساده‌ی lat/long؟</summary>
+    <div class="a">چون میانگین ساده می‌تواند نقطه‌ای غیرواقعی وسط دریا یا بین دو خوشه‌ی تقاضا بسازد. Medoid یعنی
+    «واقعی‌ترین نقطه‌ی نماینده» — نقطه‌ای از خودِ داده که کمترین مجموع فاصله را تا بقیه‌ی نقاط دارد.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase6">
+  <h2 class="phase-title"><span class="num">۶</span>PPO-DRL (قلب یادگیری‌محور پروژه)</h2>
+
+  <h3>۶.۱ فضای حالت (State) — ۱۲۲ بعد</h3>
+  <div class="diagram">برای هر سرور (۱۰ تا): state one-hot(4) + utilization + n_replicas   → ۶ × ۱۰ = ۶۰
+برای هر سرویس (۱۵ تا): n_replicas + اشغال صف + نرخ نقض deadline + نرخ ورودی → ۴ × ۱۵ = ۶۰
+سراسری: میانگین response_time اخیر + انرژی مصرفی اخیر → ۲
+جمع = ۱۲۲  (بدون تغییر — n_ready_replicas به این بردار اضافه نشده، فقط در snapshot موجود است)</div>
+
+  <h3>۶.۲ فضای اکشن (Action)</h3>
+  <pre><code>self.action_space = spaces.MultiDiscrete([3] * 15 + [3] * 10)
+# ۱۵ بعد: هر سرویس {NO_CHANGE, SCALE_UP, SCALE_DOWN}
+# ۱۰ بعد: هر سرور {NO_CHANGE, TURN_ON, TURN_OFF}</code></pre>
+
+  <h3>۶.۳ Action Masking</h3>
+  <div class="analogy">تشبیه: به‌جای این‌که بذاریم عامل حرکت غلط بزند و تنبیه شود، از همان اول فقط حرکت‌های مجاز نشانش می‌دهیم.</div>
+
+  <h4>
+    <span class="fixed-tag">🛠 اصلاح‌شده در دور دوم — مهم‌ترین یافته</span>
+    عدم‌تطابق Mask با اجرای واقعی موتور
+  </h4>
+  <div class="danger-box">
+    <b>علامت:</b> mask می‌گفت یک SCALE_UP «مجاز» است، ولی موتور موقع اجرای واقعی آن را با <code>skip_reason="no_target_server"</code>
+    یا <code>"only_one_replica_left"</code> بی‌اثر می‌کرد — یعنی هم جریمه‌ی اکشن (<code>PPO_PENALTY_PER_ACTION</code>) بی‌جهت پرداخت می‌شد،
+    هم سیگنال یادگیری آلوده می‌شد.
+  </div>
+  <p><b>ریشه‌ی مشکل ۱ — can_up بدون چک ACTIVE:</b> <code>Server.can_host</code> فقط ظرفیت/انحصار سرویس را چک می‌کند،
+  اصلاً <code>state</code> را نگاه نمی‌کند. اگر سروری OFF یا DRAINING جای خالی داشت، mask می‌گفت SCALE_UP مجاز است —
+  ولی <code>select_placement_server</code> واقعی فقط سرورهای <code>ACTIVE</code> را کاندید می‌کند.</p>
+  <p><b>ریشه‌ی مشکل ۲ — can_down شامل رپلیکاهای STARTING:</b> <code>n_replicas</code> شامل STARTING هم می‌شد،
+  در حالی‌که اجرای واقعی SCALE_DOWN فقط رپلیکاهای <code>READY</code> را می‌شمارد.</p>
+
+  <pre><code># algorithms/ppo/env.py — نسخه‌ی اصلاح‌شده
+def action_masks(self):
+    for sid in _SERVICE_IDS:
+        sv = snapshot["services"][sid]
+        can_up = self._any_server_can_host(sid)
+        <span class="diff-add">can_down = sv["n_ready_replicas"] > 1</span>
+        <span class="diff-rem">can_down = sv["n_replicas"] > 1  # قبلی — شامل STARTING هم می‌شد</span>
+        masks.extend([True, can_up, can_down])
+    ...
+
+def _any_server_can_host(self, service_id):
+    cpu = CFG.services_info[service_id]["cpu_demand"]
+    <span class="diff-add">return any(s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)</span>
+    <span class="diff-rem">return any(s.can_host(service_id, cpu)  # قبلی — بدون چک ACTIVE!</span>
+               for s in self.engine.servers.values())</code></pre>
+
+  <p>دقیقاً همین دو فیکس در <code>algorithms/ppo/ppo_algorithm.py::_build_action_masks</code> هم اعمال شد
+  (چون این تابع مسیر inference/ارزیابی نهایی است، نه فقط آموزش):</p>
+  <pre><code>can_up = any(<span class="diff-add">s.state == ServerState.ACTIVE and </span>s.can_host(sid, cpu) for s in servers.values())
+can_down = sv["<span class="diff-add">n_ready_replicas</span>"] > 1</code></pre>
+
+  <p>پیش‌نیاز این فیکس، اضافه شدن فیلد جدید به snapshot موتور بود:</p>
+  <pre><code># simulator/engine.py — هم در _build_metrics_snapshot هم در نسخه‌ی readonly
+snapshot["services"][svc_id] = {
+    "n_replicas": ...,
+    <span class="new-tag" style="display:inline">"n_ready_replicas": len(ready),</span>  # فیلد جدید
+    ...
+}</code></pre>
+
+  <div class="warn-box">
+    <b>⚠ اثبات مکانیزمی، نه ادعای کمّی:</b> این باگ به‌طور اثبات‌شده سیگنال reward را آلوده می‌کند
+    (از طریق جریمه‌ی بی‌دلیل روی اکشن‌های mask-passed-but-execution-failed). اندازه‌ی دقیق اثرش روی نتایج نهایی
+    را باید با تحلیل event log (شمارش <code>skip_reason</code> برای تصمیمات <code>applied=False</code>) سنجید،
+    نه فقط با حدس کیفی ادعا کرد.
+  </div>
+
+  <h3>۶.۴ Reward — پنج جزء نرمال‌شده</h3>
+  <pre><code>penalty = (w1 * norm_response_time + w2 * norm_deadline_violation + w3 * norm_energy +
+           w4 * norm_load_balance + w5 * norm_rejected)
+penalty += PPO_PENALTY_PER_ACTION * n_actions_taken
+reward = -penalty</code></pre>
+  <p>وزن‌های نهایی: <code>w1=0.08, w2=0.24, w3=0.30, w4=0.23, w5=0.15</code></p>
+  <div class="warn-box">
+    <b>⚠ نیاز به بازبینی بعد از فیکس‌های دور دوم:</b> ثابت‌های نرمال‌سازی انرژی (<code>_NORM_ENERGY_JOULE=12_000</code>
+    در هر دو فایل <code>state_builder.py</code> و <code>env.py</code>) با انرژی <b>قبل از</b> فیکس شمول DRAINING کالیبره شده بودند.
+    باید با اندازه‌گیری مجدد روی Data واقعی بعد از فیکس، دوباره کالیبره شوند (توضیح کامل در بخش «به‌روزرسانی پایپ‌لاین آموزش» بالای همین سند).
+  </div>
+
+  <h3>۶.۵ آموزش — BC Warm-Start + RL Fine-tune</h3>
+  <div class="diagram">داده‌ی train (۳ روز)
+       ↓
+Greedy demo جمع‌آوری می‌شود (state, action)
+       ↓
+BC warm-start (۲۵ epoch، cross-entropy)
+       ↓
+RL fine-tune (۳M timestep، ۸ محیط موازی، MaskablePPO)
+       ↓
+مدل ذخیره می‌شود
+       ↓
+Inference روی Data4.csv (بدون یادگیری، deterministic)</div>
+  <p><b>BC Warm-Start:</b> Greedy روی داده اجرا می‌شود و هر (state, action) ثبت می‌شود، سپس شبکه‌ی سیاست PPO با یادگیری تحت‌نظارت
+  (cross-entropy) روی این جفت‌ها آموزش می‌بیند — یک نقطه‌ی شروع معقول قبل از RL.</p>
+  <p><b>RL Fine-tune:</b> ۸ محیط موازی (پنجره‌ی زمانی تصادفی از داده‌ی train)، <code>ent_coef=0.01</code> برای تشویق exploration،
+  <code>VecNormalize(norm_reward=True)</code> برای نرمال‌سازی خودکار reward.</p>
+  <p><b>ارزیابی نهایی روی Data4.csv</b> (هرگز در آموزش دیده نشده)، inference-only، بدون یادگیری آنلاین.</p>
+
+  <h3>۶.۶ Inference</h3>
+  <p>چون <code>scale_decision</code> امضایش شامل <code>now</code> نیست ولی مدل باید یک‌بار در هر تیک پیش‌بینی کند،
+  پیش‌بینی در <code>provision_decision</code> (همیشه اول صدا زده می‌شود) کش می‌شود:</p>
+  <pre><code>def provision_decision(self, servers, metrics_snapshot, now):
+    self._predict_and_cache(servers, metrics_snapshot, now)
+    return self._cached_provision
+
+def scale_decision(self, service_id, metrics_snapshot):
+    return self._cached_scale.get(service_id, ScaleAction.NO_CHANGE)</code></pre>
+
+  <details class="qa"><summary>چرا از MaskablePPO استفاده شده نه PPO معمولی؟</summary>
+    <div class="a">چون PPO معمولی امکان محدودکردن اکشن‌های نامعتبر را ندارد — یا باید با جریمه‌ی سنگین در reward یاد بگیرد
+    (کند و ناپایدار)، یا با masking از همان اول جلوش گرفته شود (دقیق‌تر و سریع‌تر).</div>
+  </details>
+  <details class="qa"><summary>چرا BC warm-start لازم بود؟</summary>
+    <div class="a">RL خالص از صفر روی این مسئله کند همگرا می‌شود چون فضای اکشن بزرگ است (۲۵ بعد) و ابتدا عامل کاملاً تصادفی عمل می‌کند.
+    BC یک نقطه‌ی شروع معقول (رفتار Greedy) می‌دهد که RL از آنجا بهبود بدهد.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase7">
+  <h2 class="phase-title"><span class="num">۷</span>تاریخچه‌ی کامل باگ‌ها — دور اول و دور دوم</h2>
+  <p>این فاز از نظر دفاع مهم‌ترین بخش است — نشان می‌دهد پروژه یک چرخه‌ی واقعی <i>فرضیه → آزمایش → کشف → اصلاح</i> بوده، نه صرفاً کدنویسی.</p>
+
+  <h3>دور اول — توسعه‌ی اولیه (۵ فاز زمانی)</h3>
+
+  <h4>فاز ۱: باگ‌های بنیادی موتور مشترک</h4>
+  <table>
+    <tr><th>#</th><th>باگ</th><th>اثر</th></tr>
+    <tr><td>۱</td><td>Migration بدون Make-Before-Break</td><td><code>REJECTED_NO_REPLICA</code> غیرواقعی در طول migration</td></tr>
+    <tr><td>۲</td><td>لاگ‌نشدن رویدادهای تصمیم</td><td>پیش‌نیاز حیاتی برای کشف بقیه‌ی باگ‌ها</td></tr>
+    <tr><td>۳</td><td>عدم تداوم TURN_ON (نامتقارن با TURN_OFF)</td><td>نوسان زودهنگام روشن‌کردن سرور</td></tr>
+    <tr><td>۴</td><td>عدم heterogeneity-aware provisioning</td><td>پروفایل سرور با شدت اضافه‌بار تطبیق نداشت</td></tr>
+    <tr><td>۵</td><td>نبود cooldown سطح سرویس</td><td>flapping در تصمیمات scale</td></tr>
+    <tr><td>۶</td><td>معیار ممیزی SCALE_DOWN بدون چک n_replicas>1</td><td>missed_opportunities غیرواقعی (~۲۶٬۰۰۰)</td></tr>
+  </table>
+
+  <h4>فاز ۲: عدم‌تعادل Reward در PPO</h4>
+  <p><b>علامت:</b> PPO بهترین در response_time/deadline، بدترین در انرژی (۳۸.۱M در برابر ۳۲-۳۵.۷M) و توازن بار (cv=0.71). فقط ۵۵ اکشن در ۲۸۸۰ تیک.</p>
+  <p><b>ریشه:</b> جریمه‌ی «درخواست ردشده» نرمال‌نشده بود — می‌توانست ۵ تا ۱۵ برابر بزرگ‌تر از بقیه‌ی اجزای reward شود.</p>
+  <p><b>اصلاح:</b> <code>norm_rejected = min(num_rejected_recent / 5.0, 2.0)</code> — نرمال، مثل بقیه.</p>
+  <div class="card tip"><b>درس کلی:</b> یک جزء reward با مقیاس ناهماهنگ با بقیه، حتی با وزن کوچک، می‌تواند کل سیگنال یادگیری را غالب کند.</div>
+
+  <h4>فاز ۳: کشف باگ سیستمی Capacity-Starved (مهم‌ترین کشف دور اول)</h4>
+  <p><b>علامت:</b> نتایج Greedy/Voila/HPA (بدون تغییر کد!) به‌طرز غیرمنتظره تغییر کردند — نشانه‌ی قطعی یک تغییر واقعی در کد مشترک (چون این الگوریتم‌ها deterministic هستند).</p>
+  <p><b>ریشه:</b> ۳۵۰۰ از ۳۵۰۸ تلاش SCALE_UP با <code>no_target_server</code> شکست خورده بودند — چون معیار قدیمی TURN_ON فقط busy-fraction را می‌سنجید، نه ظرفیت آزاد واقعی.</p>
+  <p><b>اصلاح:</b> <code>_capacity_starved_services</code> — ابتدا فقط در Greedy، بعد برای انصاف مقایسه به Voila و HPA هم اضافه شد.</p>
+  <div class="card tip"><b>درس کلی:</b> اعداد «خوب» می‌توانند مصنوعی باشند — انرژی/توازن پایین قبلی نتیجه‌ی خساست اجباری سیستم بود، نه کارآمدی واقعی.</div>
+
+  <h4>فاز ۴: کشف Flapping شدید سرور</h4>
+  <p><b>علامت (با <code>analyze_decision_quality.py</code>):</b> ۹۶.۱٪ چرخه‌های on→off زیر ۳۰۰ ثانیه dwell داشتند.</p>
+  <p><b>ریشه:</b> <code>COOLDOWN_SEC</code> و <code>SUSTAIN_LOW_SEC</code> هر دو ۶۰ ثانیه بودند — تقریباً هم‌زمان سر می‌رسیدند.</p>
+  <p><b>اصلاح:</b> دو گیت مجزا: <code>MIN_ACTIVE_DURATION_SEC=300</code> و <code>MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC=120</code>.</p>
+
+  <h4>فاز ۵: تنظیم نهایی وزن‌های Reward</h4>
+  <p>فقط <code>w1</code> (بیشترین margin غیرضروری) کم شد و به <code>w2</code> (تنها معیار عقب) منتقل شد.</p>
+  <div class="warn-box"><b>یادداشت صادقانه:</b> هم‌زمان با تغییر وزن، <code>SEED</code> از ۴۲ به ۴۳ تغییر کرد و
+  <code>MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC</code> هم اضافه شد — نمی‌شود گفت بهبود فقط از تغییر وزن آمده.</div>
+
+  <hr style="border-color:var(--border); margin:36px 0">
+
+  <h3>دور دوم — بازبینی عمیق و اصلاح (این نسخه)</h3>
+  <p>روش دور دوم مشابه دور اول بود: رصد ناهنجاری + خواندن دقیق کد اجرا در برابر منطق تصمیم، نه تست تصادفی.</p>
+
+  <table>
+    <tr><th>#</th><th>باگ</th><th>فایل</th><th>شدت</th></tr>
+    <tr><td>۷</td><td>Action mask بدون چک ACTIVE و با n_replicas اشتباه</td><td>ppo/env.py, ppo/ppo_algorithm.py</td><td>🔴 بالا</td></tr>
+    <tr><td>۸</td><td>Capacity-starved نادیده گرفتن سرور BOOTING</td><td>algorithms/base.py, engine.py</td><td>🔴 بالا</td></tr>
+    <tr><td>۹</td><td>آستانه‌ی هاردکد ۰.۷ ناهماهنگ با threshold هر الگوریتم</td><td>algorithms/base.py</td><td>🟡 متوسط</td></tr>
+    <tr><td>۱۰</td><td>demand_centroid فقط از درخواست‌های موفق پر می‌شد</td><td>engine.py</td><td>🟡 متوسط</td></tr>
+    <tr><td>۱۱</td><td>دقت انرژی محدود به فاصله‌ی رویدادها (تا ۳۰s)</td><td>engine.py</td><td>🟡 متوسط</td></tr>
+    <tr><td>۱۲</td><td>load_balance_cv با ۱ سرور فعال نادیده گرفته می‌شد</td><td>metrics.py</td><td>🟡 متوسط</td></tr>
+    <tr><td>۱۳</td><td>شمول DRAINING در توان لحظه‌ای (مغایر با متن سند)</td><td>models.py</td><td>🔴 بالا</td></tr>
+    <tr><td>۱۴</td><td>GRACEFUL_TERMINATION_DELAY_SEC ثابت، نامتناسب با exec_time</td><td>engine.py, realtime_dispatcher.py</td><td>🔴 بالا</td></tr>
+    <tr><td>۱۵</td><td>معیار ممیزی SCALE_DOWN با n_replicas (شامل STARTING)</td><td>engine.py</td><td>🟢 پایین</td></tr>
+  </table>
+
+  <p>جزئیات فنی کامل هر مورد در فازهای ۲، ۳، ۴، ۵ و ۶ همین سند (با نشانه‌ی <span class="fixed-tag">🛠</span>) آمده است.</p>
+
+  <div class="card tip">
+    <b>نکته‌ی ترتیب اعمال (برای دفاع):</b> باگ‌های ۷ و ۸ به هم وابسته بودند (فیلد <code>n_ready_replicas</code> پیش‌نیاز فیکس mask بود)،
+    و باگ‌های ۱۳ و ۱۴ یک بسته‌ی واحد بودند (بدون هم‌زمان فیکس‌کردن، نتیجه نصفه‌کاره می‌ماند: شمول DRAINING در توان بدون مدت drain واقعی، یا برعکس).
+  </div>
+
+  <h3>جدول خلاصه‌ی نهایی همه‌ی باگ‌ها (دور اول + دوم)</h3>
+  <table>
+    <tr><th>#</th><th>باگ</th><th>اثر روی کدام الگوریتم</th></tr>
+    <tr><td>۱-۶</td><td>باگ‌های بنیادی موتور (دور اول)</td><td>هر ۴</td></tr>
+    <tr><td>۷</td><td>reward نرمال‌نشده</td><td>فقط PPO</td></tr>
+    <tr><td>۸</td><td>capacity-starved نادیده گرفته شده</td><td>هر ۴</td></tr>
+    <tr><td>۹</td><td>flapping سرور</td><td>هر ۴</td></tr>
+    <tr><td>۱۰</td><td>Action mask ناهماهنگ با اجرا</td><td>فقط PPO</td></tr>
+    <tr><td>۱۱</td><td>capacity-starved بدون BOOTING/threshold مشترک</td><td>هر ۴</td></tr>
+    <tr><td>۱۲</td><td>demand_centroid کور به درخواست‌های ردشده</td><td>فقط VOILA</td></tr>
+    <tr><td>۱۳</td><td>دقت انرژی محدود</td><td>هر ۴</td></tr>
+    <tr><td>۱۴</td><td>load_balance_cv بایاس‌دار</td><td>هر ۴ (بیشتر Greedy/HPA)</td></tr>
+    <tr><td>۱۵</td><td>DRAINING خارج از محاسبه‌ی توان</td><td>هر ۴</td></tr>
+    <tr><td>۱۶</td><td>Graceful termination ثابت و ناکافی</td><td>هر ۴ + فاز ۳</td></tr>
+  </table>
+
+  <details class="qa"><summary>از کجا مطمئنی الان دیگر باگ نداره؟</summary>
+    <div class="a">مطمئن نیستم صد‌درصد — و این صادقانه در محدودیت‌های شناخته‌شده ذکر شده. روش همیشه این بوده: هر ناهنجاری deterministic
+    (تغییر نتیجه‌ی الگوریتم‌های قطعی بدون تغییر کدشان) را نشانه‌ی قطعی یک باگ در کد مشترک در نظر بگیرم، نه نویز.</div>
+  </details>
+  <details class="qa"><summary>باگ capacity-starved چطور کشف شد؟ محض تصادف؟</summary>
+    <div class="a">نه، از رصد یک ناهنجاری آماری (تغییر رفتار الگوریتم‌های قطعی) شروع شد، بعد با خواندن مستقیم event log خودِ Greedy
+    (نه حدس زدن)، عدد دقیق «۳۵۰۰ از ۳۵۰۸ شکست» پیدا شد.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="phase8">
+  <h2 class="phase-title"><span class="num">۸</span>نتایج نهایی و آماده‌سازی دفاع</h2>
+
+  <h3>۸.۱ چرا چند-seed مهم است</h3>
+  <p>نتیجه‌ی یک اجرای PPO با یک seed کافی نیست برای ادعای علمی معتبر — RL ذاتاً نویزی است.
+  <code>evaluation/aggregate_seeds.py</code> چند seed را اجرا و میانگین ± انحراف‌معیار گزارش می‌کند.</p>
+  <div class="card tip"><b>برای دفاع:</b> اگر داور پرسید «کدام عدد درست است؟» — جواب: «هر دو، نتیجه‌ی seedهای متفاوت‌اند؛
+  عدد قابل‌اعتماد میانگین چند seed با بازه‌ی عدم‌قطعیت است، نه یک عدد تک.»</div>
+
+  <h3>۸.۲ فاز ۳ (k8s_adapter) — صداقت درباره‌ی محدودیت</h3>
+  <div class="warn-box">معماری فاز ۳ کامل طراحی و کدنویسی شده (اینترفیس مشترک، Kubernetes API واقعی، هماهنگی از طریق Redis)،
+  ولی چون دسترسی به کلاستر فیزیکی وجود نداشت، این بخش هرگز validate نشده. حتی بعد از فیکس دور دوم (drain دینامیک)، این محدودیت باقی است.</div>
+
+  <h3>۸.۳ ابزار تحلیلی سفارشی</h3>
+  <p><code>analyze_decision_quality.py</code> دو سؤال عمیق‌تر از معیار لحظه‌ای بخش ۸ می‌پرسد: آیا اکشن «غیرضروری» واقعاً نویز است یا پیش‌بینانه؟
+  و تحلیل flapping سرور. یافته‌ی کلیدی: نامتقارنی هزینه‌ی SCALE_UP (ارزان) در برابر SCALE_DOWN (پرریسک) — PPO این را خودش یاد گرفته.</p>
+
+  <h3>۸.۴ چک‌لیست خط داستانی ارائه</h3>
+  <div class="diagram">مسئله (منابع لبه‌ی محدود + تقاضای متغیر)
+   ↓
+معماری مشترک (AlgorithmBase + موتور discrete-event)
+   ↓
+مدل دامنه (Server/Replica/Request + ماشین‌حالت‌ها)
+   ↓
+چرخه‌ی درخواست (مسیریابی + صف واقعی + response_time)
+   ↓
+چرخه‌ی تصمیم هر ۳۰ ثانیه (provision → scale → migration)
+   ↓
+۳ الگوریتم قاعده‌محور (فلسفه‌های متفاوت)
+   ↓
+PPO (state → action masked → reward نرمال‌شده → BC+RL)
+   ↓
+سفر دیباگ (۱۶ باگ در دو دور، هرکدام با علامت→ریشه→اصلاح→اثر)
+   ↓
+نتایج (با صداقت درباره‌ی variance و محدودیت‌های باقیمانده)</div>
+</section>
+
+<!-- ============================================================ -->
+<section id="qa-full">
+  <h2 class="phase-title"><span class="num">؟</span>بانک کامل پرسش و پاسخ برای دفاع</h2>
+
+  <h3>سؤالات معماری و طراحی کلی</h3>
+  <details class="qa"><summary>چرا اصلاً RL؟ چرا یک الگوریتم بهینه‌سازی کلاسیک (مثل ILP) کافی نبود؟</summary>
+    <div class="a">چون این یک مسئله‌ی تصمیم‌گیری ترتیبی و پویا با عدم‌قطعیت زیاد است. ILP نیاز به مدل دقیق ریاضی از کل سیستم دارد
+    و باید برای هر تیک دوباره حل شود (سنگین). RL یک سیاست آموزش‌دیده دارد که بلادرنگ تصمیم می‌گیرد و می‌تواند الگوهای غیرخطی پیچیده را یاد بگیرد.</div>
+  </details>
+  <details class="qa"><summary>آیا نتایج روی داده‌ی دیگر (نه شانگهای) هم تعمیم پیدا می‌کند؟</summary>
+    <div class="a">نه به‌طور تضمینی — مدل روی الگوهای ترافیک همان شهر آموزش دیده. برای تعمیم به شهر/الگوی دیگر، حداقل fine-tuning مجدد لازم است.</div>
+  </details>
+  <details class="qa"><summary>هزینه‌ی محاسباتی PPO در inference چقدر است؟ برای بلادرنگ مناسب است؟</summary>
+    <div class="a">بله — آموزش سنگین فقط یک‌بار انجام می‌شود، ولی inference فقط یک forward pass شبکه‌ی کوچک (۲۵۶×۲۵۶، دو لایه) است
+    که میلی‌ثانیه طول می‌کشد.</div>
+  </details>
+  <details class="qa"><summary>چرا فقط ۴ الگوریتم؟ چرا DQN امتحان نشد؟</summary>
+    <div class="a">PPO به‌خاطر پایداری بیشتر در فضای اکشن گسسته‌ی بزرگ و ترکیبی، و پشتیبانی مستقیم از action masking از طریق sb3-contrib انتخاب شد.
+    مقایسه با DQN می‌توانست جالب باشد ولی خارج از محدوده‌ی این نسخه بود.</div>
+  </details>
+
+  <h3>سؤالات درباره‌ی باگ‌ها و کیفیت کد</h3>
+  <details class="qa"><summary>بزرگ‌ترین ریسک/محدودیت این پروژه چیست که خودت می‌دانی؟</summary>
+    <div class="a">چند مورد: (۱) فاز ۵ دور اول چند متغیر را هم‌زمان تغییر داد؛ (۲) k8s_adapter هیچ‌وقت روی کلاستر واقعی تست نشده؛
+    (۳) دو مکانیزم نسبتاً جدید (emergency-boot، capacity-starved) به‌اندازه‌ی کد قدیمی‌تر battle-tested نیستند؛
+    (۴) کالیبراسیون ثابت‌های انرژی بعد از فیکس دور دوم هنوز باید دوباره انجام شود.</div>
+  </details>
+  <details class="qa"><summary>چرا به‌جای رفع دستی هر باگ، تست خودکار ننوشتید؟</summary>
+    <div class="a">این واقعاً یکی از محدودیت‌های پروژه است. روش استفاده‌شده (تحلیل event-log بعد از هر اجرا + ابزار تشخیصی سفارشی)
+    یک‌جور «تست integration بعد از واقعیت» بود، نه پیشگیرانه. تست‌های واحد روی سناریوهای خاص ارزش زیادی اضافه می‌کرد.</div>
+  </details>
+  <details class="qa"><summary>اگر یک تغییر را مجبور بودی برای نسخه‌ی بعدی اولویت بدهی، چه بود؟</summary>
+    <div class="a">نوشتن تست‌های واحد برای سناریوهای حیاتی (مثل «سرور با replica تک‌نسخه نباید بدون migration کامل drain شود»)،
+    چون الان کشف باگ‌ها صرفاً از طریق تحلیل post-hoc لاگ‌ها بوده، نه پیشگیری خودکار.</div>
+  </details>
+  <details class="qa"><summary>چرا فیکس action mask را «اثبات‌شده» می‌گویی ولی درصد اثرش را نمی‌دهی؟</summary>
+    <div class="a">چون مکانیزم آسیب مستقیماً از کدِ reward function اثبات می‌شود (جریمه‌ی بی‌دلیل روی اکشن mask-passed-but-execution-failed) —
+    این یک واقعیت کد است. ولی اندازه‌ی دقیق اثرش روی اعداد نهایی نیاز به تحلیل کمّی event log دارد که باید جداگانه انجام شود؛
+    بدون آن، فقط می‌شود گفت «مکانیزم آلوده‌کننده اثبات شده»، نه «فلان درصد افت از همین بوده».</div>
+  </details>
+
+  <h3>سؤالات درباره‌ی متریک‌ها و انصاف مقایسه</h3>
+  <details class="qa"><summary>چرا load_balance_cv را برای حالت تک‌سرور صفر گذاشتید، نه حذف؟</summary>
+    <div class="a">چون حذف کامل باعث می‌شد الگوریتمی که بیشتر وقتش تک‌سرور است (مثل Greedy) به‌طور مصنوعی این متریک را بهتر نشان دهد —
+    دقیقاً همان تیک‌هایی که «توازن بی‌معنی» بودند از میانگین حذف می‌شدند، نه بی‌طرف حساب می‌شدند. صفر گذاشتن (نه نامتوازن، نه حذف) منصفانه‌تر است.</div>
+  </details>
+  <details class="qa"><summary>آیا فیکس شمول DRAINING در انرژی، رتبه‌بندی الگوریتم‌ها را عوض می‌کند؟</summary>
+    <div class="a">این یک فیکس متقارن روی موتور مشترک است، پس به‌طور یکسان روی هر ۴ الگوریتم اعمال می‌شود. مقادیر مطلق انرژی افزایش می‌یابند،
+    ولی چون الگوریتم‌ها با فرکانس/شدت متفاوت drain می‌کنند، اثر دقیق روی رتبه‌بندی نسبی باید بعد از اجرای مجدد اندازه‌گیری شود — ادعای قطعی
+    بدون این اندازه‌گیری درست نیست.</div>
+  </details>
+
+  <h3>سؤالات درباره‌ی PPO</h3>
+  <details class="qa"><summary>چرا BC warm-start لازم بود؟ RL خالص چرا کافی نبود؟</summary>
+    <div class="a">RL خالص از صفر روی فضای اکشن ۲۵بعدی کند همگرا می‌شود. BC یک نقطه‌ی شروع معقول (رفتار Greedy) می‌دهد که RL از آنجا بهبود دهد.</div>
+  </details>
+  <details class="qa"><summary>چرا معلم Greedy انتخاب شد نه VOILA؟</summary>
+    <div class="a">چون Greedy ساده‌ترین و قابل‌اعتمادترین baseline موجود است. هدف warm-start صرفاً دادن نقطه‌ی شروع «معقول» است، نه بهترین ممکن.</div>
+  </details>
+  <details class="qa"><summary>بعد از فیکس دور دوم، آیا مدل قدیمی همچنان قابل‌استفاده است؟</summary>
+    <div class="a">خیر. چون هم فضای mask (معنای معتبر/نامعتبر بودن اکشن‌ها) و هم دینامیک موتور مشترک تغییر کرده، مدل قدیمی از نظر رفتاری
+    دیگر با محیط فعلی سازگار نیست، حتی اگر فایل بدون خطا لود شود. باید کاملاً بازآموزی شود.</div>
+  </details>
+</section>
+
+<!-- ============================================================ -->
+<section id="final-checklist">
+  <h2 class="phase-title"><span class="num">✓</span>چک‌لیست اجرای نهایی قبل از ارائه</h2>
+  <ul class="checklist">
+    <li>اجرای رگرسیون کامل هر ۳ الگوریتم قاعده‌محور با کد فیکس‌شده (<code>evaluation.compare_runs</code>)</li>
+    <li>اندازه‌گیری مجدد میانگین/صدک۹۰ انرژی هر تیک با Greedy فیکس‌شده، و به‌روزرسانی <code>_NORM_ENERGY_JOULE</code> در هر دو فایل</li>
+    <li>بازآموزی کامل PPO (BC + RL) با کد فیکس‌شده، با نام فایل جدید (مثلاً <code>_v2</code>) برای جلوگیری از قاطی‌شدن</li>
+    <li>اجرای <code>evaluation.aggregate_seeds</code> روی چند seed برای بازه‌ی اطمینان قابل‌گزارش</li>
+    <li>اجرای <code>analyze_decision_quality.py</code> روی event log جدید PPO برای تحلیل نامتقارنی هزینه</li>
+    <li>تحلیل کمّی اثر فیکس action mask (شمارش <code>skip_reason</code> برای تصمیمات mask-passed اما اجرا-نشده) روی event log قبل/بعد</li>
+    <li>به‌روزرسانی README با جدول باگ‌های دور دوم و اعداد نهایی جدید</li>
+    <li>مرور بانک پرسش و پاسخ این سند قبل از جلسه‌ی دفاع</li>
+  </ul>
+</section>
+
+</main>
+</div>
+
+<a href="#legend" class="top-link" title="بازگشت به بالا">↑</a>
+
+<footer>راهنمای کامل پروژه‌ی مدیریت پویای منابع لبه — تهیه‌شده برای ارائه و دفاع نهایی</footer>
+
+</body>
+</html>

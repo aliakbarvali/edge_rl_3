@@ -131,7 +131,7 @@ edge_rl_3/
 ## نصب
 
 ```bash
-python3 -m venv venv
+python -m venv venv
 source venv/bin/activate        # ویندوز: venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -166,10 +166,10 @@ set EOTCH_DATA_DIR=D:\path\to\data       # ویندوز (cmd)
 اجرای یک الگوریتم روی داده‌ی تست:
 
 ```bash
-python3 run.py --algorithm greedy --data test
-python3 run.py --algorithm voila  --data test
-python3 run.py --algorithm hpa    --data test
-python3 run.py --algorithm ppo    --data test   # نیاز به مدل آموزش‌دیده دارد
+python run.py --algorithm greedy --data test
+python run.py --algorithm voila  --data test
+python run.py --algorithm hpa    --data test
+python run.py --algorithm ppo    --data test   # نیاز به مدل آموزش‌دیده دارد
 ```
 
 آرگومان‌ها:
@@ -190,7 +190,7 @@ python3 run.py --algorithm ppo    --data test   # نیاز به مدل آموز�
 ## آموزش عامل PPO
 
 ```bash
-python3 -m algorithms.ppo.train
+python -m algorithms.ppo.train
 ```
 
 مراحل داخلی:
@@ -206,7 +206,7 @@ seed آموزش با متغیر محیطی قابل تنظیم است تا بت�
 آموزش داد:
 
 ```bash
-EOTCH_SEED=43 python3 -m algorithms.ppo.train
+EOTCH_SEED=43 python -m algorithms.ppo.train
 ```
 
 خروجی: `algorithms/ppo/ppo_model_seed<N>.zip` + آمار نرمال‌سازی reward +
@@ -219,19 +219,19 @@ tensorboard --logdir logs/tensorboard
 
 پس از آموزش، ارزیابی inference-only روی داده‌ی تست:
 ```bash
-python3 -m algorithms.ppo.infer
+python -m algorithms.ppo.infer
 ```
 
 اگر چند seed آموزش داده و هرکدام را با `evaluation.compare_runs` ارزیابی
 کرده باشید، می‌توانید میانگین/انحراف‌معیار معیارها را جمع‌بندی کنید:
 ```bash
-python3 -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs
+python -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs
 ```
 
 ## مقایسه‌ی هر چهار الگوریتم
 
 ```bash
-python3 -m evaluation.compare_runs --data test
+python -m evaluation.compare_runs --data test
 ```
 
 این اسکریپت هر چهار الگوریتم را (هرکدام که آماده باشد؛ اگر مدل PPO هنوز
@@ -284,7 +284,7 @@ python3 -m evaluation.compare_runs --data test
 ## ابزار تحلیل کیفیت تصمیم
 
 ```bash
-python3 analyze_decision_quality.py outputs/ppo_events.jsonl
+python analyze_decision_quality.py outputs/ppo_events.jsonl
 ```
 
 این اسکریپت روی فایل لاگ JSONL هر الگوریتم دو نوع تحلیل انجام می‌دهد:
@@ -310,18 +310,18 @@ python3 analyze_decision_quality.py outputs/ppo_events.jsonl
 2. ساخت namespace: `kubectl create namespace edge-rl`
 3. build و push ایمیج worker (`k8s_adapter/worker_service/`):
    ```bash
-   python3 build_push_pull_worker.py
+   python build_push_pull_worker.py
    ```
 4. دسترسی معتبر `~/.kube/config` به کلاستر، و یک نمونه‌ی Redis در دسترس
 
 پیش از اجرای کامل، حتماً تست اتصال را اجرا کنید:
 ```bash
-python3 -m k8s_adapter.smoke_test
+python -m k8s_adapter.smoke_test
 ```
 
 سپس اجرای واقعی:
 ```bash
-python3 run.py --algorithm greedy --mode k8s --data test
+python run.py --algorithm greedy --mode k8s --data test
 ```
 
 در این حالت، `decision_loop` هر ۳۰ ثانیه‌ی واقعی تصمیمات scale/provision

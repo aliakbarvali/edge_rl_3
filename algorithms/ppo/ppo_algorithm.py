@@ -22,6 +22,7 @@ from common.state_builder import build_state_vector
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
 from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
 
+from common.geo import haversine_km, network_delay_ms
 _SERVICE_IDS = sorted(CFG.services_info.keys())
 _SERVER_IDS = sorted(CFG.server_info.keys())
 _SCALE_MAP = {0: ScaleAction.NO_CHANGE, 1: ScaleAction.SCALE_UP, 2: ScaleAction.SCALE_DOWN}
@@ -31,8 +32,8 @@ _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_
 
 class PPOAlgorithm(AlgorithmBase):
     name = "ppo"
-
-    def __init__(self, model_path: str, deterministic: bool = True):
+ 
+    def __init__(self, model_path, deterministic=True, latency_aware_routing=False):
         try:
             from sb3_contrib import MaskablePPO
         except ImportError as e:
@@ -46,6 +47,7 @@ class PPOAlgorithm(AlgorithmBase):
         self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
         # قوانین مشترک غیر-یادگیرنده (placement/migration - خارج از فضای اکشن PPO، بخش ۱۱.۱)
         self._helper = GreedyAlgorithm()
+        self.latency_aware_routing = latency_aware_routing
 
     # ------------------------------------------------------------------
     def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float):
@@ -104,3 +106,32 @@ class PPOAlgorithm(AlgorithmBase):
     def migration_decision(self, draining_server: Server,
                             servers: Dict[int, Server]) -> List[MigrationStep]:
         return self._helper.migration_decision(draining_server, servers)
+
+
+
+    def select_replica(self, request, candidate_replicas, servers, now):
+        if not candidate_replicas:
+            return None
+        if not self.latency_aware_routing:
+            return super().select_replica(request, candidate_replicas, servers, now)
+
+
+        best, best_latency = None, float("inf")
+        for r in candidate_replicas:
+            if r.queue_occupancy(now) >= r.queue_len:
+                continue  
+            server = servers[r.server_id]
+            distance_km = haversine_km(request.bts_lat, request.bts_long, server.lat, server.long)
+            delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
+            rtt_sec = 2 * delay_ms / 1000.0
+
+            # تخمین واقعیِ زمان انتظار: دقیقاً همون چیزی که Replica.try_admit
+            # استفاده می‌کنه (available_at) - نه یک heuristic بر پایه‌ی occupancy
+            est_wait_sec = max(0.0, r.available_at - now)
+            est_total_latency = rtt_sec + est_wait_sec + r.exec_time
+
+            if est_total_latency < best_latency:
+                best_latency = est_total_latency
+                best = r
+
+        return best        
