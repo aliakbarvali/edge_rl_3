@@ -370,3 +370,10 @@ class MyAlgorithm(AlgorithmBase):
 override در صورت نیاز). سپس فقط کافیست الگوریتم را در `run.py` و
 `evaluation/compare_runs.py` به تابع سازنده اضافه کنید — موتور شبیه‌سازی و
 adapter کلاستر هیچ تغییری نیاز ندارند.
+
+
+
+Terminal 1: uvicorn k8s_adapter.dispatcher_api:app --port 9000   # control-plane + engine.run()
+
+Terminal 2: python3 -m k8s_adapter.bts_simulator                  # traffic generator (جای BTS واقعی)
+

@@ -18,7 +18,7 @@ scale/provision را اجرا می‌کند، ۲: dispatcher که هر درخو�
 
 from __future__ import annotations
 from typing import Optional
-
+import json
 try:
     import redis
 except ImportError as e:
@@ -128,3 +128,32 @@ def reset_all(n_servers: int, n_services: int):
     keys = _r.keys("edge:*")
     if keys:
         _r.delete(*keys)
+
+# --- اضافه به بخش صف ---
+
+def set_reservation_ttl(service_id: int, server_id: int, request_id: int, ttl_sec: float):
+    """محافظ در برابر BTSای که بعد از /route هرگز /process را صدا نمی‌زند."""
+    key = f"edge:reservation:{service_id}:{server_id}:{request_id}"
+    _r.setex(key, int(ttl_sec), "1")
+
+
+# --- بخش جدید: صف کامل‌شده‌ها (پرشده توسط خودِ پاد worker) ---
+
+def push_completion(service_id: int, server_id: int, request_id: int,
+                     success: bool, response_time_sec: float):
+    """*** خودِ پاد worker بعد از پردازش هر درخواست این را صدا می‌زند - نه
+    دیسپچر. این تنها ترافیکی است که از این ماشین عبور می‌کند و بسیار سبک
+    است (یک push به لیست، نه یک HTTP round-trip کامل)."""
+    payload = json.dumps({
+        "request_id": request_id, "service_id": service_id, "server_id": server_id,
+        "success": success, "response_time_sec": response_time_sec,
+    })
+    _r.rpush("edge:metrics:completions", payload)
+
+
+def pop_completion_batch(max_items: int = 500) -> list[dict]:
+    pipe = _r.pipeline()
+    pipe.lrange("edge:metrics:completions", 0, max_items - 1)
+    pipe.ltrim("edge:metrics:completions", max_items, -1)
+    raw_items, _ = pipe.execute()
+    return [json.loads(x) for x in raw_items]

@@ -31,11 +31,13 @@ Redis همگام می‌ماند.
 from __future__ import annotations
 import asyncio
 import time
-from collections import defaultdict
-from typing import Dict, List, Optional
+from collections import defaultdict, deque
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 import pandas as pd
+import json
+
 
 from common.config import CFG
 from common.geo import haversine_km, network_delay_ms
@@ -44,8 +46,16 @@ from common.metrics import MetricsCollector
 from common.logger import EventLogger
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionActionType
 from k8s_adapter import k8s_client, redis_state
-
-
+ 
+UTIL_SAMPLE_INTERVAL_SEC = 1.0  # *** گرانولاریتی نمونه‌برداری busy/idle در فاز
+                                 # ۳؛ چون رویداد گسسته‌ی دقیق مثل موتور
+                                 # شبیه‌سازی نداریم، این تنها راه تقریب
+                                 # انتگرال busy_cpu(t) در طول زمان واقعی است.
+                                 # هرچه کوچک‌تر، دقیق‌تر ولی هزینه‌ی Redis
+                                 # بیشتر - ۱ ثانیه توازن معقولی است چون کوتاه‌ترین
+                                 # exec_time سیستم ۴ ثانیه است (سرویس ۱).
+                                 
+                                 
 class RealtimeEngine:
     def __init__(self, events_df: pd.DataFrame, algorithm: AlgorithmBase,
                  algorithm_name: str, event_logger: Optional[EventLogger] = None):
@@ -68,6 +78,29 @@ class RealtimeEngine:
         # همیشه صفر/غایب باشد و common/state_builder.py نتواند از همان
         # snapshot این‌جا برای PPO استفاده کند بدون KeyError.
         self._tick_proximity_violated = defaultdict(int)
+
+        # *** رفع کمبود دوم (بازبینی): demand_centroid اینجا همیشه None
+        # هاردکد بود (نگاه کنید پایین همین فایل، _build_metrics_snapshot
+        # قبلی). یعنی در فاز ۳ واقعی، VoilaAlgorithm.select_placement_server/
+        # migration_decision/select_scale_down_victim همیشه به fallback
+        # غیر-centroid-محور می‌افتادند - حتی بعد از این‌که تزریق occupancy_fn
+        # به select_scale_down_victim دیورجنس sim/real را برای انتخاب قربانی
+        # رفع کرد، خودِ centroid که آن انتخاب بر مبنایش انجام می‌شود هنوز
+        # وجود نداشت. حالا دقیقاً مثل simulator/engine.py: موقعیت هر درخواست
+        # در لحظه‌ی ورود (چه موفق چه رد شده) در یک پنجره‌ی غلتان ۳۰تایی ثبت
+        # می‌شود و medoid آن به‌عنوان demand_centroid هر تیک محاسبه می‌شود.
+        # عمداً هر تیک پاک نمی‌شود (drop-off طبیعی با maxlen=30 اتفاق می‌افتد)،
+        # چون این یک پنجره‌ی غلتان چند-تیکی است نه شمارنده‌ی «از تیک قبل».
+        self._recent_positions: Dict[int, deque] = defaultdict(lambda: deque(maxlen=30))
+        self._service_demand_centroid: Dict[int, Optional[Tuple[float, float]]] = {}
+        
+        
+        # *** برای میانگین‌گیری دقیق utilization روی هر پنجره‌ی تصمیم (مثل
+        # _util_at_window_start در simulator/engine.py، ولی اینجا wall-clock).
+        self._util_at_window_start: Dict[int, float] = defaultdict(float)
+        self._util_window_start_time: float = time.monotonic()
+
+
     # ------------------------------------------------------------------
     def _init_shadow_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -264,21 +297,55 @@ class RealtimeEngine:
     # ------------------------------------------------------------------
     # بخش ۶ و ۷: حلقه‌ی تصمیم‌گیری واقعی (هر DECISION_INTERVAL_SEC ثانیه‌ی واقعی)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _medoid(points: List[Tuple[float, float]]) -> Optional[Tuple[float, float]]:
+        """دقیقاً همان تابع simulator/engine.py:_build_metrics_snapshot._medoid -
+        نقطه‌ای از خودِ points که مجموع فاصله‌اش تا بقیه کمینه است (به‌جای
+        میانگین متحرک EMA که می‌توانست به نقطه‌ای خارج از توزیع واقعی درخواست‌ها
+        بیفتد)."""
+        if not points:
+            return None
+        best, best_cost = points[0], float("inf")
+        for p in points:
+            cost = sum(haversine_km(p[0], p[1], q[0], q[1]) for q in points)
+            if cost < best_cost:
+                best, best_cost = p, cost
+        return best
+
     def _build_metrics_snapshot(self) -> dict:
         snapshot = {"servers": {}, "services": {}, "global": {}}
         now = time.monotonic()
+        window_elapsed = now - self._util_window_start_time
+
         for sid, s in self.servers.items():
+            if window_elapsed > 1e-9 and s.capacity > 0:
+                # *** میانگین دقیق زمانی از تیک قبل تا الان (تفاضل انباشته‌ها)،
+                # نه یک نمونه‌ی لحظه‌ای - دقیقاً همون اصلاحی که در
+                # simulator/engine.py انجام شد، اینجا هم با همون منطق.
+                avg_util = ((s.cumulative_busy_cpu_seconds - self._util_at_window_start[sid])
+                            / (s.capacity * window_elapsed))
+            else:
+                avg_util = 0.0
             snapshot["servers"][sid] = {
-                "state": s.state, "utilization": s.instantaneous_utilization(now),
+                "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
-            }
+            } 
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(redis_state.get_queue_occupancy(svc_id, r.server_id) for r in ready)
                        / len(ready)) if ready else 0.0
-        
+
+            # *** رفع کمبود دوم (نگاه کنید __init__): محاسبه‌ی medoid روی
+            # پنجره‌ی غلتان موقعیت‌های اخیر این سرویس - فقط وقتی این تیک
+            # حداقل یک ورود واقعی داشته (هماهنگ با simulator/engine.py که
+            # هم شرط دارد، تا در تیک‌های کاملاً بی‌ورودی مقدار قبلی حفظ شود
+            # نه این‌که با یک تهیِ گمراه‌کننده جایگزین شود).
+            if self._tick_total[svc_id] > 0:
+                self._service_demand_centroid[svc_id] = self._medoid(
+                    list(self._recent_positions[svc_id]))
+
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
@@ -288,11 +355,11 @@ class RealtimeEngine:
                 "rejection_rate": self._tick_rejected[svc_id] / total,
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
                 "recent_arrivals": self._tick_total[svc_id],
-                "demand_centroid": None, 
+                "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
             }
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
-                               "num_rejected_recent": sum(self._tick_rejected.values())}
+                               "num_rejected_recent": sum(self._tick_rejected.values())} 
         return snapshot
 
     async def decision_loop(self):
@@ -344,6 +411,11 @@ class RealtimeEngine:
                         asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
                         self.metrics.record_scale_action("SCALE_DOWN")
 
+            # snapshot این تیک، قبل از شروع پنجره‌ی بعدی.
+            for sid, s in self.servers.items():
+                self._util_at_window_start[sid] = s.cumulative_busy_cpu_seconds
+            self._util_window_start_time = now
+            
             self._tick_total.clear()
             self._tick_rejected.clear()
             self._tick_violated.clear()
@@ -370,6 +442,11 @@ class RealtimeEngine:
         req = Request(id=self._request_seq, bts_lat=row.Lat, bts_long=row.Long,
                        service_id=int(row.ServiceID), arrival_time=time.time())
         self._tick_total[req.service_id] += 1
+        # *** هماهنگ با simulator/engine.py:_handle_arrival - موقعیت صرف‌نظر
+        # از نتیجه‌ی نهایی (موفق یا رد) ثبت می‌شود تا حلقه‌ی بازخورد
+        # خودتقویت‌شونده (کمبود پوشش -> رد شدن -> centroid کور به همان کمبود)
+        # اینجا هم رفع باشد، نه فقط در شبیه‌ساز.
+        self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
         self._log("request_arrived", request_id=req.id, service_id=req.service_id)
 
         candidates = [r for r in self.replicas_by_service.get(req.service_id, []) if r.is_selectable()]
@@ -430,12 +507,191 @@ class RealtimeEngine:
                   service_id=req.service_id, response_time_sec=response_time)
         self.metrics.record_request(req)
 
+
+    async def route_request(self, request_id: int, service_id: int,
+                             bts_lat: float, bts_long: float) -> dict:
+        """
+        *** این تابع معادل نیمه‌ی اول _handle_request قدیمی است (تا لحظه‌ی
+        رزرو صف)، ولی دیگر HTTP واقعی نمی‌زند - فقط آدرس مقصد را برمی‌گرداند.
+        BTS واقعی این تابع را (از طریق dispatcher_api.py:/route) صدا می‌زند،
+        سپس *خودش* مستقیماً به ip:port برگشتی وصل می‌شود.
+        """
+        self._tick_total[service_id] += 1
+        self._log("request_arrived", request_id=request_id, service_id=service_id)
+
+        candidates = [r for r in self.replicas_by_service.get(service_id, []) if r.is_selectable()]
+        chosen = self.algorithm.select_replica(
+            type("R", (), {"bts_lat": bts_lat, "bts_long": bts_long, "service_id": service_id})(),
+            candidates, self.servers, time.monotonic())
+
+        if chosen is None:
+            status = "REJECTED_NO_REPLICA" if not candidates else "REJECTED_QUEUE_FULL"
+            self._tick_rejected[service_id] += 1
+            self._tick_violated[service_id] += 1
+            self._log("request_rejected", request_id=request_id, service_id=service_id)
+            return {"status": status}
+
+        if not redis_state.try_reserve_queue_slot(service_id, chosen.server_id, chosen.queue_len):
+            self._tick_rejected[service_id] += 1
+            self._tick_violated[service_id] += 1
+            self._log("request_rejected", request_id=request_id, service_id=service_id, reason="queue_full")
+            return {"status": "REJECTED_QUEUE_FULL"}
+
+        server = self.servers[chosen.server_id]
+        distance_km = haversine_km(bts_lat, bts_long, server.lat, server.long)
+        delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
+        if 2 * delay_ms > CFG.proximity_l0_ms:
+            self._tick_proximity_violated[service_id] += 1
+        self._log("request_routed", request_id=request_id, server_id=server.id, distance_km=distance_km)
+
+        ip = redis_state.get_pod_ip(service_id, chosen.server_id)
+        port = k8s_client.worker_port(service_id)
+        deadline = CFG.services_info[service_id]["deadline"]
+
+        # *** یک رزرو TTL-دار در Redis می‌گذاریم تا اگر BTS هرگز /process را
+        # صدا نزد (کرش کلاینت بین /route و /process)، صف برای همیشه اشغال
+        # نماند - محافظ در برابر عدم قطعیت شبکه‌ی واقعی که در شبیه‌سازی
+        # اصلاً وجود نداشت.
+        redis_state.set_reservation_ttl(service_id, chosen.server_id, request_id,
+                                         ttl_sec=deadline + 5)
+
+        return {
+            "status": "ROUTED",
+            "server_id": server.id,
+            "ip": ip,
+            "port": port,
+            "deadline_sec": deadline,
+        }
+
+    def record_external_completion(self, request_id: int, service_id: int, server_id: int,
+                                    success: bool, response_time_sec: float):
+        """
+        *** جایگزین بخش دوم _handle_request قدیمی (بعد از دریافت پاسخ
+        HTTP). حالا این اطلاعات را از بیرون (BTS واقعی، از طریق /report)
+        دریافت می‌کنیم، نه اینکه خودمان منتظر پاسخ HTTP بمانیم.
+        """
+        req = Request(id=request_id, bts_lat=0.0, bts_long=0.0, service_id=service_id,
+                       arrival_time=time.time())
+        req.response_time_sec = response_time_sec
+        deadline = CFG.services_info[service_id]["deadline"]
+        req.deadline_violated = (not success) or (response_time_sec > deadline)
+        req.status = RequestStatus.COMPLETED if success else RequestStatus.REJECTED_NO_REPLICA
+        if req.deadline_violated:
+            self._tick_violated[service_id] += 1
+        self._log("request_completed" if success else "request_failed", request_id=request_id,
+                  service_id=service_id, server_id=server_id, response_time_sec=response_time_sec)
+        self.metrics.record_request(req)
+
+    async def drain_completion_queue(self):
+        """
+        *** جایگزین جایگزین: به‌جای اتکا به HTTP /report (که هنوز یک تماس
+        شبکه‌ی اضافه از BTS است)، این حلقه‌ی پس‌زمینه هر چند صدم ثانیه
+        صف کامل‌شده‌های Redis را که *خودِ پاد worker* پس از پردازش هر
+        درخواست آنجا push کرده (نگاه کنید worker_service/app.py) می‌خواند.
+        این کاملاً دیسپچر را از مسیر پرترافیک request/response بیرون نگه
+        می‌دارد - پاد مستقیماً با BTS صحبت می‌کند، و فقط یک رکورد کوچک
+        متریک را (async، batch) به Redis می‌نویسد که این حلقه جمع می‌کند.
+        """
+        while self._running:
+            batch = redis_state.pop_completion_batch(max_items=500)
+            for item in batch:
+                self.record_external_completion(
+                    item["request_id"], item["service_id"], item["server_id"],
+                    item["success"], item["response_time_sec"])
+            await asyncio.sleep(0.2)
+
     # ------------------------------------------------------------------
     async def run(self) -> dict:
         redis_state.reset_all(CFG.n_servers, CFG.n_services)
         await self.initial_placement()
 
-        async with httpx.AsyncClient() as http_client:
-            await asyncio.gather(self.decision_loop(), self.dispatch_loop(http_client))
+        # *** dispatch_loop قدیمی که خودش CSV را replay می‌کرد و هم client
+        # هم server بود، حذف شد. حالا این process فقط سه کار می‌کند:
+        # ۱) decision_loop (بدون تغییر)
+        # ۲) drain_completion_queue (خواندن متریک از Redis)
+        # ۳) سرو کردن dispatcher_api (uvicorn جدا، یا در پروداکشن به‌عنوان
+        #    یک پراسس مستقل کنار همین کد اجرا می‌شود - نگاه کنید پایین فایل)
+        await asyncio.gather(self.decision_loop(), self.drain_completion_queue())
 
         return self.metrics.finalize(self.servers)
+
+
+    # ------------------------------------------------------------------
+    # نقطه‌ی ورود سرویس control-plane (uvicorn این را serve می‌کند)
+    # ------------------------------------------------------------------
+    async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger=None,
+                                http_host="0.0.0.0", http_port=9000):
+        from k8s_adapter import dispatcher_api
+        import uvicorn
+
+        engine = RealtimeEngine(events_df, algorithm, algorithm_name, event_logger=event_logger)
+        dispatcher_api.bind_engine(engine)
+
+        config = uvicorn.Config(dispatcher_api.app, host=http_host, port=http_port, log_level="info")
+        server = uvicorn.Server(config)
+
+        await asyncio.gather(engine.run(), server.serve())
+        
+    # ------------------------------------------------------------------
+   
+    async def run(self) -> dict:
+        redis_state.reset_all(CFG.n_servers, CFG.n_services)
+        await self.initial_placement()
+        self._util_window_start_time = time.monotonic()   
+
+        await asyncio.gather(
+            self.decision_loop(),
+            self.drain_completion_queue(),
+            self._utilization_energy_sampler_loop(),   
+        )
+
+        return self.metrics.finalize(self.servers)
+    
+    async def _utilization_energy_sampler_loop(self):
+        """
+        *** جایگزین رویدادهای گسسته‌ی موتور شبیه‌سازی: هر UTIL_SAMPLE_INTERVAL_SEC
+        ثانیه‌ی واقعی، busy/idle واقعی هر رپلیکا را از Redis (نه از shadow
+        replica.departures که هرگز در فاز ۳ به‌روزرسانی نمی‌شود - نگاه کنید
+        توضیح بالای فایل) می‌خواند و به‌صورت مستطیلی (rectangle rule) در
+        cumulative_busy_cpu_seconds انباشت می‌کند. با گام ۱ ثانیه، این تقریب
+        برای burstهای کوتاه (مثلاً یک درخواست ۵ ثانیه‌ای در یک پنجره‌ی ۳۰
+        ثانیه‌ای) به‌اندازه‌ی کافی دقیق است - خطای حداکثر هر بازه ~۱ ثانیه است.
+
+        *** به همین مناسبت، انرژی هم اینجا انباشته می‌شود - چون RealtimeEngine
+        فعلی اصلاً هیچ معادلی برای _advance_energy_to موتور شبیه‌سازی نداشت؛
+        یعنی cumulative_energy_joule در فاز ۳ همیشه ۰ می‌ماند بود (یک باگ جدا،
+        ولی چون همان حلقه‌ی نمونه‌برداری برای هر دو لازم است، این‌جا با هم
+        رفع می‌شوند).
+        """
+        last_sample = time.monotonic()
+        while self._running:
+            await asyncio.sleep(UTIL_SAMPLE_INTERVAL_SEC)
+            now = time.monotonic()
+            elapsed = now - last_sample
+            last_sample = now
+
+            for sid, s in self.servers.items():
+                if s.state == ServerState.OFF:
+                    continue
+
+                busy_cpu = 0
+                if s.state in (ServerState.ACTIVE, ServerState.DRAINING):
+                    for svc_id, r in s.hosted_replicas.items():
+                        if r.state not in (ReplicaState.READY, ReplicaState.DRAINING):
+                            continue
+                        # *** منبع درست: اشغال واقعی صف از Redis، نه
+                        # r.queue_occupancy(now) که روی shadow همیشه ۰ است.
+                        if redis_state.get_queue_occupancy(svc_id, sid) > 0:
+                            busy_cpu += CFG.services_info[svc_id]["cpu_demand"]
+
+                s.cumulative_busy_cpu_seconds += busy_cpu * elapsed
+
+                # انرژی: همون مدل خطی idle->max بر پایه‌ی busy_cpu لحظه‌ای همین بازه
+                if s.state == ServerState.BOOTING:
+                    power = s.p_idle
+                elif s.state in (ServerState.ACTIVE, ServerState.DRAINING):
+                    util = busy_cpu / s.capacity if s.capacity > 0 else 0.0
+                    power = s.p_idle + (s.p_max - s.p_idle) * util
+                else:
+                    power = 0.0
+                s.cumulative_energy_joule += power * elapsed

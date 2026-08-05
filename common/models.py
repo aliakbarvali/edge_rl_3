@@ -111,6 +111,7 @@ class Server:
     drain_started_at: Optional[float] = None
     last_transition_time: float = -1e18  # برای cooldown/anti-flapping
     cumulative_energy_joule: float = 0.0
+    cumulative_busy_cpu_seconds: float = 0.0  
     num_boots: int = 0
     num_shutdowns: int = 0
 

@@ -87,6 +87,13 @@ class EdgeResourceEnv(gym.Env):
 
         self.engine: SimulationEngine | None = None
         self._last_snapshot = None
+        # *** بازبینی ۴: اجزای خام (نرمال‌شده ولی بدون وزن) آخرین محاسبه‌ی
+        # reward، برای مانیتورینگ جداگانه در حین آموزش - نگاه کنید
+        # algorithms/ppo/train.py:RewardComponentLoggingCallback. بدون این،
+        # غالب‌شدن یک جزء (مثل انرژی - دقیقاً همان چیزی که باعث رگرسیون
+        # «فروپاشی provisioning» شد) فقط بعد از اتمام کامل training و اجرای
+        # evaluation/compare_runs قابل تشخیص بود.
+        self._last_reward_components: dict | None = None
 
     # ------------------------------------------------------------------
     def reset(self, *, seed=None, options=None):
@@ -163,6 +170,17 @@ class EdgeResourceEnv(gym.Env):
                    w["w4_load_balance"] * norm_lb +
                    w["w5_rejected"] * norm_rejected)
         penalty += CFG.ppo_penalty_per_action * n_actions_taken
+
+        # *** بازبینی ۴: ثبت اجزای وزن‌دار (سهم واقعی هرکدام در penalty نهایی)
+        # برای لاگ جداگانه - نگاه کنید __init__ برای دلیل.
+        self._last_reward_components = {
+            "response_time": w["w1_response_time"] * norm_rt,
+            "deadline": w["w2_deadline"] * avg_dv_rate,
+            "energy": w["w3_energy"] * norm_energy,
+            "load_balance": w["w4_load_balance"] * norm_lb,
+            "rejected": w["w5_rejected"] * norm_rejected,
+            "action_penalty": CFG.ppo_penalty_per_action * n_actions_taken,
+        }
         return -float(penalty) 
 
     # ------------------------------------------------------------------

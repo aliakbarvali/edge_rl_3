@@ -39,8 +39,8 @@ N_SERVERS = len(SERVER_INFO)
 # ---------------------------------------------------------------------------
 
 SERVICES_INFO: Dict[int, dict] = {
-    1: {"cpu_demand": 2, "exec_time": 4, "queue_len": 3, "deadline": 16, "memory": "64Mi"},
-    2: {"cpu_demand": 4, "exec_time": 6, "queue_len": 3, "deadline": 20, "memory": "80Mi"},
+    1: {"cpu_demand": 2, "exec_time": 4, "queue_len": 3, "deadline": 8, "memory": "64Mi"},# 2k -1.5-2.5*exec
+    2: {"cpu_demand": 4, "exec_time": 6, "queue_len": 3, "deadline": 20, "memory": "80Mi"}, #200ms 10s
     3: {"cpu_demand": 6, "exec_time": 8, "queue_len": 4, "deadline": 28, "memory": "96Mi"},
     4: {"cpu_demand": 6, "exec_time": 10, "queue_len": 4, "deadline": 35, "memory": "112Mi"},
     5: {"cpu_demand": 8, "exec_time": 12, "queue_len": 5, "deadline": 40, "memory": "128Mi"},

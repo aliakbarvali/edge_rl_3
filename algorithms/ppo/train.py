@@ -44,7 +44,7 @@ _PROVISION_TO_INT = {ProvisionActionType.NO_CHANGE: 0, ProvisionActionType.TURN_
                       ProvisionActionType.TURN_OFF: 2}
 
 def model_path_for_seed(seed: int) -> str:
-    return os.path.join(os.path.dirname(__file__), f"ppo_model_seed{seed}.zip")
+    return os.path.join(os.path.dirname(__file__), f"ppo_model_seed{seed}.zip") 
 
 MODEL_PATH = model_path_for_seed(CFG.seed)  
 
@@ -131,6 +131,47 @@ def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
         print(f"[BC warm-start] لاگ loss در {log_path} ذخیره شد.")
 
 
+class RewardComponentLoggingCallback:
+    """
+    *** بازبینی ۴: قبلاً فقط reward نهایی ترکیبی در TensorBoard دیده می‌شد
+    (از طریق Monitor/MaskablePPO خودکار)؛ تشخیص اینکه کدام جزء (پاسخ‌گویی،
+    deadline، انرژی، توازن بار، رد شدن) دارد بر بقیه غالب می‌شود فقط بعد از
+    اتمام کامل آموزش و اجرای evaluation/compare_runs ممکن بود - دقیقاً
+    همین‌طور که رگرسیون «فروپاشی provisioning» (نگاه کنید
+    common/config.py:PPO_REWARD_WEIGHTS) کشف شد: خیلی دیر و پرهزینه.
+
+    این کلاس یک BaseCallback واقعی sb3 را در main() می‌سازد (نه اینجا،
+    چون import سنگین sb3 باید داخل main() بماند طبق الگوی همین فایل)؛ اینجا
+    فقط factory است. بعد از هر rollout (هر n_steps تیک برای هر env)، میانگین
+    هر جزء reward (از تمام n_envs محیط موازی) را جدا در
+    reward_components/<name> لاگ می‌کند.
+    """
+
+    @staticmethod
+    def build(base_callback_cls):
+        import numpy as _np
+
+        class _Impl(base_callback_cls):
+            def _on_step(self) -> bool:
+                return True
+
+            def _on_rollout_end(self) -> None:
+                try:
+                    components_per_env = self.training_env.get_attr("_last_reward_components")
+                except AttributeError:
+                    return
+                keys = set()
+                for c in components_per_env:
+                    if c:
+                        keys.update(c.keys())
+                for key in keys:
+                    values = [c[key] for c in components_per_env if c and key in c]
+                    if values:
+                        self.logger.record(f"reward_components/{key}", float(_np.mean(values)))
+
+        return _Impl()
+
+
 def make_random_window_provider(train_events, window_sec: float, seed: int = CFG.seed):
     """
     برای هر اپیزود آموزشی، یک پنجره‌ی زمانی تصادفی از تایم‌لاین سه‌روزه‌ی
@@ -150,7 +191,7 @@ def make_random_window_provider(train_events, window_sec: float, seed: int = CFG
     return provider
 
 
-def main(total_timesteps: int = 3_000_000, bc_epochs: int = 25, window_hours: float = 3.0,
+def main(total_timesteps: int = 1_000_000, bc_epochs: int = 25, window_hours: float = 3.0,
          bc_max_ticks: int | None = None, n_envs: int = 8):
     try:
         from sb3_contrib import MaskablePPO
@@ -209,14 +250,18 @@ def main(total_timesteps: int = 3_000_000, bc_epochs: int = 25, window_hours: fl
     behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,
                                log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv"))
 
-    from stable_baselines3.common.callbacks import CheckpointCallback
+    from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
     checkpoint_cb = CheckpointCallback(
         save_freq=max(200_000 // n_envs, 1), save_path=os.path.join(LOG_DIR, "checkpoints"),
         name_prefix="ppo_ckpt")
+    # *** بازبینی ۴: هر جزء reward جدا در TensorBoard (reward_components/*)
+    # قابل‌مشاهده می‌شود - نگاه کنید تعریف کلاس بالا برای دلیل.
+    reward_component_cb = RewardComponentLoggingCallback.build(BaseCallback)
+    callback = CallbackList([checkpoint_cb, reward_component_cb])
 
     print(f"در حال آموزش PPO (fine-tune با RL، {n_envs} محیط موازی، {total_timesteps} timestep) ...")
     model.learn(total_timesteps=total_timesteps, progress_bar=True,
-                tb_log_name="ppo_run", callback=checkpoint_cb)
+                tb_log_name="ppo_run", callback=callback)
 
     model.save(MODEL_PATH) 
     vec_env.save(MODEL_PATH.replace(".zip", "_vecnormalize.pkl"))

@@ -64,7 +64,8 @@ class SimulationEngine:
         self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
         self._service_last_scale_up_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
         self._recent_positions: Dict[int, deque] = defaultdict(lambda: deque(maxlen=30))
-        
+        self._util_at_window_start: Dict[int, float] = {sid: 0.0 for sid in self.servers}
+        self._util_window_start_time: float = 0.0
     
     def _init_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -82,9 +83,14 @@ class SimulationEngine:
         for sid, s in self.servers.items():
             last = self._energy_last_update[sid]
             if t > last:
+                util_at_last = s.instantaneous_utilization(last)
                 power = s.instantaneous_power_w(last)
                 s.cumulative_energy_joule += power * (t - last)
-                self._energy_last_update[sid] = t
+                # *** جدید: انتگرال دقیق busy_cpu روی همین بازه (همون منطق
+                # انرژی، ولی برای utilization) - چون بین دو رویداد متوالی
+                # busy_cpu ثابت است، این ضرب دقیق است نه تقریب.
+                s.cumulative_busy_cpu_seconds += util_at_last * s.capacity * (t - last)
+                self._energy_last_update[sid] = t 
 
     
     # جایگذاری اولیه
@@ -486,11 +492,23 @@ class SimulationEngine:
         
     def _build_metrics_snapshot(self) -> dict:
         snapshot = {"servers": {}, "services": {}, "global": {}}
+        window_elapsed = self.now - self._util_window_start_time
         for sid, s in self.servers.items():
+            if window_elapsed > 1e-9:
+                # *** میانگین دقیق زمانی روی کل پنجره‌ی از تیک قبل تا الان -
+                # نه نمونه‌ی لحظه‌ای. چون cumulative_busy_cpu_seconds با
+                # _advance_energy_to در *هر* رویداد (نه فقط هر تیک) به‌روز
+                # می‌شود، این میانگین burstهای کوتاه‌مدت وسط پنجره را هم
+                # کامل لحاظ می‌کند.
+                avg_util = ((s.cumulative_busy_cpu_seconds - self._util_at_window_start[sid])
+                            / (s.capacity * window_elapsed)) if s.capacity > 0 else 0.0
+            else:
+                avg_util = s.instantaneous_utilization(self.now)
             snapshot["servers"][sid] = {
-                "state": s.state, "utilization": s.instantaneous_utilization(self.now),
+                "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
             }
+        
         def _medoid(points):
             if not points:
                 return None
@@ -801,6 +819,10 @@ class SimulationEngine:
             for svc_id in CFG.active_services:
                 decision = self.algorithm.scale_decision(svc_id, snapshot)
                 self._apply_scale_decision(svc_id, decision, snapshot)
+
+        for sid, s in self.servers.items():
+            self._util_at_window_start[sid] = s.cumulative_busy_cpu_seconds
+        self._util_window_start_time = self.now
 
         self._tick_total.clear()
         self._tick_rejected.clear()

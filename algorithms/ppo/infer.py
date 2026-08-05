@@ -14,11 +14,10 @@ import os
 
 from common.logger import EventLogger
 from algorithms.ppo.ppo_algorithm import PPOAlgorithm
-from algorithms.ppo.train import MODEL_PATH
 from simulator.engine import SimulationEngine
 
 
-def run_ppo_inference(events_df, model_path: str = MODEL_PATH, log_path: str | None = None,
+def run_ppo_inference(events_df, model_path: str, log_path: str | None = None,
                        latency_aware_routing: bool = False, use_solver_placement: bool = True,
                        placement_weights: dict | None = None) -> dict:
     algo = PPOAlgorithm(model_path=model_path, deterministic=True,
@@ -35,6 +34,14 @@ def run_ppo_inference(events_df, model_path: str = MODEL_PATH, log_path: str | N
 
 def _parse_args():
     parser = argparse.ArgumentParser()
+    # *** رفع باگ: قبلاً --seed اصلاً در CLI تعریف نشده بود، ولی پایین همین
+    # فایل getattr(args, "seed", None) را می‌خواند - چون هیچ‌وقت چنین
+    # attributeی وجود نداشت، همیشه None برمی‌گشت و بی‌صدا به CFG.seed
+    # سقوط می‌کرد؛ کاربر هیچ راهی برای انتخاب seed از CLI نداشت.
+    parser.add_argument("--seed", type=int, default=None,
+                         help="اگر داده شود: مدل PPO مخصوص همین seed بارگذاری می‌شود و "
+                              "نتایج در <output-dir>/seed<N>/ ذخیره می‌شوند (هماهنگ با "
+                              "evaluation/compare_runs.py --seed و evaluation/aggregate_seeds.py)")
     parser.add_argument("--latency-aware-routing", action="store_true",
                          help="مسیریابی بر پایه‌ی تخمین کل تأخیر (شبکه+صف+اجرا)")
     parser.add_argument("--no-solver-placement", action="store_true",
@@ -51,17 +58,22 @@ if __name__ == "__main__":
 
     args = _parse_args()
 
-        
     from algorithms.ppo.train import model_path_for_seed
     from common.config import CFG
 
-    # seed فقط از طریق env var تنظیم می‌شود: set/export EOTCH_SEED=42
-    resolved_path = model_path_for_seed(CFG.seed)
+    seed = args.seed or CFG.seed
+    resolved_path = model_path_for_seed(seed)
     if not os.path.exists(resolved_path):
         raise SystemExit(
-            f"مدل PPO برای seed={CFG.seed} پیدا نشد: {resolved_path}\n"
+            f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
             f"اول اجرا کنید: python -m algorithms.ppo.train"
         )
+
+    if args.seed is not None:
+        # *** هماهنگ با evaluation/compare_runs.py --seed: زیرپوشه‌ی
+        # خودکار seed<N> تا خروجی چند seed مختلف روی هم نوشته نشود و
+        # مستقیماً قابل مصرف توسط evaluation/aggregate_seeds.py باشد.
+        args.output_dir = os.path.join(args.output_dir, f"seed{args.seed}")
 
     test_events = load_test()
     os.makedirs(args.output_dir, exist_ok=True)
