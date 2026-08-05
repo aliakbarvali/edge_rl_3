@@ -51,21 +51,23 @@ if __name__ == "__main__":
 
     args = _parse_args()
 
+        
     from algorithms.ppo.train import model_path_for_seed
     from common.config import CFG
-        
-    seed = getattr(args, "seed", None) or CFG.seed
-    resolved_path = model_path_for_seed(seed)
+
+    # seed فقط از طریق env var تنظیم می‌شود: set/export EOTCH_SEED=42
+    resolved_path = model_path_for_seed(CFG.seed)
     if not os.path.exists(resolved_path):
         raise SystemExit(
-            f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
+            f"مدل PPO برای seed={CFG.seed} پیدا نشد: {resolved_path}\n"
             f"اول اجرا کنید: python -m algorithms.ppo.train"
-        ) 
-        
+        )
+
     test_events = load_test()
     os.makedirs(args.output_dir, exist_ok=True)
     result = run_ppo_inference(
         test_events,
+        model_path=resolved_path,
         log_path=os.path.join(args.output_dir, "ppo_events.jsonl"),
         latency_aware_routing=args.latency_aware_routing,
         use_solver_placement=not args.no_solver_placement,

@@ -24,19 +24,17 @@ def build_algorithm(name: str, args):
         return HPAAlgorithm()
     if name == "ppo":
         from algorithms.ppo.ppo_algorithm import PPOAlgorithm
-        from algorithms.ppo.train import MODEL_PATH
         from algorithms.ppo.train import model_path_for_seed
         from common.config import CFG
-            
-        seed = getattr(args, "seed", None) or CFG.seed
-        resolved_path = model_path_for_seed(seed)
+
+        resolved_path = model_path_for_seed(CFG.seed)
         if not os.path.exists(resolved_path):
             raise SystemExit(
-                f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
+                f"مدل PPO برای seed={CFG.seed} پیدا نشد: {resolved_path}\n"
                 f"اول اجرا کنید: python -m algorithms.ppo.train"
-            ) 
+            )
         return PPOAlgorithm(
-            model_path=MODEL_PATH,
+            model_path=resolved_path,
             latency_aware_routing=args.latency_aware_routing,
             use_solver_placement=not args.no_solver_placement,
         )

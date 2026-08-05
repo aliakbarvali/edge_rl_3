@@ -267,13 +267,28 @@ class VoilaAlgorithm(AlgorithmBase):
          
    
             
-    def select_scale_down_victim(self, service_id, ready_replicas, servers, now):
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
+        """
+        *** رفع باگ مسدودکننده (بازبینی): این override قبلاً پارامتر
+        occupancy_fn را نمی‌پذیرفت، در حالی‌که هم موتور شبیه‌ساز (احتمالاً
+        در آینده) و هم realtime_dispatcher.py (فاز ۳) آن را به‌صورت keyword
+        پاس می‌دهند - در حالت k8s این باعث TypeError واقعی و کرش کامل
+        decision_loop روی اولین SCALE_DOWN می‌شد.
+        علاوه‌براین، فراخوانی مستقیم r.queue_occupancy(now) روی آبجکت سایه‌ی
+        Replica در فاز ۳ همیشه ۰ برمی‌گرداند (چون try_admit/departures آنجا
+        هرگز به‌روزرسانی نمی‌شود - اشغال واقعی صف فقط در Redis نگه داشته
+        می‌شود). حالا وقتی occupancy_fn داده شود (حالت k8s)، همان تابع
+        استفاده می‌شود؛ در حالت شبیه‌سازی (occupancy_fn=None) رفتار قبلی
+        (r.queue_occupancy(now) مستقیم) حفظ شده.
+        """
+        occ = occupancy_fn or (lambda r: r.queue_occupancy(now))
         centroid = None
         if self._last_snapshot is not None:
             centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
         if centroid is None or len(ready_replicas) <= 1:
-            return super().select_scale_down_victim(service_id, ready_replicas, servers, now) 
-        by_load = sorted(ready_replicas, key=lambda r: r.queue_occupancy(now))
+            return super().select_scale_down_victim(service_id, ready_replicas, servers, now,
+                                                      occupancy_fn=occupancy_fn)
+        by_load = sorted(ready_replicas, key=occ)
         low_load_pool = by_load[:max(1, len(by_load) // 2)]
         return max(low_load_pool, key=lambda r: haversine_km(
             centroid[0], centroid[1], servers[r.server_id].lat, servers[r.server_id].long))

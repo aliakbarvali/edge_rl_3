@@ -152,14 +152,20 @@ DECISION_INTERVAL_SEC = 30.0
 # مقادیر کالیبره‌شده (جمع=۱.۰): پاسخ‌گویی به رد شدن (w5) و انرژی (w3)
 # سنگین‌تر از پاسخ‌گویی خام (w1) وزن گرفته‌اند - بخش ۱۳ سند: قابل تنظیم.
 # ---------------------------------------------------------------------------
-PPO_REWARD_WEIGHTS = {
+"""PPO_REWARD_WEIGHTS = {
     "w1_response_time": 0.12,
     "w2_deadline": 0.20,
     "w3_energy": 0.30,
     "w4_load_balance": 0.23,
     "w5_rejected": 0.15,
+}"""
+PPO_REWARD_WEIGHTS = {
+    "w1_response_time": 0.12,
+    "w2_deadline": 0.25,      # از 0.20
+    "w3_energy": 0.18,        # از 0.30 — سنگین‌ترین وزن الان اینه، دقیقاً چیزی که رفتار رو کج کرده
+    "w4_load_balance": 0.20,  # از 0.23
+    "w5_rejected": 0.25,      # از 0.15 — الان مهم‌ترین علامت شکست همینه
 }
-
 PPO_PENALTY_PER_ACTION = 0.01
 # *** قابل override با env var (هم‌راستا با الگوی EOTCH_DATA_DIR بالا)، تا
 # اجرای چند-seed (algorithms/ppo/train.py + evaluation/aggregate_seeds.py)
