@@ -343,6 +343,18 @@ class SimulationEngine:
     # بخش ۳: چرخه‌ی درخواست
     # ------------------------------------------------------------------
     def _handle_arrival(self, row):
+        """
+        *** اصلاح معماری دیسپچر (بازبینی): این تابع دیگر انتخاب replica را
+        انجام نمی‌دهد - آن مسئولیت به _handle_routed منتقل شده. اینجا فقط
+        همان چیزی اتفاق می‌افتد که در واقعیت در لحظه‌ی رسیدن درخواست به BTS
+        رخ می‌دهد: BTS یک تماس سبک به دیسپچر مرکزی (control-plane) می‌زند تا
+        سرور مقصد را بگیرد. چون دیسپچر یک نقطه‌ی جغرافیایی مجزا با فاصله‌ی
+        قابل‌مقایسه با سرورهای edge نیست (یک سرویس مرکزی روی دیتاسنتر core
+        است)، این hop از هاورسین استفاده نمی‌کند - فقط DISPATCH_OVERHEAD_MS
+        ثابت (رفت‌وبرگشت = ۲× آن، دقیقاً هم‌الگو با BASE_LATENCY_MS برای hop
+        داده). سرور مقصد *در این لحظه* هنوز معلوم نیست؛ فقط بعد از این تأخیر
+        (در _handle_routed) select_replica صدا زده می‌شود.
+        """
         self._request_seq += 1
         req = Request(id=self._request_seq, bts_lat=row.Lat, bts_long=row.Long,
                        service_id=int(row.ServiceID), arrival_time=self.now)
@@ -358,6 +370,20 @@ class SimulationEngine:
         self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
         self._log("request_arrived", request_id=req.id, service_id=req.service_id)
 
+        routing_delay_ms = 2 * CFG.dispatch_overhead_ms
+        req.routing_delay_sec = routing_delay_ms / 1000.0
+        self._push(self.now + req.routing_delay_sec, EventType.REQUEST_ROUTED, req)
+
+    def _handle_routed(self, req: Request):
+        """
+        *** لحظه‌ای که BTS جواب دیسپچر (سرور مقصد) را دریافت کرده - دقیقاً
+        معادل _engine.route_request در k8s_adapter/realtime_dispatcher.py،
+        ولی حالا در شبیه‌سازی هم با یک تأخیر واقعی مدل می‌شود، نه هم‌زمان با
+        لحظه‌ی خام ورود CSV. select_replica اینجا صدا زده می‌شود (نه در
+        _handle_arrival) چون در واقعیت تا این لحظه هیچ سروری انتخاب نشده و
+        صف/رقابت رپلیکاها باید بر پایه‌ی زمان واقعی رسیدن به این مرحله
+        محاسبه شود، نه زمان خام ورود به BTS.
+        """
         candidates = [r for r in self.replicas_by_service.get(req.service_id, [])
                       if r.is_selectable()]
         chosen = self.algorithm.select_replica(req, candidates, self.servers, self.now)
@@ -392,7 +418,8 @@ class SimulationEngine:
         
          
         self._log("request_routed", request_id=req.id, service_id=req.service_id,
-            server_id=server.id, distance_km=distance_km, network_delay_ms=delay_ms)
+            server_id=server.id, distance_km=distance_km, network_delay_ms=delay_ms,
+            routing_delay_sec=req.routing_delay_sec)
         cold_start_extra = 0.0
         if chosen.ready_since is not None and (self.now - chosen.ready_since) <= CFG.cold_start_window_sec:
             cold_start_extra = CFG.cold_start_penalty_sec
@@ -427,9 +454,13 @@ class SimulationEngine:
         # "مشغول" محاسبه می‌شد. این رویداد سبک صرفاً موتور را دقیقاً در لحظه‌ی
         # اتمام واقعی این درخواست "بیدار" می‌کند.
         self._push(req.service_end_time, EventType.ENERGY_RESYNC, None)        
-        # بخش ۳: response_time = ۲×network_delay (رفت+برگشت) + wait + exec (+cold start در exec لحاظ شد)
-        req.response_time_sec = (2 * delay_ms / 1000.0) + req.wait_time_sec + \
-                                 (req.service_end_time - req.service_start_time)
+        # *** بخش ۳ (اصلاح معماری): response_time حالا شامل *هر دو* hop است:
+        # مرحله‌ی مسیریابی (routing_delay_sec، رفت‌وبرگشت BTS<->دیسپچر - قبلاً
+        # اصلاً لحاظ نمی‌شد چون فرض غلط این بود که مسیریابی بی‌درنگ/بدون
+        # هزینه اتفاق می‌افتد) + مرحله‌ی داده‌ی واقعی (۲×network_delay رفت‌وبرگشت
+        # BTS<->سرور) + wait + exec (+ cold start در exec لحاظ شد).
+        req.response_time_sec = req.routing_delay_sec + (2 * delay_ms / 1000.0) + \
+                                 req.wait_time_sec + (req.service_end_time - req.service_start_time)
         req.deadline_violated = req.response_time_sec > CFG.services_info[req.service_id]["deadline"]
         req.status = RequestStatus.COMPLETED
         if req.deadline_violated:
@@ -856,7 +887,14 @@ class SimulationEngine:
         self.now = start_time
         self._initial_placement()
         self._push(start_time, EventType.DECISION_TICK)
-        self._cutoff = max_time + CFG.decision_interval_sec + CFG.server_drain_grace_sec
+        # *** اصلاح معماری دیسپچر: با اضافه‌شدن مرحله‌ی جداگانه‌ی مسیریابی
+        # (REQUEST_ROUTED چند میلی‌ثانیه بعد از REQUEST_ARRIVAL)، آخرین
+        # درخواست‌های نزدیک انتهای تایم‌لاین ممکن است REQUEST_ROUTED‌شان
+        # درست بعد از cutoff قبلی بیفتد و بی‌صدا از پردازش جا بمانند. مقدار
+        # routing delay (میلی‌ثانیه) در مقابل decision_interval_sec (۳۰ ثانیه)
+        # ناچیز است، اما برای درستی کامل همچنان در cutoff لحاظ می‌شود.
+        self._cutoff = (max_time + 2 * CFG.dispatch_overhead_ms / 1000.0
+                         + CFG.decision_interval_sec + CFG.server_drain_grace_sec)
 
     def step(self, external_actions: dict | None = None):
         """
@@ -872,6 +910,8 @@ class SimulationEngine:
 
             if ev.type == EventType.REQUEST_ARRIVAL:
                 self._handle_arrival(ev.payload)
+            elif ev.type == EventType.REQUEST_ROUTED:
+                self._handle_routed(ev.payload)
             elif ev.type == EventType.DECISION_TICK:
                 snapshot = self._handle_decision_tick(external_actions)
                 self._push(self.now + CFG.decision_interval_sec, EventType.DECISION_TICK)

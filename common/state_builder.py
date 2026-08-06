@@ -48,6 +48,22 @@ _NORM_ARRIVAL_RATE = 3.0         # *** بازکالیبره‌شده: p95 واق
                                    # این بُعد از state تقریباً همیشه نزدیک
                                    # صفر و عملاً بی‌فایده برای عامل بود.
 
+# *** رفع باگ مسدودکننده (کشف‌شده بعد از افت کیفیت PPO با seed=42): این سه
+# ثابت قبلاً *همزمان* در algorithms/ppo/env.py (برای محاسبه‌ی reward) با
+# مقادیر قدیمی و کالیبره‌نشده (300.0 و 12_000.0) کپی/هاردکد شده بودند. وقتی
+# این‌جا بازکالیبره شدند (calibrate_constants.py)، آن کپی هرگز به‌روزرسانی
+# نشد - یعنی state vector (این فایل) واقعیت را با مقیاس درست می‌دید، ولی
+# reward (env.py) هنوز با مخرج‌های ۱.۷۴ تا ۳.۵ برابر بزرگ‌تر از مقیاس واقعی
+# محاسبه می‌شد و عملاً هرگز به سقف کلمپ نمی‌رسید - یعنی سهم response_time و
+# energy در reward تقریباً بی‌اثر شده بود، دقیقاً همان چیزی که به عامل اجازه
+# داد avg_active_servers را به ~1.16 برساند و rejection را بدون جریمه‌ی
+# مؤثر بالا ببرد. برای اینکه این دو دیگر هرگز از هم جدا نیفتند، این ثابت‌ها
+# public export می‌شوند و algorithms/ppo/env.py مستقیماً از همین‌جا import
+# می‌کند - نه یک کپی مجزا.
+NORM_RESPONSE_TIME_SEC = _NORM_RESPONSE_TIME_SEC
+NORM_ENERGY_JOULE = _NORM_ENERGY_JOULE
+NORM_ARRIVAL_RATE = _NORM_ARRIVAL_RATE
+
 
 def build_state_vector(snapshot: dict, servers: dict) -> np.ndarray:
     parts = []

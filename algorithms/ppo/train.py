@@ -191,8 +191,8 @@ def make_random_window_provider(train_events, window_sec: float, seed: int = CFG
     return provider
 
 
-def main(total_timesteps: int = 1_000_000, bc_epochs: int = 25, window_hours: float = 3.0,
-         bc_max_ticks: int | None = None, n_envs: int = 8):
+def main(total_timesteps: int = 1_000_000, bc_epochs: int = 50, window_hours: float = 3.0,
+         bc_max_ticks: int = 10_000 , n_envs: int = 8):
     try:
         from sb3_contrib import MaskablePPO
         from sb3_contrib.common.wrappers import ActionMasker
@@ -214,6 +214,7 @@ def main(total_timesteps: int = 1_000_000, bc_epochs: int = 25, window_hours: fl
 
     print("در حال جمع‌آوری دموی Greedy برای BC warm-start ...")
     demo_obs, demo_act = collect_greedy_demonstrations(train_events, max_ticks=bc_max_ticks)
+    
     print(f"تعداد نمونه‌ی BC: {len(demo_obs)}")
 
     def mask_fn(env):
@@ -247,9 +248,8 @@ def main(total_timesteps: int = 1_000_000, bc_epochs: int = 25, window_hours: fl
     )
 
     print("در حال BC warm-start ...")
-    behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,
-                               log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv"))
-
+    behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,lr=5e-5,
+                               log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv")) 
     from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
     checkpoint_cb = CheckpointCallback(
         save_freq=max(200_000 // n_envs, 1), save_path=os.path.join(LOG_DIR, "checkpoints"),
@@ -267,6 +267,17 @@ def main(total_timesteps: int = 1_000_000, bc_epochs: int = 25, window_hours: fl
     vec_env.save(MODEL_PATH.replace(".zip", "_vecnormalize.pkl"))
     print(f"مدل ذخیره شد: {MODEL_PATH}")
     print(f"آمار VecNormalize ذخیره شد: {MODEL_PATH.replace('.zip', '_vecnormalize.pkl')}")
+    # *** یادداشت (بررسی‌شده - بی‌خطر است، نه یک باگ فعال): این فایل
+    # norm_reward=True را ذخیره می‌کند (میانگین/انحراف‌معیار متحرک reward،
+    # نه observation - چون norm_obs=False است). algorithms/ppo/ppo_algorithm.py
+    # (مسیر inference/ارزیابی نهایی) عمداً آن را لود نمی‌کند، چون:
+    #   ۱) inference از policy با deterministic=True مستقیماً روی observation
+    #      خام عمل می‌کند - reward اصلاً در مسیر forward pass نیست.
+    #   ۲) این فایل فقط برای ادامه‌ی آموزش (resume/fine-tune بیشتر) با همان
+    #      VecEnv کاربرد دارد، نه برای اجرای یک‌طرفه‌ی مدل آموزش‌دیده.
+    # اگر در آینده کد جدیدی نوشته شود که خودِ reward را (نه فقط action) در
+    # inference بازتولید/گزارش کند، آن‌جا باید این فایل را با
+    # VecNormalize.load() بارگذاری کند - در غیر این‌صورت لازم نیست.
     print(f"لاگ‌های reward-per-episode هر محیط: {MONITOR_DIR}/env_*.monitor.csv")
     print(f"لاگ TensorBoard: {TENSORBOARD_DIR}  (تماشا با: tensorboard --logdir {TENSORBOARD_DIR})")
 

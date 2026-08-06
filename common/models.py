@@ -167,6 +167,11 @@ class Request:
     service_start_time: Optional[float] = None
     service_end_time: Optional[float] = None
     network_delay_ms: float = 0.0
+    # *** بخش جدید (اصلاح معماری دیسپچر): تأخیر رفت‌وبرگشت مرحله‌ی مسیریابی
+    # (BTS<->دیسپچر، قبل از این‌که سرور مقصد اصلاً معلوم شود) - جدا از
+    # network_delay_ms که فقط تأخیر یک‌طرفه‌ی مرحله‌ی داده‌ی واقعی
+    # (BTS<->سرور) است. response_time_sec هر دو را جمع می‌زند.
+    routing_delay_sec: float = 0.0
     wait_time_sec: float = 0.0
     response_time_sec: float = 0.0
     deadline_violated: bool = False

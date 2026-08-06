@@ -40,7 +40,8 @@ from gymnasium import spaces
 
 from common.config import CFG
 from common.models import ServerState, ReplicaState
-from common.state_builder import build_state_vector, STATE_DIM
+from common.state_builder import (build_state_vector, STATE_DIM,
+                                   NORM_RESPONSE_TIME_SEC, NORM_ENERGY_JOULE)
 from algorithms.base import ScaleAction, ProvisionAction, ProvisionActionType
 from simulator.engine import SimulationEngine
 
@@ -145,25 +146,30 @@ class EdgeResourceEnv(gym.Env):
 
     # ------------------------------------------------------------------
     def _compute_reward(self, snapshot: dict, n_actions_taken: int) -> float:
-        """بخش ۱۱.۴."""
         w = CFG.ppo_reward_weights
         g = snapshot["global"]
 
         avg_dv_rate = (sum(s["deadline_violation_rate"] for s in snapshot["services"].values())
-                       / max(len(snapshot["services"]), 1))
+                    / max(len(snapshot["services"]), 1))
         active_utils = [s["utilization"] for s in snapshot["servers"].values()
                          if s["state"] == ServerState.ACTIVE]
         load_cv = 0.0
         if len(active_utils) >= 2 and np.mean(active_utils) > 0:
             load_cv = float(np.std(active_utils) / np.mean(active_utils))
 
-        norm_rt = min(g["avg_response_time_recent"] / 300.0, 2.0)
-        norm_energy = min(g["energy_recent_joule"] / 12_000.0, 2.0)  # *** کالیبره‌شده - نگاه کنید common/state_builder.py
+        # *** رفع باگ مسدودکننده: قبلاً اینجا 300.0 و 12_000.0 هاردکد بود -
+        # مقادیر *قدیمی* و کالیبره‌نشده که با بازکالیبراسیون common/state_builder.py
+        # (85.2 و 20843.65) دیگر هماهنگ نبودند. حالا مستقیماً از همان ثابت‌های
+        # public-export-شده‌ی state_builder.py استفاده می‌شود تا reward و state
+        # همیشه از یک مقیاس واحد استفاده کنند و دوباره از هم جدا نیفتند.
+        norm_rt = min(g["avg_response_time_recent"] / NORM_RESPONSE_TIME_SEC, 2.0)
+        norm_energy = min(g["energy_recent_joule"] / NORM_ENERGY_JOULE, 2.0)
         norm_lb = min(load_cv, 2.0)
         # *** رفع مشکل غالب‌شدن reward توسط جریمه‌ی رد (نگاه کنید CHANGELOG بالا):
         # قبلاً این جمله نرمال نبود و می‌توانست ۵-۱۵ برابر بقیه‌ی اجزا شود.
         norm_rejected = min(g["num_rejected_recent"] / _NORM_REJECTED_PER_TICK, 2.0)
-
+  
+        
         penalty = (w["w1_response_time"] * norm_rt +
                    w["w2_deadline"] * avg_dv_rate +
                    w["w3_energy"] * norm_energy +

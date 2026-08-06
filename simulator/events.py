@@ -14,6 +14,16 @@ from typing import Any
 
 class EventType(Enum):
     REQUEST_ARRIVAL = auto()
+    # *** اصلاح معماری دیسپچر: جریان درخواست حالا دو مرحله دارد.
+    # REQUEST_ARRIVAL = لحظه‌ی رسیدن درخواست به BTS (زمان خام CSV) - فقط
+    #   تماس با دیسپچر مرکزی را شبیه‌سازی می‌کند (control-plane hop، سبک،
+    #   بدون وابستگی به فاصله‌ی جغرافیایی BTS<->سرور).
+    # REQUEST_ROUTED = لحظه‌ای که BTS جواب دیسپچر (سرور مقصد) را دریافت
+    #   می‌کند - اینجا select_replica واقعاً صدا زده می‌شود (چون قبل از این
+    #   لحظه سرور مقصد هنوز معلوم نیست) و درخواست وارد صف واقعی می‌شود.
+    #   بدون این تفکیک، صف‌بندی/رقابت رپلیکاها بر پایه‌ی زمان اشتباه (زمان
+    #   خام ورود به BTS، نه زمان واقعی رسیدن به سرور) محاسبه می‌شد.
+    REQUEST_ROUTED = auto()
     DECISION_TICK = auto()          # هر DECISION_INTERVAL_SEC: scale/provision/migration
     SERVER_BOOT_DONE = auto()       # BOOTING -> ACTIVE
     SERVER_DRAIN_DONE = auto()      # DRAINING -> OFF

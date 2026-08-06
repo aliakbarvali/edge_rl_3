@@ -11,15 +11,23 @@ k8s_adapter/realtime_dispatcher.py
 `python3 -m k8s_adapter.smoke_test` را اجرا کنید (پایین همین پوشه) تا
 اتصال Redis/K8s و ساخت/حذف یک Deployment آزمایشی تأیید شود.
 
-معماری: دو تسک asyncio هم‌زمان:
+معماری (اصلاح‌شده - جدایی control-plane/data-plane): این ماشین (۱۹۲.۱۶۸.۱.۳۰)
+*فقط* دیسپچر (control-plane) است و هرگز میزبان ترافیک سنگین (payload واقعی
+پردازش) نمی‌شود؛ آن مستقیماً بین BTS و پاد worker رد و بدل می‌شود. سه تسک
+asyncio هم‌زمان اجرا می‌شوند:
     ۱) decision_loop: هر DECISION_INTERVAL_SEC ثانیه‌ی *واقعی*، دقیقاً همان
        چهار متد AlgorithmBase (scale_decision/provision_decision/
        select_placement_server/migration_decision) را که Greedy/Voila/HPA/
        PPO پیاده کرده‌اند صدا می‌زند - منطق تصمیم‌گیری هیچ تغییری نمی‌کند،
        فقط اجرای آن (k8s_client به‌جای دستکاری آبجکت در حافظه) عوض می‌شود.
-    ۲) dispatch_loop: رویدادهای CSV را به ترتیب و با فاصله‌ی زمانی *واقعی*
-       (نه فشرده) پخش می‌کند، select_replica مشترک را صدا می‌زند، و با HTTP
-       واقعی (httpx) به IP واقعی پاد درخواست می‌فرستد.
+    ۲) route_request (سرو شده از طریق dispatcher_api.py:/route، فراخوانده‌شده
+       توسط BTS واقعی/bts_simulator.py): تماس *سبک* هر BTS برای گرفتن سرور
+       مقصد پیش از ارسال درخواست واقعی - فقط lat/long+service_id ورودی و
+       ip/port خروجی؛ هیچ payload سنگینی از این ماشین رد نمی‌شود. بعد از
+       این پاسخ، BTS *خودش* مستقیماً به ip:port واقعی پاد وصل می‌شود.
+    ۳) drain_completion_queue: به‌جای این‌که دیسپچر منتظر پاسخ هر درخواست
+       بماند، هر چند صدم ثانیه صف کامل‌شده‌های Redis را (که خودِ پاد worker
+       بعد از هر پردازش آنجا push کرده) می‌خواند و متریک نهایی را ثبت می‌کند.
 
 یک نمای «سایه» (self.servers/self.replicas_by_service، همان دیتاکلاس‌های
 common/models.py) در حافظه نگه‌داشته می‌شود تا بتوان از همان
@@ -422,91 +430,24 @@ class RealtimeEngine:
             self._tick_proximity_violated.clear()
 
     # ------------------------------------------------------------------
-    # dispatcher واقعی: replay با زمان‌بندی واقعی + HTTP واقعی
+    # *** حذف کد مرده (بازبینی - اصلاح معماری دیسپچر): dispatch_loop و
+    # _handle_request قدیمی که اینجا بودند، دیسپچر مرکزی را هم client هم
+    # متریک‌گیر می‌کردند - یعنی خودِ همین ماشین (۱۹۲.۱۶۸.۱.۳۰) هم مسیریابی
+    # را انجام می‌داد هم منتظر پاسخ HTTP سنگین /process از پاد می‌ماند و
+    # ترافیک واقعی از آن عبور می‌کرد. این دقیقاً همان الگوی غلطی است که
+    # باعث تراکم/فشار غیرضروری روی دیسپچر می‌شود. جایگزین صحیح (که از قبل
+    # در همین فایل پیاده‌سازی شده و run() واقعی هم از همان استفاده می‌کند):
+    #   ۱) route_request() - فقط مسیریابی سبک (BTS<->دیسپچر)، هیچ HTTP سنگینی
+    #      از این ماشین رد نمی‌شود.
+    #   ۲) BTS واقعی (k8s_adapter/worker_service/bts_simulator.py) خودش
+    #      مستقیماً به IP:PORT پاد وصل می‌شود (BTS<->سرور، بدون واسطه).
+    #   ۳) record_external_completion()/drain_completion_queue() - دیسپچر
+    #      فقط دوره‌ای متریک تکمیل‌شده را از Redis می‌خواند، در مسیر
+    #      critical هیچ درخواستی حضور ندارد.
+    # این توابع قدیمی هرگز از run()/serve_control_plane() فراخوانی نمی‌شدند
+    # (کد مرده)؛ برای جلوگیری از سردرگمی حذف شدند تا کسی اشتباهاً فکر نکند
+    # هنوز معماری فعال است.
     # ------------------------------------------------------------------
-    async def dispatch_loop(self, http_client: httpx.AsyncClient):
-        base_time = float(self.events_df.global_start_sec.min())
-        wall_start = time.monotonic()
-        for row in self.events_df.itertuples(index=False):
-            target_offset = float(row.global_start_sec) - base_time
-            now_offset = time.monotonic() - wall_start
-            if target_offset > now_offset:
-                await asyncio.sleep(target_offset - now_offset)
-            asyncio.create_task(self._handle_request(row, http_client))
-        # صبر برای اتمام درخواست‌های درحال‌پرواز قبل از پایان کامل
-        await asyncio.sleep(CFG.graceful_termination_delay_sec + 5)
-        self._running = False
-
-    async def _handle_request(self, row, http_client: httpx.AsyncClient):
-        self._request_seq += 1
-        req = Request(id=self._request_seq, bts_lat=row.Lat, bts_long=row.Long,
-                       service_id=int(row.ServiceID), arrival_time=time.time())
-        self._tick_total[req.service_id] += 1
-        # *** هماهنگ با simulator/engine.py:_handle_arrival - موقعیت صرف‌نظر
-        # از نتیجه‌ی نهایی (موفق یا رد) ثبت می‌شود تا حلقه‌ی بازخورد
-        # خودتقویت‌شونده (کمبود پوشش -> رد شدن -> centroid کور به همان کمبود)
-        # اینجا هم رفع باشد، نه فقط در شبیه‌ساز.
-        self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
-        self._log("request_arrived", request_id=req.id, service_id=req.service_id)
-
-        candidates = [r for r in self.replicas_by_service.get(req.service_id, []) if r.is_selectable()]
-        chosen = self.algorithm.select_replica(req, candidates, self.servers, time.monotonic())
-
-        if chosen is None:
-            req.status = (RequestStatus.REJECTED_NO_REPLICA if not candidates
-                          else RequestStatus.REJECTED_QUEUE_FULL)
-            self._tick_rejected[req.service_id] += 1
-            self._tick_violated[req.service_id] += 1
-            self._log("request_rejected", request_id=req.id, service_id=req.service_id)
-            self.metrics.record_request(req)
-            return
-
-        if not redis_state.try_reserve_queue_slot(req.service_id, chosen.server_id, chosen.queue_len):
-            req.status = RequestStatus.REJECTED_QUEUE_FULL
-            self._tick_rejected[req.service_id] += 1
-            self._tick_violated[req.service_id] += 1
-            self._log("request_rejected", request_id=req.id, service_id=req.service_id, reason="queue_full")
-            self.metrics.record_request(req)
-            return
-
-        server = self.servers[chosen.server_id]
-        distance_km = haversine_km(req.bts_lat, req.bts_long, server.lat, server.long)
-        delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
-        setattr(req, "_distance_km", distance_km)
-        req.network_delay_ms = delay_ms
-        req.assigned_server_id = server.id
-        # *** دقیقاً مثل simulator/engine.py:_handle_arrival - نقض proximity
-        # یعنی رفت‌وبرگشت تأخیر شبکه از PROXIMITY_L0_MS (نه L0_MS پوشش
-        # اولیه) بیشتر شده.
-        if 2 * delay_ms > CFG.proximity_l0_ms:
-            self._tick_proximity_violated[req.service_id] += 1
-        self._log("request_routed", request_id=req.id, server_id=server.id, distance_km=distance_km)
-
-        ip = redis_state.get_pod_ip(req.service_id, chosen.server_id)
-        deadline = CFG.services_info[req.service_id]["deadline"]
-        t0 = time.monotonic()
-        try:
-            port = k8s_client.worker_port(req.service_id)
-            resp = await http_client.post(f"http://{ip}:{port}/process", json={"request_id": req.id},
-                                           timeout=deadline + 10)
-            resp.raise_for_status()
-            ok = True
-        except Exception as e:
-            ok = False
-            self._log("request_http_error", request_id=req.id, error=str(e))
-        finally:
-            redis_state.release_queue_slot(req.service_id, chosen.server_id)
-
-        response_time = (2 * delay_ms / 1000.0) + (time.monotonic() - t0)
-        req.response_time_sec = response_time
-        req.deadline_violated = (not ok) or (response_time > deadline)
-        req.status = RequestStatus.COMPLETED if ok else RequestStatus.REJECTED_NO_REPLICA
-        if req.deadline_violated:
-            self._tick_violated[req.service_id] += 1
-        self._log("request_completed" if ok else "request_failed", request_id=req.id,
-                  service_id=req.service_id, response_time_sec=response_time)
-        self.metrics.record_request(req)
-
 
     async def route_request(self, request_id: int, service_id: int,
                              bts_lat: float, bts_long: float) -> dict:
@@ -516,6 +457,7 @@ class RealtimeEngine:
         BTS واقعی این تابع را (از طریق dispatcher_api.py:/route) صدا می‌زند،
         سپس *خودش* مستقیماً به ip:port برگشتی وصل می‌شود.
         """
+        route_call_started_at = time.monotonic()
         self._tick_total[service_id] += 1
         self._log("request_arrived", request_id=request_id, service_id=service_id)
 
@@ -548,6 +490,18 @@ class RealtimeEngine:
         port = k8s_client.worker_port(service_id)
         deadline = CFG.services_info[service_id]["deadline"]
 
+        # *** رفع ناهماهنگی (بازبینی - اصلاح معماری دیسپچر): قبلاً BTS
+        # همیشه deadline کامل سرویس را به‌عنوان مبنای timeout درخواست دوم
+        # (/process) می‌گرفت، بدون کسر زمانی که همین الان صرف مرحله‌ی
+        # مسیریابی (این تماس /route) شده. این یعنی BTS می‌توانست حتی بعد
+        # از عبور از deadline واقعی هم منتظر پاد بماند، چون خودِ timeout
+        # دیگر با deadline واقعی هم‌راستا نبود. حالا زمان سپری‌شده‌ی همین
+        # مرحله‌ی مسیریابی از deadline کسر می‌شود؛ اگر از قبل منفی/خیلی کم
+        # شده (یعنی خودِ مسیریابی هم دیر جواب داده)، حداقل چند صدم ثانیه
+        # باقی می‌ماند تا BTS/httpx بلافاصله timeout ندهد.
+        routing_elapsed_sec = max(0.0, time.monotonic() - route_call_started_at)
+        remaining_deadline = max(deadline - routing_elapsed_sec, 0.1)
+
         # *** یک رزرو TTL-دار در Redis می‌گذاریم تا اگر BTS هرگز /process را
         # صدا نزد (کرش کلاینت بین /route و /process)، صف برای همیشه اشغال
         # نماند - محافظ در برابر عدم قطعیت شبکه‌ی واقعی که در شبیه‌سازی
@@ -560,7 +514,7 @@ class RealtimeEngine:
             "server_id": server.id,
             "ip": ip,
             "port": port,
-            "deadline_sec": deadline,
+            "deadline_sec": remaining_deadline,
         }
 
     def record_external_completion(self, request_id: int, service_id: int, server_id: int,
@@ -601,20 +555,12 @@ class RealtimeEngine:
             await asyncio.sleep(0.2)
 
     # ------------------------------------------------------------------
-    async def run(self) -> dict:
-        redis_state.reset_all(CFG.n_servers, CFG.n_services)
-        await self.initial_placement()
-
-        # *** dispatch_loop قدیمی که خودش CSV را replay می‌کرد و هم client
-        # هم server بود، حذف شد. حالا این process فقط سه کار می‌کند:
-        # ۱) decision_loop (بدون تغییر)
-        # ۲) drain_completion_queue (خواندن متریک از Redis)
-        # ۳) سرو کردن dispatcher_api (uvicorn جدا، یا در پروداکشن به‌عنوان
-        #    یک پراسس مستقل کنار همین کد اجرا می‌شود - نگاه کنید پایین فایل)
-        await asyncio.gather(self.decision_loop(), self.drain_completion_queue())
-
-        return self.metrics.finalize(self.servers)
-
+    # *** رفع باگ کد مرده: این فایل قبلاً *دو* تعریف run() داشت (این یکی و
+    # نسخه‌ی کامل‌تر پایین‌تر که _utilization_energy_sampler_loop را هم
+    # اجرا می‌کند). چون پایتون تعریف دوم را جایگزین اولی می‌کند، این نسخه
+    # هرگز واقعاً صدا زده نمی‌شد - ولی برای هرکسی که فایل را می‌خواند
+    # گمراه‌کننده بود (به نظر می‌رسید این نسخه‌ی فعال است، در حالی‌که
+    # نبود). حذف شد تا فقط یک run() (پایین‌تر) وجود داشته باشد.
 
     # ------------------------------------------------------------------
     # نقطه‌ی ورود سرویس control-plane (uvicorn این را serve می‌کند)

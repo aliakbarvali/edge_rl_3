@@ -30,6 +30,17 @@ import pandas as pd
 
 async def _send_one_request(row, http_client: httpx.AsyncClient, dispatcher_url: str,
                              request_seq: int):
+    # *** رفع باگ (بازبینی - اصلاح معماری دیسپچر): قبلاً sent_at_epoch
+    # *بعد* از برگشتن پاسخ دیسپچر (مرحله‌ی ۱) ثبت می‌شد، یعنی response_time
+    # نهایی (در app.py: time.time() - sent_at_epoch) فقط hop دوم (BTS<->سرور)
+    # را می‌سنجید و کل هزینه‌ی مرحله‌ی مسیریابی (BTS<->دیسپچر) را نادیده
+    # می‌گرفت - دقیقاً همان چیزی که این BTS واقعاً تجربه می‌کند را کم‌تخمین
+    # می‌زد. حالا request_sent_at *قبل* از اولین تماس (با دیسپچر) ثبت می‌شود
+    # و همراه با درخواست /process فرستاده می‌شود تا response_time واقعی هر
+    # دو hop را در بر بگیرد - هم‌راستا با simulator/engine.py که حالا
+    # routing_delay_sec را به response_time_sec اضافه می‌کند.
+    request_sent_at = time.time()
+
     # مرحله ۱: مسیریابی - تماس سبک با دیسپچر مرکزی
     try:
         route_resp = await http_client.post(f"{dispatcher_url}/route", json={
@@ -48,7 +59,7 @@ async def _send_one_request(row, http_client: httpx.AsyncClient, dispatcher_url:
     deadline = route_data["deadline_sec"]
     try:
         await http_client.post(f"http://{ip}:{port}/process", json={
-            "request_id": request_seq, "sent_at_epoch": time.time(),
+            "request_id": request_seq, "sent_at_epoch": request_sent_at,
         }, timeout=deadline + 10)
     except Exception:
         pass  # پاد جواب نداد/کرش کرد - پاد خودش مسئول گزارش عدم‌موفقیت نیست؛
