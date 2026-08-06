@@ -108,6 +108,14 @@ class RealtimeEngine:
         self._util_at_window_start: Dict[int, float] = defaultdict(float)
         self._util_window_start_time: float = time.monotonic()
 
+        # *** رفع باگ (هماهنگی sim/real): simulator/engine.py هر SCALE_UP/DOWN
+        # را با CFG.cooldown_sec در سطح هر سرویس گیت می‌کند (بخش ۷ سند:
+        # «Cooldown مشابه ۶.۱ برای هر service_id اعمال می‌شود تا از flapping
+        # جلوگیری شود» - نگاه کنید simulator/engine.py:_service_last_scale_time).
+        # قبلاً این‌جا (فاز ۳ واقعی) چنین ردیابی‌ای اصلاً وجود نداشت؛
+        # decision_loop هر تیک بدون قید دوباره scale_decision را اعمال می‌کرد.
+        self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
+
 
     # ------------------------------------------------------------------
     def _init_shadow_servers(self) -> Dict[int, Server]:
@@ -391,15 +399,34 @@ class RealtimeEngine:
 
             for svc_id in CFG.active_services:
                 decision = self.algorithm.scale_decision(svc_id, snapshot)
+
+                # *** رفع باگ (هماهنگی sim/real): همان گیت cooldown که
+                # simulator/engine.py:_apply_scale_decision برای هر سرویس
+                # اعمال می‌کند، اینجا هم اعمال می‌شود - بدون این، یک سرویس
+                # مرزی می‌توانست هر تیک (۳۰ ثانیه) دوباره پاد بسازد/حذف کند.
+                if decision == ScaleAction.NO_CHANGE:
+                    continue
+                if (now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec:
+                    continue
+
                 if decision == ScaleAction.SCALE_UP:
                     target = self.algorithm.select_placement_server(svc_id, self.servers)
                     if target is not None:
                         await self._create_replica(target, svc_id)
                         self.metrics.record_scale_action("SCALE_UP")
+                        self._service_last_scale_time[svc_id] = now
                 elif decision == ScaleAction.SCALE_DOWN:
                     ready = [r for r in self.replicas_by_service.get(svc_id, [])
                              if r.state == ReplicaState.READY]
-                    if len(ready) > 1:
+                    # *** رفع باگ (هماهنگی sim/real): simulator/engine.py قبل
+                    # از انتخاب قربانی، رپلیکاهای جوان‌تر از
+                    # CFG.min_replica_age_before_scale_down_sec را کنار
+                    # می‌گذارد (تا یک SCALE_UP تازه بلافاصله توسط SCALE_DOWN
+                    # همان تیک/تیک بعد خنثی نشود). این فیلتر قبلاً اینجا
+                    # اعمال نمی‌شد.
+                    mature = [r for r in ready
+                              if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
+                    if len(ready) > 1 and mature:
                         # *** رفع ناهماهنگی مهم (بازبینی): قبلاً اینجا همیشه
                         # min-by-occupancy هاردکد بود، بدون توجه به این‌که
                         # الگوریتم (مثلاً VoilaAlgorithm) select_scale_down_victim
@@ -410,14 +437,11 @@ class RealtimeEngine:
                         # اشغال صف واقعی از Redis می‌آید نه از شیء Replica
                         # سایه، از طریق occupancy_fn تزریق می‌شود.
                         victim = self.algorithm.select_scale_down_victim(
-                            svc_id, ready, self.servers, time.monotonic(),
+                            svc_id, mature, self.servers, now,
                             occupancy_fn=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
-                        
-                        
-                                      
-                                      
                         asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
                         self.metrics.record_scale_action("SCALE_DOWN")
+                        self._service_last_scale_time[svc_id] = now
 
             # snapshot این تیک، قبل از شروع پنجره‌ی بعدی.
             for sid, s in self.servers.items():

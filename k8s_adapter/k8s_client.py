@@ -159,8 +159,14 @@ def is_deployment_ready(service_id: int, server_id: int) -> bool:
                                 name=name, namespace=NAMESPACE)
     except ApiException as e:
         if e.status == 404:
-            return False 
-        return False
+            return False
+        # *** رفع باگ: قبلاً هر ApiException غیر از 404 (مثلاً 401/403 یا هر
+        # مشکل واقعی اتصال/دسترسی) هم بی‌صدا False برمی‌گرداند - یعنی
+        # _poll_until_ready فقط بعد از timeout کامل (بدون هیچ اطلاعاتی از
+        # علت واقعی) متوقف می‌شد. حالا خطای غیر-404 دوباره raise می‌شود تا
+        # except Exception در _poll_until_ready آن را با service_id/server_id
+        # کامل لاگ کند و مشکل واقعی زودتر قابل تشخیص باشد.
+        raise
     return (dep.status.ready_replicas or 0) >= 1
 
 

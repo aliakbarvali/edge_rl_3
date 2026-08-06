@@ -201,6 +201,16 @@ class VoilaAlgorithm(AlgorithmBase):
     # ------------------------------------------------------------------
     def provision_decision(self, servers: Dict[int, Server], metrics_snapshot: dict,
                             now: float) -> ProvisionAction:
+        # *** رفع باگ staleness: قبلاً _last_snapshot فقط داخل scale_decision
+        # آپدیت می‌شد. ولی simulator/engine.py:_handle_decision_tick همیشه
+        # provision_decision (و در صورت TURN_OFF، migration_decision از طریق
+        # _start_server_drain) را *قبل* از حلقه‌ی scale_decision هر سرویس صدا
+        # می‌زند. یعنی اگر همین تیک TURN_OFF رخ دهد، migration_decision با
+        # demand_centroid تیک *قبلی* (نه تیک جاری) صدا زده می‌شد - چون
+        # scale_decision این تیک هنوز اجرا نشده بود. حالا metrics_snapshot
+        # همین‌جا هم کش می‌شود تا migration_decision/select_placement_server
+        # همیشه از آخرین snapshot واقعی استفاده کنند.
+        self._last_snapshot = metrics_snapshot
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]

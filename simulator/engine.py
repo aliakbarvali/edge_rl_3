@@ -194,6 +194,45 @@ class SimulationEngine:
 
         # بخش ۶.۲: مهاجرت رپلیکاهای تک‌رپلیکایی *قبل* از drain کردن خودشان
         steps = self.algorithm.migration_decision(s, self.servers)
+
+        # *** رفع باگ (نشتی سرور در DRAINING): هر پیاده‌سازی migration_decision
+        # (Greedy/HPA/Voila) ظرفیت هر سرویس را *مستقل* از بقیه‌ی سرویس‌های
+        # همین سرور در حال drain حساب می‌کند - یعنی اگر دو سرویس تک‌رپلیکایی
+        # هر دو یک سرور مقصد مشترک X را انتخاب کنند، هر دو step با همان
+        # target_server_id برمی‌گردند حتی اگر X ظرفیت *مجموع* هر دو را
+        # نداشته باشد (فقط برای هرکدام به‌تنهایی کافی است). قبلاً خروجی
+        # _place_replica پایین همین تابع اصلاً چک نمی‌شد؛ وقتی جای‌گذاری
+        # دومی به‌خاطر کمبود ظرفیت واقعی شکست می‌خورد، migration_started
+        # لاگ می‌شد و یک _pending_migrations دروغین ثبت می‌شد که هرگز
+        # REPLICA_READY نمی‌گرفت -> رپلیکای قدیمی هرگز drain نمی‌شد -> این
+        # سرور برای همیشه در DRAINING گیر می‌کرد (SERVER_DRAIN_DONE هر
+        # server_drain_grace_sec دوباره خودش را push می‌کرد) و تا آخر اجرا
+        # مثل ACTIVE انرژی مصرف می‌کرد بدون این‌که هرگز num_server_shutdowns
+        # افزایش پیدا کند - یک نشتی منابع واقعی.
+        #
+        # فیکس: قبل از commit کردن هیچ تصمیمی، ظرفیت هر سرور مقصد به‌ترتیب
+        # step ها به‌صورت شبیه‌سازی‌شده (reserved_cpu) رزرو می‌شود - دقیقاً
+        # همان الگویی که _trigger_emergency_boot پایین همین فایل از قبل
+        # برای همین مسئله (چند سرویس هم‌زمان محتاج یک سرور OFF) استفاده
+        # می‌کند. هر stepای که با این رزرو تجمعی دیگر جا نشود حذف می‌شود؛
+        # سرویس مربوطه به‌جای «مهاجرت موفق»، به مجموعه‌ی unmigrated زیر
+        # اضافه می‌شود - دقیقاً مثل حالتی که migration_decision از همان
+        # ابتدا هیچ کاندیدی برایش پیدا نمی‌کرد (emergency boot + abort این
+        # چرخه، طبق منطق موجود پایین همین تابع).
+        reserved_cpu: Dict[int, int] = defaultdict(int)
+        valid_steps = []
+        for step in steps:
+            target = self.servers[step.target_server_id]
+            cpu = CFG.services_info[step.service_id]["cpu_demand"]
+            if target.free_capacity() - reserved_cpu[target.id] >= cpu:
+                reserved_cpu[target.id] += cpu
+                valid_steps.append(step)
+            else:
+                self._log("migration_step_dropped", service_id=step.service_id,
+                          from_server_id=server_id, to_server_id=step.target_server_id,
+                          reason="target_capacity_overcommitted")
+        steps = valid_steps
+
         migrated_services = {step.service_id for step in steps}
         sole_hosted = {
             svc_id for svc_id, r in s.hosted_replicas.items()
@@ -227,9 +266,27 @@ class SimulationEngine:
         for step in steps:
             self._log("migration_started", service_id=step.service_id,
                       from_server_id=server_id, to_server_id=step.target_server_id)
-            self._place_replica(step.target_server_id, step.service_id)
-            
-            
+            placed = self._place_replica(step.target_server_id, step.service_id)
+            if placed is None:
+                # *** محافظ نهایی (نباید برسد، چون رزرو بالا این حالت را از
+                # قبل پیش‌بینی/حذف می‌کند) - اگر با این‌حال برسد یعنی یک
+                # ناسازگاری واقعی رخ داده؛ به‌جای ثبت خاموش یک migration
+                # دروغین در _pending_migrations (که منجر به گیر کردن دائمی
+                # سرور در DRAINING می‌شد)، صریحاً لاگ می‌کنیم و از این
+                # سرویس صرف‌نظر می‌کنیم - رپلیکای قدیمش پایین همین تابع
+                # چون دیگر در migrated_services نیست، در چرخه‌ی بعد به‌عنوان
+                # sole_hosted/unmigrated دوباره شناسایی و به emergency
+                # boot سپرده خواهد شد.
+                self._log("migration_placement_failed", service_id=step.service_id,
+                          from_server_id=server_id, to_server_id=step.target_server_id)
+                # *** عمداً از migrated_services حذف نمی‌کنیم: چون رپلیکای
+                # جدید ساخته نشد، اگر رپلیکای قدیم را هم drain کنیم سرویس
+                # موقتاً بدون هیچ رپلیکایی می‌ماند (قطع سرویس واقعی) - بدتر
+                # از این‌که سرور مبدأ کمی دیرتر واقعاً OFF شود. رپلیکای قدیم
+                # دست‌نخورده می‌ماند (پایین همین تابع drain نمی‌شود)؛ این
+                # سرویس در تیک‌های بعدی توسط migration_decision الگوریتم
+                # دوباره کاندید بررسی خواهد شد.
+                continue
             self._pending_migrations[(step.target_server_id, step.service_id)] = server_id
     
 
