@@ -68,6 +68,10 @@ class PPOAlgorithm(AlgorithmBase):
         self._solver_selected_servers: Optional[List[int]] = None
  
         self._placement_weights = placement_weights or {"w_count": 1.0, "w_energy": 1.0, "w_distance": 1.0}
+        # *** باگ A (inference): ردیابی cooldown سرویس برای _build_action_masks
+        # در inference مسیر engine در دسترس نیست؛ زمان آخرین scale هر سرویس
+        # اینجا ردیابی می‌شود تا masks با گیت‌های واقعی engine هماهنگ بمانند.
+        self._infer_svc_last_scale: dict = {sid: -1e18 for sid in sorted(CFG.services_info.keys())}
       
     # ------------------------------------------------------------------
     def initial_placement(self, servers: Dict[int, Server], active_bts):
@@ -123,10 +127,14 @@ class PPOAlgorithm(AlgorithmBase):
         if self._cached_tick_key == now:
             return  # این تیک قبلاً پیش‌بینی شده
         obs = build_state_vector(metrics_snapshot, servers)
-        action_masks = self._build_action_masks(servers, metrics_snapshot)
+        action_masks = self._build_action_masks(servers, metrics_snapshot, now=now)
         action, _ = self.model.predict(obs, action_masks=action_masks, deterministic=self.deterministic)
 
         self._cached_scale = {sid: _SCALE_MAP[int(action[i])] for i, sid in enumerate(_SERVICE_IDS)}
+        # ردیابی cooldown برای inference masks
+        for _sid, _act in self._cached_scale.items():
+            if _act != ScaleAction.NO_CHANGE:
+                self._infer_svc_last_scale[_sid] = now
         non_noop = []
         for j, sid in enumerate(_SERVER_IDS):
             ptype = _PROVISION_MAP[int(action[len(_SERVICE_IDS) + j])]
@@ -139,7 +147,7 @@ class PPOAlgorithm(AlgorithmBase):
         self._cached_provision = provision
         self._cached_tick_key = now
 
-    def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict):
+    def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict, now: float | None = None):
         """*** باید دقیقاً هم‌راستا با algorithms/ppo/env.py:action_masks()
         باشد. قبلاً فقط can_host بدون چک ACTIVE بود (فیکس اول)؛ حالا (فیکس
         دوم - بازبینی) گیت‌های anti-flapping واقعی هم اضافه شدند - نگاه
@@ -150,23 +158,27 @@ class PPOAlgorithm(AlgorithmBase):
         اضافه) باعث crash نمی‌شود، فقط این بهبود مختص فاز ۱و۲ می‌ماند."""
         import numpy as np
         masks = []
+        t = now if now is not None else 0.0
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
             cpu = CFG.services_info[sid]["cpu_demand"]
-            cooldown = sv.get("scale_cooldown_active", False)
-            can_up = (not cooldown) and any(
+            # cooldown سرویس از ردیابی داخلی (دقیق‌تر از snapshot که یک تیک delay دارد)
+            in_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
+            can_up = (not in_svc_cooldown) and any(
                 s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values())
-            n_mature = sv.get("n_mature_ready_replicas", sv["n_ready_replicas"])
-            can_down = (not cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
+            n_mature = sv.get("n_mature_ready_replicas", 0)
+            can_down = (not in_svc_cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
             masks.extend([True, can_up, can_down])
         for sid in _SERVER_IDS:
-            s_snap = snapshot["servers"][sid]
-            st = s_snap["state"]
-            cooldown = s_snap.get("provision_cooldown_active", False)
-            can_on = (st == ServerState.OFF) and (not cooldown)
-            can_off = ((st == ServerState.ACTIVE) and (not cooldown)
-                       and not s_snap.get("is_last_active_server", False)
-                       and s_snap.get("min_active_duration_met", True))
+            st = snapshot["servers"][sid]["state"]
+            s = servers[sid]
+            # cooldown سرور مستقیماً از شیء Server (نه snapshot)
+            in_srv_cooldown = s.in_cooldown(t, CFG.cooldown_sec) if t > 0 else False
+            min_age_ok = (t - s.last_transition_time) >= CFG.min_active_duration_sec if t > 0 else False
+            n_active = sum(1 for x in servers.values() if x.state == ServerState.ACTIVE)
+            can_on = (st == ServerState.OFF) and (not in_srv_cooldown)
+            can_off = (st == ServerState.ACTIVE and not in_srv_cooldown
+                       and n_active > 1 and min_age_ok)
             masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 

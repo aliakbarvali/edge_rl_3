@@ -5,12 +5,18 @@ common/state_builder.py
 k8s_adapter/ (فاز ۳) فراخوانی شود؛ هیچ منطق ساخت state نباید در جای دیگر
 تکرار/بازنویسی شود.»
 
-بردار state (بخش ۱۱.۲):
+بردار state (بخش ۱۱.۲ + باگ B):
     برای هر سرور (۱۰ تا): state one-hot (۴) + utilization (۱) + n_replicas (۱) = ۶ × ۱۰ = ۶۰
     برای هر سرویس (۱۵ تا): n_active_replicas (۱) + میانگین نسبت اشغال صف (۱) +
-                             نرخ اخیر نقض deadline (۱) + نرخ ورودی اخیر (۱) = ۴ × ۱۵ = ۶۰
+                             نرخ اخیر نقض deadline (۱) + نرخ ورودی اخیر (۱) +
+                             rejection_rate (۱) + proximity_violation_rate (۱) = ۶ × ۱۵ = ۹۰
     سراسری: میانگین response_time اخیر (۱) + انرژی مصرفی اخیر (۱) = ۲
-    مجموع = ۱۲۲ بعد.
+    مجموع = ۱۵۲ بعد.
+
+    *** باگ B: rejection_rate دقیقاً همان سیگنالی است که Greedy/HPA/Voila
+    برای تصمیم SCALE_UP استفاده می‌کنند؛ بدون آن PPO فقط از occ_ratio
+    (پروکسی ناقص) باید رد شدن را حدس می‌زد. proximity_violation_rate هم
+    معیار Vlo مقاله‌ی VOILA است که در reward اثر دارد ولی در state نبود.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import numpy as np
 from common.config import CFG
 from common.models import ServerState
 
-STATE_DIM = CFG.n_servers * 6 + CFG.n_services * 4 + 2
+STATE_DIM = CFG.n_servers * 6 + CFG.n_services * 6 + 2  # باگ B: 4->6 بعد per-service
 
 _SERVER_STATE_ORDER = [ServerState.OFF, ServerState.BOOTING, ServerState.ACTIVE, ServerState.DRAINING]
 
@@ -83,6 +89,9 @@ def build_state_vector(snapshot: dict, servers: dict) -> np.ndarray:
         parts.append(min(occ_ratio, 2.0) / 2.0)
         parts.append(sv["deadline_violation_rate"])
         parts.append(min(sv["recent_arrivals"] / _NORM_ARRIVAL_RATE, 2.0) / 2.0)
+        # *** باگ B: rejection_rate و proximity_violation_rate — هر دو در [0,1]
+        parts.append(float(sv.get("rejection_rate", 0.0)))
+        parts.append(float(sv.get("proximity_violation_rate", 0.0)))
 
     g = snapshot["global"]
     parts.append(min(g["avg_response_time_recent"] / _NORM_RESPONSE_TIME_SEC, 2.0) / 2.0)

@@ -7,7 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-
+import asyncio
 from common.logger import EventLogger
 from simulator.engine import SimulationEngine
 
@@ -67,10 +67,8 @@ def main():
                           algorithm=args.algorithm)
 
     if args.mode == "k8s":
-        import asyncio
-        from k8s_adapter.realtime_dispatcher import RealtimeEngine
-        engine = RealtimeEngine(events, algorithm, args.algorithm, event_logger=logger)
-        result = asyncio.run(engine.run())
+        from k8s_adapter.realtime_dispatcher import serve_control_plane
+        result = asyncio.run(serve_control_plane(events, algorithm, args.algorithm, event_logger=logger))
     else:
         engine = SimulationEngine(events, algorithm, args.algorithm, event_logger=logger)
         result = engine.run()

@@ -586,11 +586,50 @@ class RealtimeEngine:
     # گمراه‌کننده بود (به نظر می‌رسید این نسخه‌ی فعال است، در حالی‌که
     # نبود). حذف شد تا فقط یک run() (پایین‌تر) وجود داشته باشد.
 
+
+        
+    # ------------------------------------------------------------------
+    
+    
+    async def run(self, extra_tasks: list | None = None) -> dict:
+        redis_state.reset_all(CFG.n_servers, CFG.n_services)
+        await self.initial_placement()
+        self._util_window_start_time = time.monotonic()
+
+        tasks = [
+            self.decision_loop(),
+            self.drain_completion_queue(),
+            self._utilization_energy_sampler_loop(),
+        ]
+        if extra_tasks:
+            tasks.extend(extra_tasks)
+
+        # *** چون در حالت واقعی هیچ cutoff طبیعی (مثل simulator/engine.py)
+        # وجود ندارد، یک watcher اضافه می‌کنیم که بعد از پایان بازه‌ی زمانی
+        # واقعی داده (+ کمی margin) self._running را False می‌کند تا حلقه‌ها
+        # واقعاً تمام شوند و run() برگردد.
+        tasks.append(self._lifetime_watcher())
+
+        await asyncio.gather(*tasks)
+        return self.metrics.finalize(self.servers)
+
+    async def _lifetime_watcher(self):
+        span_sec = (float(self.events_df.global_start_sec.max())
+                    - float(self.events_df.global_start_sec.min())) if len(self.events_df) else 0.0
+        margin_sec = CFG.decision_interval_sec + CFG.server_drain_grace_sec + 30.0
+        await asyncio.sleep(span_sec + margin_sec)
+        self._running = False
+        self._log("realtime_run_finished", reason="data_span_elapsed")
+
     # ------------------------------------------------------------------
     # نقطه‌ی ورود سرویس control-plane (uvicorn این را serve می‌کند)
     # ------------------------------------------------------------------
+     
+    # *** تابع مستقل سطح‌ماژول (نه متد کلاس) - نقطه‌ی ورود واقعی سرویس
+    # control-plane. قبلاً هیچ‌جا (نه run.py، نه هیچ فایل دیگر) صدا زده
+    # نمی‌شد؛ الان مستقیماً از run.py برای --mode k8s استفاده می‌شود.
     async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger=None,
-                                http_host="0.0.0.0", http_port=9000):
+                                    http_host="0.0.0.0", http_port=9000) -> dict:
         from k8s_adapter import dispatcher_api
         import uvicorn
 
@@ -600,23 +639,19 @@ class RealtimeEngine:
         config = uvicorn.Config(dispatcher_api.app, host=http_host, port=http_port, log_level="info")
         server = uvicorn.Server(config)
 
-        await asyncio.gather(engine.run(), server.serve())
-        
-    # ------------------------------------------------------------------
-   
-    async def run(self) -> dict:
-        redis_state.reset_all(CFG.n_servers, CFG.n_services)
-        await self.initial_placement()
-        self._util_window_start_time = time.monotonic()   
+        async def _serve_and_shutdown():
+            # *** وقتی _lifetime_watcher علامت پایان می‌زند، خودِ uvicorn هم باید
+            # graceful shutdown شود؛ وگرنه asyncio.gather در run() هرگز کامل
+            # نمی‌شود چون server.serve() به‌تنهایی هیچ‌وقت خودش تمام نمی‌شود.
+            serve_task = asyncio.create_task(server.serve())
+            while engine._running and not serve_task.done():
+                await asyncio.sleep(1.0)
+            if not serve_task.done():
+                server.should_exit = True
+                await serve_task
 
-        await asyncio.gather(
-            self.decision_loop(),
-            self.drain_completion_queue(),
-            self._utilization_energy_sampler_loop(),   
-        )
+        return await engine.run(extra_tasks=[_serve_and_shutdown()])
 
-        return self.metrics.finalize(self.servers)
-    
     async def _utilization_energy_sampler_loop(self):
         """
         *** جایگزین رویدادهای گسسته‌ی موتور شبیه‌سازی: هر UTIL_SAMPLE_INTERVAL_SEC
