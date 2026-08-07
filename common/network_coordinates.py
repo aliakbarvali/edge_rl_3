@@ -62,11 +62,19 @@ class VivaldiCoordinate:
         w = self.error_estimate / (self.error_estimate + other.error_estimate + 1e-9)
 
         rel_error = min(error / max(observed_rtt_ms, 1e-6), 1.0)
-        alpha = cc * w
+        # *** رفع باگ (بازبینی): طبق pseudocode اصلی مقاله‌ی Vivaldi
+        # (Dabek et al. 2004, Figure 3)، وزن بروزرسانی error_estimate باید
+        # ce*w باشد و وزن بروزرسانی مختصات (delta) باید cc*w باشد. اینجا
+        # قبلاً این دو کاملاً جابجا بودند (alpha از cc و delta از ce
+        # استفاده می‌کرد) - با مقادیر پیش‌فرض (ce=0.25, cc=0.5) یعنی
+        # error_estimate سریع‌تر از حد انتظار decay می‌کرد و مختصات
+        # کندتر از حد انتظار حرکت می‌کردند، که همگرایی RTT تخمینی Voila را
+        # کندتر/نادرست‌تر از طراحی اصلی می‌کرد.
+        alpha = ce * w
         self.error_estimate = alpha * rel_error * self.error_estimate + (1 - alpha) * self.error_estimate
         self.error_estimate = max(self.error_estimate, 0.05)  # کف - از overconfidence کاذب جلوگیری می‌کند
 
-        delta = ce * w
+        delta = cc * w
         direction = self.vec - other.vec
         norm = float(np.linalg.norm(direction))
         if norm < 1e-6:

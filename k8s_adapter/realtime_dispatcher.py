@@ -116,6 +116,19 @@ class RealtimeEngine:
         # decision_loop هر تیک بدون قید دوباره scale_decision را اعمال می‌کرد.
         self._service_last_scale_time: Dict[int, float] = {sid: -1e18 for sid in CFG.active_services}
 
+        # *** رفع باگ (بازبینی: گیت‌های ضدـflapping غایب در فاز ۳): شبیه‌ساز
+        # (simulator/engine.py) قبل از اجازه‌دادن به TURN_ON/TURN_OFF واقعی،
+        # علاوه بر cooldown، الزام «تداوم» overload/underload
+        # (SUSTAIN_HIGH_SEC/SUSTAIN_LOW_SEC) و حداقل مدت ACTIVE-بودن
+        # (MIN_ACTIVE_DURATION_SEC) را هم چک می‌کند - دقیقاً به‌خاطر یافته‌ی
+        # analyze_decision_quality.py که ۹۱-۹۶٪ چرخه‌های on/off زیر ۵ دقیقه
+        # dwell داشتند. اینجا (فاز ۳ واقعی) قبلاً این گیت‌ها اصلاً وجود
+        # نداشتند - فقط cooldown_sec (۶۰ ثانیه) چک می‌شد - یعنی رفتار
+        # production می‌توانست به‌طرز قابل‌توجهی flappy‌تر از چیزی باشد که
+        # در شبیه‌سازی validate شده. حالا همان ردیابی اینجا هم پیاده می‌شود.
+        self._low_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
+        self._high_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
+
 
     # ------------------------------------------------------------------
     def _init_shadow_servers(self) -> Dict[int, Server]:
@@ -187,6 +200,23 @@ class RealtimeEngine:
         self._log("server_boot_started", server_id=server_id)
         self._log("server_active", server_id=server_id)
 
+    async def _wait_specific_ready(self, replicas: Dict[int, "Replica"], timeout: float) -> Dict[int, bool]:
+        """صبر می‌کند تا رپلیکاهای مشخص‌شده (service_id -> Replica، معمولاً
+        مقصدهای یک migration) واقعاً READY شوند - برای Make-Before-Break
+        واقعی در _drain_server. خروجی: service_id -> True/False (رسیده به
+        READY تا قبل از timeout یا نه)."""
+        start = time.monotonic()
+        pending = set(replicas.keys())
+        result = {svc_id: False for svc_id in replicas}
+        while pending and (time.monotonic() - start) < timeout:
+            for svc_id in list(pending):
+                if replicas[svc_id].state == ReplicaState.READY:
+                    result[svc_id] = True
+                    pending.discard(svc_id)
+            if pending:
+                await asyncio.sleep(1.0)
+        return result
+
     async def _drain_server(self, server_id: int) -> bool:
         s = self.servers[server_id]
         if s.state != ServerState.ACTIVE:
@@ -207,15 +237,65 @@ class RealtimeEngine:
 
         s.state = ServerState.DRAINING
         self._log("server_drain_started", server_id=server_id)
+
+        # *** رفع باگ مسدودکننده (نقض Make-Before-Break در فاز ۳ واقعی):
+        # قبلاً بلافاصله بعد از create_deployment (بدون صبر برای READY
+        # شدن واقعی) رپلیکای قدیم حذف می‌شد - دقیقاً همان مشکلی که
+        # simulator/engine.py با دقت (make-before-break) حلش کرده بود.
+        # نتیجه: یک پنجره‌ی واقعی (به‌اندازه‌ی زمان schedule/pull/boot پاد
+        # جدید) که سرویس هیچ رپلیکای READY نداشت، و اگر create_deployment
+        # به‌خاطر کمبود ظرفیت None برمی‌گرداند، رپلیکای قدیم هم بی‌صدا حذف
+        # می‌شد -> آن سرویس کاملاً بدون رپلیکا می‌ماند (قطع کامل، بی‌صدا).
+        # حالا: اول رپلیکای جدید هر migration ساخته می‌شود، بعد صبر واقعی
+        # برای READY شدنش، و فقط بعد از موفقیت رپلیکای قدیم حذف می‌شود؛
+        # هر migration که شکست بخورد (چه در create چه در READY شدن) از
+        # مجموعه‌ی migrated خارج می‌شود تا رپلیکای قدیمش دست‌نخورده بماند.
+        new_replicas: Dict[int, Replica] = {}
+        failed_services: set = set()
         for step in steps:
             self._log("migration_started", service_id=step.service_id,
                       from_server_id=server_id, to_server_id=step.target_server_id)
-            await self._create_replica(step.target_server_id, step.service_id)
-            self._log("migration_completed", service_id=step.service_id,
-                      from_server_id=server_id, to_server_id=step.target_server_id)
+            new_r = await self._create_replica(step.target_server_id, step.service_id)
+            if new_r is None:
+                self._log("migration_placement_failed", service_id=step.service_id,
+                          from_server_id=server_id, to_server_id=step.target_server_id)
+                failed_services.add(step.service_id)
+                continue
+            new_replicas[step.service_id] = new_r
+
+        if new_replicas:
+            ready_ok = await self._wait_specific_ready(
+                new_replicas, timeout=CFG.pod_startup_delay_sec + 60.0)
+            for svc_id, ok in ready_ok.items():
+                if ok:
+                    self._log("migration_completed", service_id=svc_id,
+                              from_server_id=server_id,
+                              to_server_id=new_replicas[svc_id].server_id)
+                else:
+                    failed_services.add(svc_id)
+                    self._log("migration_ready_timeout", service_id=svc_id,
+                              from_server_id=server_id,
+                              to_server_id=new_replicas[svc_id].server_id)
 
         for service_id in list(s.hosted_replicas.keys()):
+            if service_id in failed_services:
+                # *** رپلیکای جدید مقصد ساخته/READY نشد؛ رپلیکای قدیم روی
+                # این سرور دست‌نخورده می‌ماند تا سرویس بدون هیچ رپلیکایی
+                # نماند - این سرویس چرخه‌ی بعد دوباره کاندید migration
+                # می‌شود.
+                continue
             await self._delete_replica(service_id, server_id)
+
+        if failed_services:
+            # *** حداقل یک migration واقعاً کامل نشد -> نمی‌توان این سرور
+            # را drain کرد (سرویس(های) ناقص هنوز رویش زنده‌اند). به‌جای
+            # نیمه‌کاره OFF کردنش، به ACTIVE برمی‌گردد تا چرخه‌ی بعد دوباره
+            # امتحان شود - هم‌راستا با server_drain_aborted در
+            # simulator/engine.py.
+            s.state = ServerState.ACTIVE
+            self._log("server_drain_aborted", server_id=server_id,
+                      reason="migration_ready_failed", failed_services=list(failed_services))
+            return False
 
         k8s_client.cordon_node(server_id)
         redis_state.set_server_state(server_id, "OFF")
@@ -349,6 +429,17 @@ class RealtimeEngine:
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
+            # *** رفع باگ مسدودکننده: PPOAlgorithm._build_action_masks از
+            # sv.get("n_mature_ready_replicas", 0) استفاده می‌کند تا
+            # can_down را بسازد. این کلید قبلاً اینجا اصلاً در snapshot
+            # نبود؛ یعنی fallback همیشه ۰ برمی‌گشت -> can_down همیشه False
+            # -> در فاز ۳ واقعی PPO هرگز نمی‌توانست SCALE_DOWN بزند (نه
+            # «رفتار قدیمی بدون محدودیت» که کامنت قبلی ادعا می‌کرد، بلکه
+            # دقیقاً برعکس: همیشه مسدود). حالا مثل simulator/engine.py
+            # واقعاً محاسبه می‌شود.
+            mature_ready = [r for r in ready
+                             if (time.monotonic() - r.created_at) >=
+                             CFG.min_replica_age_before_scale_down_sec]
             total = max(self._tick_total[svc_id], 1)
             avg_occ = (sum(redis_state.get_queue_occupancy(svc_id, r.server_id) for r in ready)
                        / len(ready)) if ready else 0.0
@@ -366,6 +457,7 @@ class RealtimeEngine:
                 "n_replicas": len([r for r in reps if r.state in
                                     (ReplicaState.READY, ReplicaState.STARTING)]),
                 "n_ready_replicas": len(ready),
+                "n_mature_ready_replicas": len(mature_ready),
                 "avg_queue_occupancy": avg_occ,
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
@@ -378,22 +470,98 @@ class RealtimeEngine:
                                "num_rejected_recent": sum(self._tick_rejected.values())} 
         return snapshot
 
+    def _update_sustain_tracking(self, snapshot: dict, now: float):
+        """معادل simulator/engine.py:_update_sustain_tracking - ردیابی مدت
+        زمانی که هر سرور ACTIVE به‌طور *مداوم* بالای/پایین آستانه بوده،
+        نه فقط نمونه‌ی لحظه‌ای همین تیک."""
+        for sid, s in self.servers.items():
+            if s.state != ServerState.ACTIVE:
+                self._low_util_since[sid] = None
+                self._high_util_since[sid] = None
+                continue
+            util = snapshot["servers"][sid]["utilization"]
+            if util < CFG.util_scale_down_threshold:
+                if self._low_util_since[sid] is None:
+                    self._low_util_since[sid] = now
+            else:
+                self._low_util_since[sid] = None
+
+            if util > CFG.util_scale_up_threshold:
+                if self._high_util_since[sid] is None:
+                    self._high_util_since[sid] = now
+            else:
+                self._high_util_since[sid] = None
+
+    def _any_active_server_sustained_overloaded(self, now: float) -> bool:
+        for sid, since in self._high_util_since.items():
+            if since is not None and (now - since) >= CFG.sustain_high_sec:
+                return True
+        return False
+
+    def _any_active_server_sustained_underloaded(self, now: float) -> bool:
+        n_active = sum(1 for s in self.servers.values() if s.state == ServerState.ACTIVE)
+        if n_active <= 1:
+            return False
+        for sid, since in self._low_util_since.items():
+            if since is not None and (now - since) >= CFG.sustain_low_sec:
+                return True
+        return False
+
+    def _was_turn_off_necessary(self, server_id: int, now: float) -> bool:
+        since = self._low_util_since.get(server_id)
+        return since is not None and (now - since) >= CFG.sustain_low_sec
+
+    def _any_service_capacity_starved(self, snapshot: dict) -> bool:
+        """معادل simulator/engine.py:_any_service_capacity_starved - آستانه‌ی
+        مستقل (DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD) صرف‌نظر از threshold
+        داخلی هر الگوریتم."""
+        for svc_id in CFG.active_services:
+            sv = snapshot["services"][svc_id]
+            occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+            necessary = (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
+                         or sv["rejection_rate"] > 0.0)
+            if not necessary:
+                continue
+            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+                       for s in self.servers.values()):
+                return True
+        return False
+
     async def decision_loop(self):
         while self._running:
             await asyncio.sleep(CFG.decision_interval_sec)
             snapshot = self._build_metrics_snapshot()
             now = time.monotonic()
+            # *** رفع باگ (بازبینی): بدون این خط، _high_util_since/
+            # _low_util_since هرگز پر نمی‌شدند و گیت‌های زیر همیشه False
+            # می‌ماندند (معادل نبودشان) - این call باید هر تیک قبل از هر
+            # تصمیم‌گیری صدا زده شود.
+            self._update_sustain_tracking(snapshot, now)
 
             action = self.algorithm.provision_decision(self.servers, snapshot, now)
             if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
                 s = self.servers[action.server_id]
-                if s.state == ServerState.OFF and not s.in_cooldown(now, CFG.cooldown_sec):
+                # *** رفع باگ (گیت ضدـflapping غایب): علاوه بر cooldown،
+                # حالا نیاز به تداوم واقعی overload/starvation هم چک می‌شود
+                # - هم‌راستا با simulator/engine.py:_apply_provisioning.
+                turn_on_necessary = (self._any_active_server_sustained_overloaded(now)
+                                      or self._any_service_capacity_starved(snapshot))
+                if (s.state == ServerState.OFF and not s.in_cooldown(now, CFG.cooldown_sec)
+                        and turn_on_necessary):
                     await self._activate_server(action.server_id)
                     self.metrics.record_scale_action("TURN_ON")
             elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
                 s = self.servers[action.server_id]
                 n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
-                if s.state == ServerState.ACTIVE and n_active > 1 and not s.in_cooldown(now, CFG.cooldown_sec):
+                # *** رفع باگ (گیت‌های غایب): تداوم underload واقعی +
+                # حداقل مدت ACTIVE بودن (MIN_ACTIVE_DURATION_SEC) - قبلاً
+                # هیچ‌کدام اینجا چک نمی‌شدند، فقط cooldown_sec (۶۰ ثانیه).
+                turn_off_necessary = self._was_turn_off_necessary(action.server_id, now)
+                min_age_ok = (now - s.last_transition_time) >= CFG.min_active_duration_sec
+                if (s.state == ServerState.ACTIVE and n_active > 1
+                        and not s.in_cooldown(now, CFG.cooldown_sec)
+                        and turn_off_necessary and min_age_ok):
                     if await self._drain_server(action.server_id):
                         self.metrics.record_scale_action("TURN_OFF")
 

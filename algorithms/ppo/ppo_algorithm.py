@@ -166,7 +166,16 @@ class PPOAlgorithm(AlgorithmBase):
             in_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
             can_up = (not in_svc_cooldown) and any(
                 s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values())
-            n_mature = sv.get("n_mature_ready_replicas", 0)
+            # *** رفع باگ مسدودکننده (بازبینی): fallback قبلی (`0`) یعنی هر
+            # snapshotای که هنوز کلید n_mature_ready_replicas را ندارد (مثل
+            # k8s_adapter/realtime_dispatcher.py قبل از این فیکس) can_down
+            # را همیشه False می‌کرد - یعنی PPO در فاز ۳ واقعی هرگز نمی‌توانست
+            # SCALE_DOWN بزند، دقیقاً برعکس چیزی که کامنت قدیمی ("fallback
+            # به رفتار قدیمی بدون این محدودیت") ادعا می‌کرد. حالا در نبود
+            # این فیلد، fallback امن n_ready_replicas است (یعنی فرض می‌شود
+            # همه‌ی رپلیکاهای READY به‌اندازه‌ی کافی بالغ‌اند) - همان رفتار
+            # واقعاً "بدون این محدودیت اضافه" که ادعا می‌شد.
+            n_mature = sv.get("n_mature_ready_replicas", sv["n_ready_replicas"])
             can_down = (not in_svc_cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
             masks.extend([True, can_up, can_down])
         for sid in _SERVER_IDS:
