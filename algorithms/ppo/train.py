@@ -191,8 +191,8 @@ def make_random_window_provider(train_events, window_sec: float, seed: int = CFG
     return provider
 
 
-def main(total_timesteps: int = 1_000_000, bc_epochs: int = 50, window_hours: float = 3.0,
-         bc_max_ticks: int = 10_000 , n_envs: int = 8):
+def main(total_timesteps: int = 2_000_000, bc_epochs: int = 50, window_hours: float = 24.0,
+         bc_max_ticks: int = 10_000, n_envs: int = 8):
     try:
         from sb3_contrib import MaskablePPO
         from sb3_contrib.common.wrappers import ActionMasker

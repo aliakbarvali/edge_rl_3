@@ -549,10 +549,19 @@ class SimulationEngine:
     def _build_metrics_snapshot_readonly(self) -> dict:
         """مثل _build_metrics_snapshot ولی شمارنده‌های تیک را پاک/تغییر نمی‌دهد."""
         snapshot = {"servers": {}, "services": {}, "global": {}}
+        n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
         for sid, s in self.servers.items():
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": s.instantaneous_utilization(self.now),
                 "free_capacity": s.free_capacity(),
+                # *** برای PPO action masking (بخش زیر: env.py/ppo_algorithm.py):
+                # بدون این فیلدها، mask فقط بر پایه‌ی state سرور تصمیم می‌گرفت،
+                # نه گیت‌های واقعی که _apply_provisioning اعمال می‌کند (cooldown،
+                # min_active_duration، آخرین سرور فعال) - یعنی عامل می‌توانست
+                # اکشنی را "مجاز" ببیند که engine بی‌صدا skip می‌کرد.
+                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec),
+                "min_active_duration_met": (self.now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
             }
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
@@ -573,6 +582,10 @@ class SimulationEngine:
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
+                # *** همان دلیل بالا: گیت cooldown واقعی هر سرویس که
+                # _apply_scale_decision با CFG.cooldown_sec/_service_last_scale_time
+                # اعمال می‌کند.
+                "scale_cooldown_active": (self.now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec,
             }
         snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
                                "num_rejected_recent": 0}
@@ -581,6 +594,7 @@ class SimulationEngine:
     def _build_metrics_snapshot(self) -> dict:
         snapshot = {"servers": {}, "services": {}, "global": {}}
         window_elapsed = self.now - self._util_window_start_time
+        n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
         for sid, s in self.servers.items():
             if window_elapsed > 1e-9:
                 # *** میانگین دقیق زمانی روی کل پنجره‌ی از تیک قبل تا الان -
@@ -595,6 +609,11 @@ class SimulationEngine:
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
+                # *** برای PPO action masking - نگاه کنید کامنت مشابه در
+                # _build_metrics_snapshot_readonly برای دلیل کامل.
+                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec),
+                "min_active_duration_met": (self.now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
             }
         
         def _medoid(points):
@@ -629,6 +648,7 @@ class SimulationEngine:
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
+                "scale_cooldown_active": (self.now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec,
             }
         current_energy = sum(s.cumulative_energy_joule for s in self.servers.values())
         snapshot["global"] = {

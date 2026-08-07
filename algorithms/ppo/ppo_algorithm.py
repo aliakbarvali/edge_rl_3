@@ -50,6 +50,12 @@ class PPOAlgorithm(AlgorithmBase):
         self._cached_tick_key: Optional[float] = None
         self._cached_scale: Dict[int, ScaleAction] = {}
         self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
+        # *** برای select_placement_server (فیکس location-aware placement) -
+        # مقداردهی اولیه‌ی امن تا اگر select_placement_server قبل از اولین
+        # provision_decision صدا زده شود (نباید در جریان عادی engine رخ
+        # دهد، ولی برای فراخوانی مستقیم/تست ایمن‌تر است)، AttributeError
+        # نگیریم و به fallback مرکز-سرورهای-فعال بیفتیم.
+        self._last_snapshot: Optional[dict] = None
         # قوانین مشترک غیر-یادگیرنده (placement/migration - خارج از فضای اکشن PPO، بخش ۱۱.۱)
         self._helper = GreedyAlgorithm()
         self.latency_aware_routing = latency_aware_routing
@@ -107,6 +113,13 @@ class PPOAlgorithm(AlgorithmBase):
         return selected
     # ------------------------------------------------------------------
     def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float):
+        # *** برای select_placement_server پایین همین فایل (نگاه کنید فیکس
+        # location-aware placement) - دقیقاً همان الگوی VoilaAlgorithm که
+        # metrics_snapshot را در provision_decision کش می‌کند تا
+        # demand_centroid تازه‌ترین snapshot در دسترس باشد (provision_decision
+        # همیشه در همان تیک *قبل* از scale_decision/select_placement_server
+        # صدا زده می‌شود - نگاه کنید simulator/engine.py:_handle_decision_tick).
+        self._last_snapshot = metrics_snapshot
         if self._cached_tick_key == now:
             return  # این تیک قبلاً پیش‌بینی شده
         obs = build_state_vector(metrics_snapshot, servers)
@@ -128,20 +141,33 @@ class PPOAlgorithm(AlgorithmBase):
 
     def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict):
         """*** باید دقیقاً هم‌راستا با algorithms/ppo/env.py:action_masks()
-        باشد - همان باگ (can_host بدون چک ACTIVE) اینجا هم بود، چون این
-        تابع مسیر inference/ارزیابی نهایی است (نه فقط آموزش)."""
+        باشد. قبلاً فقط can_host بدون چک ACTIVE بود (فیکس اول)؛ حالا (فیکس
+        دوم - بازبینی) گیت‌های anti-flapping واقعی هم اضافه شدند - نگاه
+        کنید توضیح کامل در env.py:action_masks. از .get(..., default) با
+        fallback امن استفاده می‌شود چون در حالت k8s واقعی
+        (k8s_adapter/realtime_dispatcher.py) این فیلدهای جدید هنوز به
+        snapshot اضافه نشده‌اند - fallback به رفتار قدیمی (بدون این محدودیت
+        اضافه) باعث crash نمی‌شود، فقط این بهبود مختص فاز ۱و۲ می‌ماند."""
         import numpy as np
         masks = []
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
             cpu = CFG.services_info[sid]["cpu_demand"]
-            can_up = any(s.state == ServerState.ACTIVE and s.can_host(sid, cpu)
-                         for s in servers.values())
-            can_down = sv["n_ready_replicas"] > 1
+            cooldown = sv.get("scale_cooldown_active", False)
+            can_up = (not cooldown) and any(
+                s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values())
+            n_mature = sv.get("n_mature_ready_replicas", sv["n_ready_replicas"])
+            can_down = (not cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
             masks.extend([True, can_up, can_down])
         for sid in _SERVER_IDS:
-            st = snapshot["servers"][sid]["state"]
-            masks.extend([True, st == ServerState.OFF, st == ServerState.ACTIVE])
+            s_snap = snapshot["servers"][sid]
+            st = s_snap["state"]
+            cooldown = s_snap.get("provision_cooldown_active", False)
+            can_on = (st == ServerState.OFF) and (not cooldown)
+            can_off = ((st == ServerState.ACTIVE) and (not cooldown)
+                       and not s_snap.get("is_last_active_server", False)
+                       and s_snap.get("min_active_duration_met", True))
+            masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 
     # ------------------------------------------------------------------
@@ -154,13 +180,38 @@ class PPOAlgorithm(AlgorithmBase):
         return self._cached_provision
 
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
-        # طبق بخش ۱۱.۳: «بیشترین ظرفیت آزاد» - این تصمیم بخشی از فضای اکشن یادگیرنده نیست
+        # *** بهبود (بازبینی): طبق بخش ۱۱.۳، placement بخشی از فضای اکشن
+        # یادگیرنده‌ی PPO *نیست* - یعنی این قانون را می‌شود بدون نیاز به
+        # train مجدد عوض کرد. قبلاً فقط «بیشترین ظرفیت آزاد» بود که کاملاً
+        # location-unaware است - PPO تنها الگوریتمی بود که موقعیت جغرافیایی
+        # واقعی تقاضا را در انتخاب مقصد رپلیکای جدید کاملاً نادیده می‌گرفت
+        # (برخلاف Greedy که به مرکز سرورهای فعال نزدیک می‌شود، و Voila که
+        # از demand_centroid واقعی استفاده می‌کند). این مستقیماً روی
+        # avg_distance_km/network_delay_ms اثر منفی دارد. حالا از همان الگوی
+        # اثبات‌شده‌ی VoilaAlgorithm.select_placement_server استفاده می‌شود:
+        # نزدیک‌ترین کاندیدها (در بازه‌ی ۵ کیلومتری نزدیک‌ترین) به مرکز ثقل
+        # تقاضای واقعی این سرویس (demand_centroid، از snapshot کش‌شده در
+        # provision_decision - نگاه کنید _predict_and_cache)، و در میان
+        # آن‌ها بیشترین ظرفیت آزاد (برای حفظ توازن بار، دقیقاً مثل قبل).
         cpu = CFG.services_info[service_id]["cpu_demand"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
         if not candidates:
             return None
-        return max(candidates, key=lambda s: s.free_capacity()).id
+
+        centroid = None
+        if self._last_snapshot is not None:
+            centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
+        if centroid is None:
+            active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
+            clat = sum(s.lat for s in active) / len(active)
+            clon = sum(s.long for s in active) / len(active)
+            centroid = (clat, clon)
+
+        distances = {s.id: haversine_km(centroid[0], centroid[1], s.lat, s.long) for s in candidates}
+        min_dist = min(distances.values())
+        near_pool = [s for s in candidates if distances[s.id] <= min_dist + 5.0]
+        return max(near_pool, key=lambda s: s.free_capacity()).id
 
     def migration_decision(self, draining_server: Server,
                             servers: Dict[int, Server]) -> List[MigrationStep]:
@@ -191,4 +242,4 @@ class PPOAlgorithm(AlgorithmBase):
                 best_latency = est_total_latency
                 best = r
 
-        return best        
+        return best

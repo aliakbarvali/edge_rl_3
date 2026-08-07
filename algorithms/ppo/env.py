@@ -112,7 +112,6 @@ class EdgeResourceEnv(gym.Env):
         server_actions = {sid: _PROVISION_MAP[int(action[N_SERVICES + j])]
                            for j, sid in enumerate(_SERVER_IDS)}
 
-        n_actions_taken = sum(1 for a in service_actions.values() if a != ScaleAction.NO_CHANGE)
         provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE)
         # *** رفع بایاس سیستماتیک: قبلاً همیشه اولین سرور غیر-NO_CHANGE به
         # ترتیب id صعودی انتخاب می‌شد (چون dict/for ترتیب insertion=sorted
@@ -126,10 +125,29 @@ class EdgeResourceEnv(gym.Env):
         if non_noop_servers:
             chosen_sid = int(self.np_random.choice(non_noop_servers))
             provision_action = ProvisionAction(server_actions[chosen_sid], chosen_sid)
-            n_actions_taken += 1
-            
-            
+
         external = {"provision": provision_action, "scale": service_actions}
+
+        # *** رفع باگ (جریمه‌ی اکشن بر پایه‌ی اکشن *واقعاً اعمال‌شده*، نه
+        # صرفاً درخواست‌شده): قبلاً n_actions_taken قبل از engine.step()
+        # از روی خودِ اکشن خام محاسبه می‌شد - یعنی حتی اگر engine بعداً آن
+        # را به‌خاطر cooldown/min-replica-age/آخرین سرور فعال/... بی‌صدا
+        # skip می‌کرد (نگاه کنید simulator/engine.py:_apply_scale_decision/
+        # _apply_provisioning و skip_reason)، عامل همچنان جریمه‌ی هزینه‌ی
+        # اکشن (CFG.ppo_penalty_per_action) را می‌گرفت بدون این‌که هیچ
+        # تغییر واقعی (churn/هزینه‌ی واقعی روی سیستم) رخ داده باشد - یک
+        # سیگنال یادگیری نویزی، دقیقاً همان کلاس مشکلی که در بخش mask هم
+        # وجود داشت. با اضافه‌شدن action_masks هماهنگ با گیت‌های واقعی (پایین
+        # همین فایل)، بیشتر این حالت‌ها از اساس دیگر sample نمی‌شوند؛ ولی
+        # برای گیت‌های "necessity" (مثلاً overload_not_sustained) که عمداً
+        # mask نشده‌اند (چون سیگنال یادگیری معناداری درباره‌ی زمان‌بندی
+        # می‌دهند)، اینجا هم باید جریمه‌ی واقعی صفر بماند. راه‌حل: شمارنده‌های
+        # MetricsCollector (که فقط در applied=True افزایش می‌یابند) قبل/بعد
+        # از step مقایسه می‌شوند تا تعداد اکشن‌های *واقعاً اعمال‌شده* دقیق
+        # به دست بیاید.
+        m = self.engine.metrics
+        before_counts = (m.num_scale_up, m.num_scale_down, m.num_turn_on, m.num_turn_off)
+
         snapshot, done = self.engine.step(external_actions=external)
 
         if done:
@@ -137,15 +155,17 @@ class EdgeResourceEnv(gym.Env):
             reward = 0.0
             terminated = True
         else:
+            after_counts = (m.num_scale_up, m.num_scale_down, m.num_turn_on, m.num_turn_off)
+            n_actions_applied = sum(a2 - a1 for a1, a2 in zip(before_counts, after_counts))
             obs = build_state_vector(snapshot, self.engine.servers)
-            reward = self._compute_reward(snapshot, n_actions_taken)
+            reward = self._compute_reward(snapshot, n_actions_applied)
             terminated = False
 
         self._last_snapshot = snapshot
         return obs, reward, terminated, False, {}
 
     # ------------------------------------------------------------------
-    def _compute_reward(self, snapshot: dict, n_actions_taken: int) -> float:
+    def _compute_reward(self, snapshot: dict, n_actions_applied: int) -> float:
         w = CFG.ppo_reward_weights
         g = snapshot["global"]
 
@@ -175,7 +195,7 @@ class EdgeResourceEnv(gym.Env):
                    w["w3_energy"] * norm_energy +
                    w["w4_load_balance"] * norm_lb +
                    w["w5_rejected"] * norm_rejected)
-        penalty += CFG.ppo_penalty_per_action * n_actions_taken
+        penalty += CFG.ppo_penalty_per_action * n_actions_applied
 
         # *** بازبینی ۴: ثبت اجزای وزن‌دار (سهم واقعی هرکدام در penalty نهایی)
         # برای لاگ جداگانه - نگاه کنید __init__ برای دلیل.
@@ -185,7 +205,7 @@ class EdgeResourceEnv(gym.Env):
             "energy": w["w3_energy"] * norm_energy,
             "load_balance": w["w4_load_balance"] * norm_lb,
             "rejected": w["w5_rejected"] * norm_rejected,
-            "action_penalty": CFG.ppo_penalty_per_action * n_actions_taken,
+            "action_penalty": CFG.ppo_penalty_per_action * n_actions_applied,
         }
         return -float(penalty) 
 
@@ -194,24 +214,57 @@ class EdgeResourceEnv(gym.Env):
         """اینترفیس مورد انتظار sb3_contrib.common.wrappers.ActionMasker /
         MaskableMultiDiscrete: یک آرایه‌ی بولی مسطح به طول sum(nvec).
 
-        *** رفع باگ عدم‌تطابق mask/اجرای واقعی: قبلاً can_up فقط can_host()
-        (ظرفیت خام، بدون چک state) را می‌سنجید، در حالی‌که select_placement_server
-        واقعی فقط سرورهای ACTIVE را کاندید می‌کند - یعنی mask گاهی SCALE_UP
-        را "مجاز" نشان می‌داد در حالی‌که موقع اجرا با no_target_server شکست
-        می‌خورد (روی سرور OFF/BOOTING/DRAINING با ظرفیت خالی). همچنین
-        can_down از n_replicas (شامل STARTING) به n_ready_replicas تغییر
-        کرد چون اجرای واقعی SCALE_DOWN فقط رپلیکاهای READY را می‌شمارد."""
+        *** رفع باگ عدم‌تطابق mask/اجرای واقعی (قدیمی): قبلاً can_up فقط
+        can_host() (ظرفیت خام، بدون چک state) را می‌سنجید، در حالی‌که
+        select_placement_server واقعی فقط سرورهای ACTIVE را کاندید می‌کند.
+        همچنین can_down از n_replicas (شامل STARTING) به n_ready_replicas
+        تغییر کرد چون اجرای واقعی SCALE_DOWN فقط رپلیکاهای READY را می‌شمارد.
+
+        *** رفع باگ دوم (بازبینی): mask تا اینجا هنوز هیچ‌کدام از گیت‌های
+        anti-flapping واقعی simulator/engine.py را نمی‌سنجید - یعنی عامل
+        می‌توانست SCALE_UP/DOWN یا TURN_ON/OFF‌ای را "مجاز" ببیند که
+        _apply_scale_decision/_apply_provisioning با skip_reason="cooldown"،
+        "no_mature_replica"، "last_active_server" یا "min_active_duration"
+        بی‌صدا رد می‌کرد - یک اکشن بدون اثر واقعی که فقط جریمه می‌گرفت
+        (سیگنال یادگیری نویزی). حالا این گیت‌های *مکانیکی* (نه گیت‌های
+        "sustained overload/underload" که عمداً mask نمی‌شوند، چون آن‌ها
+        سیگنال معناداری درباره‌ی زمان‌بندی/پیش‌بینی می‌دهند - نگاه کنید
+        analyze_decision_quality.py برای اهمیت رفتار anticipatory) از
+        فیلدهای جدید snapshot (simulator/engine.py:_build_metrics_snapshot)
+        خوانده می‌شوند.
+        """
+        # *** رفع باگ ظریف (بازبینی - staleness یک‌تیکی مخصوص حلقه‌ی آموزش):
+        # snapshotای که engine.step() برمی‌گرداند، در *ابتدای* همان تیک (قبل
+        # از اعمال اکشن‌های همان تیک) ساخته می‌شود (نگاه کنید
+        # simulator/engine.py:_handle_decision_tick) - یعنی وضعیت cooldown
+        # داخلش هنوز اثر اکشنِ *همین* تیک را نشان نمی‌دهد. در حلقه‌ی gym
+        # (reset/step)، همین snapshot برای انتخاب اکشن *تیک بعدی* مصرف
+        # می‌شود - پس اگر از مقدار baked-in خودِ snapshot استفاده کنیم، اثر
+        # cooldown یک تیک دیرتر از موعد واقعی در mask دیده می‌شود (یک تیک
+        # کامل که عامل می‌تواند دوباره همان سرویس/سرور را انتخاب کند در
+        # حالی‌که engine واقعی آن را با cooldown رد خواهد کرد). چون این کلاس
+        # به self.engine دسترسی مستقیم دارد (خلاف ppo_algorithm.py که فقط
+        # snapshot را از رابط AlgorithmBase می‌گیرد و این مشکل را ندارد، چون
+        # همان snapshot را در *همان* تیک مصرف می‌کند)، این‌جا state زنده‌ی
+        # موتور مستقیماً می‌خوانیم - نه کپی باخته‌شده‌ی snapshot.
         masks = []
-        snapshot = self._last_snapshot
+        now = self.engine.now
         for sid in _SERVICE_IDS:
-            sv = snapshot["services"][sid]
-            can_up = self._any_server_can_host(sid)
-            can_down = sv["n_ready_replicas"] > 1
+            cooldown = (now - self.engine._service_last_scale_time[sid]) < CFG.cooldown_sec
+            can_up = (not cooldown) and self._any_server_can_host(sid)
+            reps = self.engine.replicas_by_service.get(sid, [])
+            ready = [r for r in reps if r.state == ReplicaState.READY]
+            mature = [r for r in ready
+                      if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
+            can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
             masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
+        n_active = sum(1 for s in self.engine.servers.values() if s.state == ServerState.ACTIVE)
         for sid in _SERVER_IDS:
-            st = snapshot["servers"][sid]["state"]
-            can_on = st == ServerState.OFF
-            can_off = st == ServerState.ACTIVE
+            s = self.engine.servers[sid]
+            cooldown = s.in_cooldown(now, CFG.cooldown_sec)
+            can_on = (s.state == ServerState.OFF) and (not cooldown)
+            can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
+                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
             masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 

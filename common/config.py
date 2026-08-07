@@ -206,7 +206,7 @@ PPO_REWARD_WEIGHTS = {
     "w4_load_balance": 0.15,   # ↓ کاهش
     "w5_rejected": 0.10,       # ↓ کاهش (از 0.25)
 }
-PPO_PENALTY_PER_ACTION = 0.02  # ↑ بیشتر شدن (flapping کم کند)
+PPO_PENALTY_PER_ACTION = 0.005  # ↑ بیشتر شدن (flapping کم کند)
 
 # *** قابل override با env var (هم‌راستا با الگوی EOTCH_DATA_DIR بالا)، تا
 # اجرای چند-seed (algorithms/ppo/train.py + evaluation/aggregate_seeds.py)
