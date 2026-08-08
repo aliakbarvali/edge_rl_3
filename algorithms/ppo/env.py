@@ -169,8 +169,10 @@ class EdgeResourceEnv(gym.Env):
         w = CFG.ppo_reward_weights
         g = snapshot["global"]
 
-        avg_dv_rate = (sum(s["deadline_violation_rate"] for s in snapshot["services"].values())
-                    / max(len(snapshot["services"]), 1))
+        active_svcs = [s for s in snapshot["services"].values() if s["recent_arrivals"] > 0]
+        avg_dv_rate = (sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)) if active_svcs else 0.0
+
+
         active_utils = [s["utilization"] for s in snapshot["servers"].values()
                          if s["state"] == ServerState.ACTIVE]
         load_cv = 0.0

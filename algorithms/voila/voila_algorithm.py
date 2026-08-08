@@ -133,20 +133,9 @@ class VoilaAlgorithm(AlgorithmBase):
         return ScaleAction.NO_CHANGE
 
     # ------------------------------------------------------------------
-    def select_replica(self, request: Request, candidate_replicas: List[Replica],
+    """def select_replica(self, request: Request, candidate_replicas: List[Replica],
                         servers: Dict[int, Server], now: float) -> Optional[Replica]:
-        """
-        بازنویسی instance-selection (بخش ۳ و ۵ سند) طبق مقاله‌ی اصلی VOILA:
-        رتبه‌بندی رپلیکاها بر پایه‌ی RTT *تخمینی* (Vivaldi، ممکن است هنوز
-        ناهمگرا/ناقص باشد)، نه فاصله‌ی جغرافیایی واقعی. بعد از انتخاب نهایی،
-        RTT *واقعی* رپلیکای انتخاب‌شده به‌عنوان یک نمونه‌ی مشاهده به سیستم
-        Vivaldi بازخورد داده می‌شود تا تخمین آینده دقیق‌تر شود - دقیقاً مثل
-        یک client واقعی که فقط با peerهایی که واقعاً باهاشان تعامل کرده RTT
-        اندازه می‌گیرد.
-
-        قید صف (queue_occupancy < queue_len) دقیقاً مثل نسخه‌ی مشترک حفظ
-        شده - فقط معیار *ترتیب* رپلیکاها عوض شده، نه قید پذیرش.
-        """
+     
         if not candidate_replicas:
             return None
         if self._vivaldi is None:
@@ -171,7 +160,7 @@ class VoilaAlgorithm(AlgorithmBase):
             true_rtt_ms = 2 * network_delay_ms(true_dist_km, CFG.base_latency_ms, CFG.k_ms_per_km)
             self._vivaldi.observe(request.bts_lat, request.bts_long, chosen.server_id, true_rtt_ms)
 
-        return chosen
+        return chosen"""
 
     # ------------------------------------------------------------------
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:

@@ -1,0 +1,36 @@
+در سورس فعلی چند اصلاح دارم انجام میدم
+اصلاح 
+in_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
+به 
+in_svc_cooldown = snapshot["services"][sid].get("scale_cooldown_active", False)
+در ppo_algorithm.py متد _build_action_masks
+همچنین اصلاح
+            in_srv_cooldown = s.in_cooldown(t, CFG.cooldown_sec) if t > 0 else False
+            min_age_ok = (t - s.last_transition_time) >= CFG.min_active_duration_sec if t > 0 else False
+            n_active = sum(1 for x in servers.values() if x.state == ServerState.ACTIVE)
+            can_on = (st == ServerState.OFF) and (not in_srv_cooldown)
+            can_off = (st == ServerState.ACTIVE and not in_srv_cooldown
+                       and n_active > 1 and min_age_ok)
+           به
+            can_on = (st == ServerState.OFF) and (not snapshot["servers"][sid]["provision_cooldown_active"])
+            can_off = (st == ServerState.ACTIVE
+                    and not snapshot["servers"][sid]["provision_cooldown_active"]
+                    and not snapshot["servers"][sid]["is_last_active_server"]
+                    and snapshot["servers"][sid]["min_active_duration_met"])
+در همین فایل
+و اصلاح
+PPO_PENALTY_PER_ACTION = 0.005 
+به
+PPO_PENALTY_PER_ACTION = 0.02 
+همچنین اصلاح
+PROXIMITY_L0_MS = 4.0
+به
+PROXIMITY_L0_MS = 7.0
+در config
+و اصلاح 
+        avg_dv_rate = (sum(s["deadline_violation_rate"] for s in snapshot["services"].values())/ max(len(snapshot["services"]), 1))
+        به
+        active_svcs = [s for s in snapshot["services"].values() if s["recent_arrivals"] > 0]
+        avg_dv_rate = (sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)) if active_svcs else 0.0
+در env
+بررسی کن و نظرت رو بگو

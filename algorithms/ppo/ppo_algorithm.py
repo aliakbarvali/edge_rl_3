@@ -163,7 +163,8 @@ class PPOAlgorithm(AlgorithmBase):
             sv = snapshot["services"][sid]
             cpu = CFG.services_info[sid]["cpu_demand"]
             # cooldown سرویس از ردیابی داخلی (دقیق‌تر از snapshot که یک تیک delay دارد)
-            in_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
+            #اصلاحin_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
+            in_svc_cooldown = snapshot["services"][sid].get("scale_cooldown_active", False)
             can_up = (not in_svc_cooldown) and any(
                 s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values())
             # *** رفع باگ مسدودکننده (بازبینی): fallback قبلی (`0`) یعنی هر
@@ -182,12 +183,12 @@ class PPOAlgorithm(AlgorithmBase):
             st = snapshot["servers"][sid]["state"]
             s = servers[sid]
             # cooldown سرور مستقیماً از شیء Server (نه snapshot)
-            in_srv_cooldown = s.in_cooldown(t, CFG.cooldown_sec) if t > 0 else False
-            min_age_ok = (t - s.last_transition_time) >= CFG.min_active_duration_sec if t > 0 else False
-            n_active = sum(1 for x in servers.values() if x.state == ServerState.ACTIVE)
-            can_on = (st == ServerState.OFF) and (not in_srv_cooldown)
-            can_off = (st == ServerState.ACTIVE and not in_srv_cooldown
-                       and n_active > 1 and min_age_ok)
+            
+            can_on = (st == ServerState.OFF) and (not snapshot["servers"][sid]["provision_cooldown_active"])
+            can_off = (st == ServerState.ACTIVE
+                    and not snapshot["servers"][sid]["provision_cooldown_active"]
+                    and not snapshot["servers"][sid]["is_last_active_server"]
+                    and snapshot["servers"][sid]["min_active_duration_met"])
             masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 
