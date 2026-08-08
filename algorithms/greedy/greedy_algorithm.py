@@ -5,7 +5,7 @@ from common.config import CFG
 from common.geo import haversine_km
 from common.models import Server, ServerState, ReplicaState
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
-
+ 
 
 class GreedyAlgorithm(AlgorithmBase):
     name = "greedy"
@@ -61,7 +61,7 @@ class GreedyAlgorithm(AlgorithmBase):
         return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
     def select_placement_server(self, service_id, servers):
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
         if not candidates:
@@ -82,7 +82,7 @@ class GreedyAlgorithm(AlgorithmBase):
                            and s.hosted_replicas[service_id].state != ReplicaState.TERMINATED]
             if other_hosts:
                 continue
-            cpu = CFG.services_info[service_id]["cpu_demand"]
+            cpu = CFG.services_info[service_id]["resource_mips"]
             candidates = [s for s in servers.values()
                           if s.id != draining_server.id and s.state == ServerState.ACTIVE
                           and s.can_host(service_id, cpu)]

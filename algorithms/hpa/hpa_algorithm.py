@@ -7,7 +7,7 @@ from common.models import Server, ServerState, ReplicaState
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
 
 TARGET_UTILIZATION = 0.70
-
+ 
 
 class HPAAlgorithm(AlgorithmBase):
     name = "hpa"
@@ -38,7 +38,7 @@ class HPAAlgorithm(AlgorithmBase):
         return ScaleAction.NO_CHANGE
 
     def select_placement_server(self, service_id, servers):
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
         if not candidates:
@@ -87,7 +87,7 @@ class HPAAlgorithm(AlgorithmBase):
                            and s.hosted_replicas[service_id].state != ReplicaState.TERMINATED]
             if other_hosts:
                 continue
-            cpu = CFG.services_info[service_id]["cpu_demand"]
+            cpu = CFG.services_info[service_id]["resource_mips"]
             candidates = [s for s in servers.values()
                           if s.id != draining_server.id and s.state == ServerState.ACTIVE
                           and s.can_host(service_id, cpu)]

@@ -47,22 +47,22 @@ import pandas as pd
 import json
 
 
-from common.config import CFG
 from common.geo import haversine_km, network_delay_ms
 from common.models import Server, Replica, ServerState, ReplicaState, Request, RequestStatus
 from common.metrics import MetricsCollector
 from common.logger import EventLogger
+from common.config import CFG, compute_exec_time_sec
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionActionType
 from k8s_adapter import k8s_client, redis_state
  
-UTIL_SAMPLE_INTERVAL_SEC = 1.0  # *** گرانولاریتی نمونه‌برداری busy/idle در فاز
-                                 # ۳؛ چون رویداد گسسته‌ی دقیق مثل موتور
-                                 # شبیه‌سازی نداریم، این تنها راه تقریب
-                                 # انتگرال busy_cpu(t) در طول زمان واقعی است.
-                                 # هرچه کوچک‌تر، دقیق‌تر ولی هزینه‌ی Redis
-                                 # بیشتر - ۱ ثانیه توازن معقولی است چون کوتاه‌ترین
-                                 # exec_time سیستم ۴ ثانیه است (سرویس ۱).
-                                 
+# نمونه‌برداری دوره‌ای برای اندازه‌گیری utilization/energy واقعی pod‌های active.
+# چون exec_time سرویس‌ها بین 3ms و 15s تغییر می‌کند (5 رتبه بزرگی)، 
+# بازه‌ی ثابت نمی‌تواند برای همه‌ی سرویس‌ها دقیق باشد.
+# ⚠️ TODO (Phase 3): نمونه‌برداری رویدادمحور دقیق
+#    - Worker pod: گزارش لحظه‌ی دقیق شروع/پایان هر درخواست به Redis
+#    - Dispatcher: تجمیع busy-seconds از بازه‌های دقیق (نه نمونه‌برداری)
+#    (نیاز: schema Redis جدید + تغییر worker_service/app.py)
+UTIL_SAMPLE_INTERVAL_SEC = 5.0   # واحد: ثانیه (کالیبره‌شده برای exec_times موجود)
                                  
 class RealtimeEngine:
     def __init__(self, events_df: pd.DataFrame, algorithm: AlgorithmBase,
@@ -136,7 +136,7 @@ class RealtimeEngine:
         for sid, info in CFG.server_info.items():
             prof = CFG.server_profiles[info["profile"]]
             servers[sid] = Server(id=sid, profile=info["profile"], lat=info["lat"], long=info["long"],
-                                   capacity=info["capacity"], p_idle=prof["p_idle"], p_max=prof["p_max"])
+                                   capacity=info["capacity_mips"], p_idle=prof["p_idle"], p_max=prof["p_max"])
         return servers
 
     def _log(self, event_type: str, **fields):
@@ -164,7 +164,7 @@ class RealtimeEngine:
         await self._wait_all_ready(timeout=CFG.pod_startup_delay_sec + 30)
 
     def _nearest_capable_server(self, service_id: int, candidate_ids: List[int]) -> Optional[int]:
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [self.servers[sid] for sid in candidate_ids
                       if self.servers[sid].can_host(service_id, cpu)]
         if not candidates:
@@ -311,7 +311,7 @@ class RealtimeEngine:
     # ------------------------------------------------------------------
     async def _create_replica(self, server_id: int, service_id: int) -> Optional[Replica]:
         s = self.servers[server_id]
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         if not s.can_host(service_id, cpu):
             return None
         svc = CFG.services_info[service_id]
@@ -322,7 +322,7 @@ class RealtimeEngine:
         self._log("pod_create_started", server_id=server_id, service_id=service_id)
 
         r = Replica(service_id=service_id, server_id=server_id,
-                    queue_len=svc["queue_len"], exec_time=svc["exec_time"],
+                    queue_len=svc["queue_len"], exec_time=compute_exec_time_sec(service_id, s.capacity),
                     created_at=time.monotonic())
         s.hosted_replicas[service_id] = r
         self.replicas_by_service[service_id].append(r)
@@ -370,7 +370,11 @@ class RealtimeEngine:
         # ناکافی بود)، منتظر خالی‌شدن واقعی صف (از طریق Redis) با یک سقف
         # زمانی ایمن بر پایه‌ی worst-case این سرویس می‌مانیم.
         svc = CFG.services_info[service_id]
-        max_wait = svc["queue_len"] * svc["exec_time"] + CFG.graceful_termination_delay_sec
+        # *** exec_time واقعیِ همین رپلیکا (که به سرعت MIPS همین سرور میزبان
+        # بستگی دارد) از خودِ شیء r گرفته می‌شود، نه از compute_exec_time_sec
+        # بدون سرور - چون آن تابع اکنون ظرفیت میزبان را هم لازم دارد و r.exec_time
+        # همان مقدار صحیحِ محاسبه‌شده در لحظه‌ی ساخت رپلیکاست (تک‌منبع حقیقت).
+        max_wait = svc["queue_len"] * r.exec_time + CFG.graceful_termination_delay_sec
         start = time.monotonic()
         while time.monotonic() - start < max_wait:
             if redis_state.get_queue_occupancy(service_id, server_id) <= 0:
@@ -522,7 +526,7 @@ class RealtimeEngine:
                          or sv["rejection_rate"] > 0.0)
             if not necessary:
                 continue
-            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            cpu = CFG.services_info[svc_id]["resource_mips"]
             if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
                        for s in self.servers.values()):
                 return True
@@ -855,7 +859,7 @@ class RealtimeEngine:
                         # *** منبع درست: اشغال واقعی صف از Redis، نه
                         # r.queue_occupancy(now) که روی shadow همیشه ۰ است.
                         if redis_state.get_queue_occupancy(svc_id, sid) > 0:
-                            busy_cpu += CFG.services_info[svc_id]["cpu_demand"]
+                            busy_cpu += CFG.services_info[svc_id]["resource_mips"]
 
                 s.cumulative_busy_cpu_seconds += busy_cpu * elapsed
 

@@ -105,7 +105,7 @@ class PPOAlgorithm(AlgorithmBase):
         """دقیقاً همان قید انتهای AlgorithmBase.initial_placement: اگر مجموع
         ظرفیت سرورهای انتخابی کمتر از نیاز کل ۱۵ سرویس بود، نزدیک‌ترین
         سرورهای باقی‌مانده را هم اضافه کن."""
-        total_cpu_needed = sum(s["cpu_demand"] for s in CFG.services_info.values())
+        total_cpu_needed = sum(s["resource_mips"] for s in CFG.services_info.values())
         if sum(servers[sid].capacity for sid in selected) >= total_cpu_needed:
             return selected
         remaining = [sid for sid in servers if sid not in selected]
@@ -161,7 +161,7 @@ class PPOAlgorithm(AlgorithmBase):
         t = now if now is not None else 0.0
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
-            cpu = CFG.services_info[sid]["cpu_demand"]
+            cpu = CFG.services_info[sid]["resource_mips"]
             # cooldown سرویس از ردیابی داخلی (دقیق‌تر از snapshot که یک تیک delay دارد)
             #اصلاحin_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
             in_svc_cooldown = snapshot["services"][sid].get("scale_cooldown_active", False)
@@ -183,7 +183,7 @@ class PPOAlgorithm(AlgorithmBase):
             st = snapshot["servers"][sid]["state"]
             s = servers[sid]
             # cooldown سرور مستقیماً از شیء Server (نه snapshot)
-            
+             
             can_on = (st == ServerState.OFF) and (not snapshot["servers"][sid]["provision_cooldown_active"])
             can_off = (st == ServerState.ACTIVE
                     and not snapshot["servers"][sid]["provision_cooldown_active"]
@@ -215,7 +215,7 @@ class PPOAlgorithm(AlgorithmBase):
         # تقاضای واقعی این سرویس (demand_centroid، از snapshot کش‌شده در
         # provision_decision - نگاه کنید _predict_and_cache)، و در میان
         # آن‌ها بیشترین ظرفیت آزاد (برای حفظ توازن بار، دقیقاً مثل قبل).
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
         if not candidates:

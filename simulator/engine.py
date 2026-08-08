@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from common.config import CFG
+from common.config import CFG, compute_exec_time_sec
 from common.geo import haversine_km, network_delay_ms
 from common.models import Server, Replica, Request, ServerState, ReplicaState, RequestStatus
 from common.metrics import MetricsCollector
@@ -72,7 +72,7 @@ class SimulationEngine:
         for sid, info in CFG.server_info.items():
             prof = CFG.server_profiles[info["profile"]]
             servers[sid] = Server(id=sid, profile=info["profile"], lat=info["lat"], long=info["long"],
-                                   capacity=info["capacity"], p_idle=prof["p_idle"], p_max=prof["p_max"])
+                                   capacity=info["capacity_mips"], p_idle=prof["p_idle"], p_max=prof["p_max"])
         return servers
 
     def _push(self, time: float, etype: EventType, payload=None):
@@ -109,7 +109,7 @@ class SimulationEngine:
                 self._place_replica(target, service_id)
 
     def _nearest_capable_server(self, service_id: int, candidate_ids: List[int]) -> Optional[int]:
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [self.servers[sid] for sid in candidate_ids
                       if self.servers[sid].can_host(service_id, cpu)]
         if not candidates:
@@ -135,7 +135,7 @@ class SimulationEngine:
         for svc_id in unmigrated_services:
             if svc_id in self._emergency_boot_for_service:
                 continue  # قبلاً یک سرور برای همین سرویس در حال boot است
-            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            cpu = CFG.services_info[svc_id]["resource_mips"]
             candidates = [x for x in off_servers if x.capacity - reserved_cpu[x.id] >= cpu]
             if not candidates:
                 # هیچ سرور OFF مناسبی موجود نیست؛ چرخه‌ی بعد دوباره امتحان می‌شود
@@ -223,7 +223,7 @@ class SimulationEngine:
         valid_steps = []
         for step in steps:
             target = self.servers[step.target_server_id]
-            cpu = CFG.services_info[step.service_id]["cpu_demand"]
+            cpu = CFG.services_info[step.service_id]["resource_mips"]
             if target.free_capacity() - reserved_cpu[target.id] >= cpu:
                 reserved_cpu[target.id] += cpu
                 valid_steps.append(step)
@@ -324,12 +324,15 @@ class SimulationEngine:
     # ------------------------------------------------------------------
     def _place_replica(self, server_id: int, service_id: int) -> Optional[Replica]:
         s = self.servers[server_id]
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         if not s.can_host(service_id, cpu):
             return None
         svc = CFG.services_info[service_id]
+        
         r = Replica(service_id=service_id, server_id=server_id,
-                    queue_len=svc["queue_len"], exec_time=svc["exec_time"], created_at=self.now)
+                    queue_len=svc["queue_len"],
+                    exec_time=compute_exec_time_sec(service_id, s.capacity), created_at=self.now)
+        
         s.hosted_replicas[service_id] = r
         self.replicas_by_service[service_id].append(r)
         self.metrics.record_transition("pod_create")
@@ -479,8 +482,9 @@ class SimulationEngine:
             routing_delay_sec=req.routing_delay_sec)
         cold_start_extra = 0.0
         if chosen.ready_since is not None and (self.now - chosen.ready_since) <= CFG.cold_start_window_sec:
-            cold_start_extra = CFG.cold_start_penalty_sec
-
+    
+            from common.config import compute_cold_start_penalty_sec
+            cold_start_extra = compute_cold_start_penalty_sec(req.service_id) #if is_cold_start else 0.0
         admit = chosen.try_admit(self.now, cold_start_extra=cold_start_extra)
         if admit is None:
             # *** این شاخه با تمام پیاده‌سازی‌های فعلی select_replica
@@ -756,7 +760,7 @@ class SimulationEngine:
         for svc_id in CFG.active_services:
             if not self._was_scale_up_necessary(svc_id, snapshot):
                 continue
-            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            cpu = CFG.services_info[svc_id]["resource_mips"]
             # *** هماهنگ با algorithms/base.py:_capacity_starved_services -
             # سرور BOOTING هم می‌تواند به‌زودی این starvation را رفع کند،
             # نباید نادیده گرفته شود.

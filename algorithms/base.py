@@ -66,7 +66,7 @@ class AlgorithmBase(ABC):
         if not selected:
             selected = [next(iter(servers))]
 
-        total_cpu_needed = sum(s["cpu_demand"] for s in CFG.services_info.values())
+        total_cpu_needed = sum(s["resource_mips"] for s in CFG.services_info.values())
         remaining_servers = [sid for sid in servers if sid not in selected]
         remaining_servers.sort(key=lambda sid: min(
             haversine_km(servers[sid].lat, servers[sid].long, servers[s2].lat, servers[s2].long)
@@ -91,11 +91,14 @@ class AlgorithmBase(ABC):
  
     @staticmethod
     def _pick_profile_for_overload(overloaded_servers: List[Server], fallback_capacity: int) -> str:
-     
+        # آستانه‌ها مستقیماً از SERVER_PROFILES خوانده می‌شوند — نه هاردکد.
+        # (هاردکدهای قبلی 200/100 برابر capacity قدیمی بودند و با capacity_mips جدید نادرست‌اند)
+        _large_threshold = CFG.server_profiles["large"]["capacity_mips"]
+        _medium_threshold = CFG.server_profiles["medium"]["capacity_mips"]
         total = sum(s.capacity for s in overloaded_servers) if overloaded_servers else fallback_capacity
-        if total >= 200:
+        if total >= _large_threshold:
             return "large"
-        if total >= 100:
+        if total >= _medium_threshold:
             return "medium"
         return "edge_small"
 
@@ -128,7 +131,8 @@ class AlgorithmBase(ABC):
             occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
             if not (occ_ratio > occ_threshold or sv["rejection_rate"] > 0.0):
                 continue
-            cpu = CFG.services_info[svc_id]["cpu_demand"]
+            
+            cpu = CFG.services_info[svc_id]["resource_mips"]
             if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
                        for s in servers.values()):
                 starved.append(svc_id)

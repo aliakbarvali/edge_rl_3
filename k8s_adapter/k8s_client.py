@@ -24,7 +24,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 import time as _time
-
+from common.config import CFG, compute_exec_time_sec
 try:
     from kubernetes import client, config
     from kubernetes.client.rest import ApiException
@@ -39,10 +39,16 @@ NAMESPACE = "edge-rl"
 WORKER_IMAGE = "192.168.1.30:5000/edge-worker:latest"
 NODE_LABEL_KEY = "edge-server-id"
 
-# *** تبدیل واحد انتزاعی cpu_demand این پروژه به میلی‌سی‌پی‌یوی واقعی K8s.
-# چون cpu_demand مقیاس دلخواه ماست (نه core واقعی)، این ضریب را با توجه به
-# سخت‌افزار واقعی worker نودهایتان کالیبره کنید (پیش‌فرض: هر واحد = 50m).
-CPU_UNIT_TO_MILLICPU = 50
+
+def resource_mips_to_millicpu(resource_mips: int, server_profile: dict) -> int:
+    """
+    تبدیل resource_mips سرویس به میلی‌سی‌پی‌یوی K8s.
+    قرارداد K8s: 1000m = یک هسته‌ی کامل.
+    فرمول: resource_mips / mips_per_core × 1000
+    چون mips_per_core برای هر پروفایل سرور متفاوت است (750/2500/3750)،
+    یک ضریب ثابت سراسری دیگر درست نیست.
+    """
+    return round(resource_mips / server_profile["mips_per_core"] * 1000)
 
 
 def _load_kube_config():
@@ -79,7 +85,13 @@ def worker_port(service_id: int) -> int:
 def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deployment:
     svc = CFG.services_info[service_id]
     name = _deployment_name(service_id, server_id)
-    cpu_millicpu = svc["cpu_demand"] * CPU_UNIT_TO_MILLICPU
+    
+    server_profile = CFG.server_profiles[CFG.server_info[server_id]["profile"]]
+    cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"], server_profile)
+    # exec_time واقعی به سرعت MIPS همین کلاس سرور (server_profile["capacity_mips"])
+    # بستگی دارد - نه به resource_mips (که فقط رزرو منطقی/K8s است).
+    exec_time_sec = compute_exec_time_sec(service_id, server_profile["capacity_mips"])
+
     port = worker_port(service_id)
 
     container = client.V1Container(
@@ -87,7 +99,7 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
         image=WORKER_IMAGE,
         ports=[client.V1ContainerPort(container_port=port, host_port=port)],
         env=[
-            client.V1EnvVar(name="EXEC_TIME_SEC", value=str(svc["exec_time"])),
+            client.V1EnvVar(name="EXEC_TIME_SEC", value=str(exec_time_sec)),
             client.V1EnvVar(name="SERVICE_ID", value=str(service_id)),
             client.V1EnvVar(name="SERVER_ID", value=str(server_id)),
             client.V1EnvVar(name="SERVICE_PORT", value=str(port)),

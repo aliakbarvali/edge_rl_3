@@ -102,7 +102,7 @@ class Server:
     profile: str
     lat: float
     long: float
-    capacity: int
+    capacity: int  # = capacity_mips (MIPS) — طبق SERVER_PROFILES: 3000/10000/30000    
     p_idle: float
     p_max: float
     state: ServerState = ServerState.OFF
@@ -115,22 +115,28 @@ class Server:
     num_boots: int = 0
     num_shutdowns: int = 0
 
+
     def used_cpu(self) -> int:
-        """مجموع cpu_demand همه‌ی رپلیکاهای مستقر (READY یا STARTING یا DRAINING - همه رزرو ظرفیت دارند)."""
+        """مجموع resource_mips همه‌ی رپلیکاهای مستقر (READY یا STARTING یا DRAINING - همه رزرو ظرفیت دارند)."""
         return sum(self._cpu_of(r) for r in self.hosted_replicas.values())
 
     def _cpu_of(self, replica: Replica) -> int:
         from common.config import CFG
-        return CFG.services_info[replica.service_id]["cpu_demand"]
+        return CFG.services_info[replica.service_id]["resource_mips"]
 
     def free_capacity(self) -> int:
         return self.capacity - self.used_cpu()
 
+
     def can_host(self, service_id: int, cpu_demand: int) -> bool:
-        """قید سخت بخش ۱.۱: حداکثر ۱ رپلیکا از هر سرویس + مجموع cpu_demand <= capacity."""
+        """قید سخت: max 1 replica per service + sum(resource_mips) <= capacity_mips.
+        
+        Args:
+            cpu_demand: میزان resource_mips مورد نیاز (واحد MIPS)
+        """
         if service_id in self.hosted_replicas:
             return False
-        return self.free_capacity() >= cpu_demand
+        return self.free_capacity() >= cpu_demand  # free_capacity() → MIPS
 
     def in_cooldown(self, now: float, cooldown_sec: float) -> bool:
         return (now - self.last_transition_time) < cooldown_sec

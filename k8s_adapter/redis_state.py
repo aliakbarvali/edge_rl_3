@@ -157,3 +157,12 @@ def pop_completion_batch(max_items: int = 500) -> list[dict]:
     pipe.ltrim("edge:metrics:completions", max_items, -1)
     raw_items, _ = pipe.execute()
     return [json.loads(x) for x in raw_items]
+
+def get_busy_seconds_acc(service_id: int, server_id: int) -> float:
+    """انباشت دقیق busy-seconds از رویدادهای worker — برای محاسبه‌ی energy."""
+    val = _r.get(f"service:{service_id}:server:{server_id}:busy_seconds_acc")
+    return float(val) if val else 0.0
+
+def reset_busy_seconds_acc(service_id: int, server_id: int) -> None:
+    """بعد از هر بار خواندن و commit کردن، صفر می‌شود تا double-count نشود."""
+    _r.delete(f"service:{service_id}:server:{server_id}:busy_seconds_acc")

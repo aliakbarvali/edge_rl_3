@@ -50,7 +50,7 @@ Greedy/HPA/PPO دست‌نخورده می‌مانند و همچنان از Algo
 (oracle) استفاده می‌کنند - این عمداً یک مقایسه‌ی نامتقارن‌تر ولی وفادارتر به
 مقاله‌ی هرکدام ایجاد می‌کند: Voila دیگر oracle نیست.
 """
-
+ 
 from __future__ import annotations
 from typing import Dict, List, Optional
 
@@ -164,7 +164,7 @@ class VoilaAlgorithm(AlgorithmBase):
 
     # ------------------------------------------------------------------
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
         if not candidates:
@@ -248,7 +248,7 @@ class VoilaAlgorithm(AlgorithmBase):
                            and s.hosted_replicas[service_id].state != ReplicaState.TERMINATED]
             if other_hosts:
                 continue
-            cpu = CFG.services_info[service_id]["cpu_demand"]
+            cpu = CFG.services_info[service_id]["resource_mips"]
             candidates = [s for s in servers.values()
                           if s.id != draining_server.id and s.state == ServerState.ACTIVE
                           and s.can_host(service_id, cpu)]

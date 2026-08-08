@@ -56,7 +56,7 @@ def solve_optimal_server_selection(
 
     l0_ms = l0_ms if l0_ms is not None else CFG.l0_ms
     if min_total_capacity is None:
-        min_total_capacity = sum(s["cpu_demand"] for s in CFG.services_info.values())
+        min_total_capacity = sum(s["resource_mips"] for s in CFG.services_info.values())
     server_ids = list(servers.keys())
     n_points = len(demand_points)
 

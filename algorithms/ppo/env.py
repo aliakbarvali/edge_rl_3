@@ -56,15 +56,18 @@ _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_
                    2: ProvisionActionType.TURN_OFF}
 
 # *** بخش ۱۳ سند (قابل کالیبراسیون): مقیاس نرمال‌سازی num_rejected_recent.
-# تأیید مجدد با calibrate_constants.py روی Data4.csv (بعد از فیکس‌های اخیر
-# موتور مشترک): توزیع این متریک به‌شدت دم‌سنگین است (mean=0.25، ولی
-# max=175) و فقط ۴.۵۱٪ تیک‌ها اصلاً رد شدنی دارند - یعنی p90/p95 روی کل
-# تیک‌ها هر دو صفر می‌شوند (غیرقابل‌استفاده به‌عنوان مقیاس). به‌جای آن، از
-# توزیع *شرطی* (فقط تیک‌هایی که واقعاً رد شدن داشته‌اند) استفاده شد:
-# p50=1.0, p90=3.0, p95=10.3, mean=5.62. مقدار انتخابی نزدیک به mean شرطی
-# است - جالب توجه که این تقریباً برابر مقدار قبلی (5.0) درآمد، یعنی طراحی
-# اولیه با شهود درست انتخاب شده بود، هرچند بدون داده‌ی دقیق پشتوانه.
-_NORM_REJECTED_PER_TICK = 6.0
+# بازکالیبره‌شده با calibrate_constants.py روی Data4.csv *بعد از* migration
+# استاندارد MIPS/MI + اصلاح exec_time وابسته به میزبان (n=2882 تیک کل):
+# p90=0.0, p95=1.0, p99=1.0, p99.9=16.26, max=71.0. فقط ۵.۲٪ تیک‌ها اصلاً
+# رد شدنی دارند (توزیع شدیداً دم‌سنگین)؛ روی همان زیرمجموعه‌ی رد>0:
+# p50=1.0, p90=1.0, p95=2.0, mean=2.25.
+# طبق راهنمای خودِ اسکریپت (p90/p95 روی کل تیک‌ها، نه max خام که یک outlier
+# است) مقدار انتخابی p95 کل تیک‌ها = 1.0 است. این یعنی هر تیکی با ≥۲ رد
+# تقریباً بلافاصله به سقف کلمپ می‌رسد؛ عمداً همین‌طور نگه داشته شده چون
+# سرویس‌های URLLC (deadline تا ۱۰ms) رد شدن مکرر را نباید تحمل کنند - سیگنال
+# باید تند و صریح باشد، نه تدریجی. مقدار قبلی (6.0) کاملاً بی‌ربط به این
+# توزیع بود.
+_NORM_REJECTED_PER_TICK = 1.0
 
 
 class EdgeResourceEnv(gym.Env):
@@ -271,7 +274,7 @@ class EdgeResourceEnv(gym.Env):
         return np.array(masks, dtype=bool)
 
     def _any_server_can_host(self, service_id: int) -> bool:
-        cpu = CFG.services_info[service_id]["cpu_demand"]
+        cpu = CFG.services_info[service_id]["resource_mips"]
         # *** فقط سرور ACTIVE می‌تواند واقعاً میزبان replica جدید شود -
         # هماهنگ با select_placement_server در _MinimalSharedAlgorithm/
         # سایر الگوریتم‌ها که همگی state == ACTIVE را شرط می‌گذارند.
@@ -303,7 +306,7 @@ class _MinimalSharedAlgorithm:
                 """بخش ۱۱.۳: «انتخاب سرور مقصد با بیشترین ظرفیت آزاد» - قانون مشترک."""
                 from common.models import ServerState
                 from common.config import CFG as _CFG
-                cpu = _CFG.services_info[service_id]["cpu_demand"]
+                cpu = _CFG.services_info[service_id]["resource_mips"]
                 candidates = [s for s in servers.values()
                               if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
                 if not candidates:
