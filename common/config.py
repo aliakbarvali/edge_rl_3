@@ -202,11 +202,11 @@ DECISION_INTERVAL_SEC = 30.0
 PPO_REWARD_WEIGHTS = {
     "w1_response_time": 0.08, 
     "w2_deadline": 0.35,      
-    "w3_energy": 0.22,        
+    "w3_energy": 0.20,        
     "w4_load_balance": 0.12,  
-    "w5_rejected": 0.23,      
+    "w5_rejected": 0.25,      
 }
-PPO_PENALTY_PER_ACTION = 0.02  # ↑ بیشتر شدن (flapping کم کند)
+PPO_PENALTY_PER_ACTION = 0.012  # ↑ بیشتر شدن (flapping کم کند)
 
 # *** قابل override با env var (هم‌راستا با الگوی EOTCH_DATA_DIR بالا)، تا
 # اجرای چند-seed (algorithms/ppo/train.py + evaluation/aggregate_seeds.py)

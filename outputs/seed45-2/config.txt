@@ -1,0 +1,8 @@
+PPO_REWARD_WEIGHTS = {
+    "w1_response_time": 0.08, 
+    "w2_deadline": 0.35,      
+    "w3_energy": 0.22,        
+    "w4_load_balance": 0.12,  
+    "w5_rejected": 0.23,      
+}
+PPO_PENALTY_PER_ACTION = 0.02 

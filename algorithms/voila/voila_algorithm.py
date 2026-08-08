@@ -63,7 +63,7 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 
 class VoilaAlgorithm(AlgorithmBase):
     name = "voila"
-    OCC_UP_THRESHOLD = 0.68
+    OCC_UP_THRESHOLD = 0.65
     OCC_DOWN_THRESHOLD = 0.20 
    
     SCALE_DOWN_PATIENCE_TICKS = 3
