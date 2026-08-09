@@ -23,7 +23,12 @@ from common.config import CFG, compute_exec_time_sec
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionActionType
 from k8s_adapter import k8s_client, redis_state
  
-UTIL_SAMPLE_INTERVAL_SEC = 5.0 
+UTIL_SAMPLE_INTERVAL_SEC = 5.0
+RESERVATION_SWEEP_INTERVAL_SEC = 10.0
+# مدت‌زمان صبر قبل از اولین sweep: کمی بیشتر از بیشینه‌ی deadline سرویس‌ها
+# (نگاه کنید common/config.py:SERVICES_INFO) + حاشیه‌ی امن ۵ ثانیه که در
+# route_request به‌عنوان ttl هر رزرو استفاده می‌شود، تا رزروهای کاملاً سالم
+# زودتر از موعدشان جاروب نشوند.
                                  
 class RealtimeEngine:
     def __init__(self, events_df: pd.DataFrame, algorithm: AlgorithmBase,
@@ -55,7 +60,6 @@ class RealtimeEngine:
         self._high_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
 
 
-    # ------------------------------------------------------------------
     def _init_shadow_servers(self) -> Dict[int, Server]:
         servers = {}
         for sid, info in CFG.server_info.items():
@@ -447,46 +451,93 @@ class RealtimeEngine:
 
     async def route_request(self, request_id: int, service_id: int,
                              bts_lat: float, bts_long: float) -> dict:
+      
         route_call_started_at = time.monotonic()
         self._tick_total[service_id] += 1
-        self._log("request_arrived", request_id=request_id, service_id=service_id)
+        self._log("request_arrived", request_id=request_id, service_id=service_id,
+                  bts_lat=bts_lat, bts_long=bts_long)
+        # *** رفع باگ: بدون این خط، self._recent_positions[service_id] همیشه
+        # خالی می‌ماند و در نتیجه self._service_demand_centroid همیشه None
+        # است (نگاه کنید _build_metrics_snapshot -> _medoid) - یعنی VOILA و
+        # PPO (select_placement_server/migration_decision) در حالت k8s واقعی
+        # هرگز از موقعیت واقعی ترافیک BTS استفاده نمی‌کردند و بی‌صدا به
+        # fallback (مرکز سرورهای فعال) سقوط می‌کردند؛ درست برخلاف
+        # simulator/engine.py که این خط را در _handle_arrival دارد.
+        self._recent_positions[service_id].append((bts_lat, bts_long))
+
+        deadline = CFG.services_info[service_id]["deadline"]
+        reservation_ttl_sec = deadline + 5
 
         candidates = [r for r in self.replicas_by_service.get(service_id, []) if r.is_selectable()]
+
+        request_obj = type("Request", (), {
+            "bts_lat": bts_lat, 
+            "bts_long": bts_long, 
+            "service_id": service_id
+        })()
+        
+        # *** رفع باگ (نشتی صف): request_id/ttl هم به رزرو صف پاس داده
+        # می‌شود تا اگر پاد مقصد هرگز پاسخ نداد، sweep_expired_reservations
+        # (نگاه کنید redis_state.py و _reservation_sweeper_loop پایین‌تر)
+        # بتواند این رزرو را خودکار آزاد کند - قبلاً این رزرو تا ابد در
+        # شمارنده‌ی صف باقی می‌ماند.
         chosen = self.algorithm.select_replica(
-            type("R", (), {"bts_lat": bts_lat, "bts_long": bts_long, "service_id": service_id})(),
-            candidates, self.servers, time.monotonic())
+            request_obj,
+            candidates, 
+            self.servers, 
+            time.monotonic(),
+            admit_fn=lambda r: redis_state.try_reserve_queue_slot(
+                service_id, r.server_id, r.queue_len,
+                request_id=request_id, ttl_sec=reservation_ttl_sec))
 
         if chosen is None:
             status = "REJECTED_NO_REPLICA" if not candidates else "REJECTED_QUEUE_FULL"
             self._tick_rejected[service_id] += 1
             self._tick_violated[service_id] += 1
-            self._log("request_rejected", request_id=request_id, service_id=service_id)
+            self._log("request_rejected", request_id=request_id, service_id=service_id,
+                      reason="no_replica" if not candidates else "queue_full")
+            # *** رفع باگ: بدون این، self.metrics (MetricsCollector) اصلاً از
+            # وجود این درخواست رد‌شده خبردار نمی‌شد - record_request() فقط
+            # از طریق record_external_completion (کامل‌شده‌ها، موفق/ناموفق
+            # بعد از پردازش واقعی روی پاد) صدا زده می‌شد، نه از اینجا. نتیجه:
+            # در گزارش نهایی k8s واقعی، num_requests_rejected_queue_full،
+            # num_requests_rejected_no_replica و total_requests کمتر از
+            # واقع بودند (این رد‌شده‌ها هرگز به هیچ پاد واقعی نمی‌رسند، پس
+            # هیچ‌وقت از طریق drain_completion_queue هم گزارش نمی‌شدند) -
+            # درست برخلاف simulator/engine.py که _finalize_request را برای
+            # رد‌شده‌ها هم صدا می‌زند.
+            rejected_req = Request(id=request_id, bts_lat=bts_lat, bts_long=bts_long,
+                                    service_id=service_id, arrival_time=time.time())
+            rejected_req.status = (RequestStatus.REJECTED_NO_REPLICA if not candidates
+                                    else RequestStatus.REJECTED_QUEUE_FULL)
+            self.metrics.record_request(rejected_req)
             return {"status": status}
 
-        if not redis_state.try_reserve_queue_slot(service_id, chosen.server_id, chosen.queue_len):
-            self._tick_rejected[service_id] += 1
-            self._tick_violated[service_id] += 1
-            self._log("request_rejected", request_id=request_id, service_id=service_id, reason="queue_full")
-            return {"status": "REJECTED_QUEUE_FULL"}
-
         server = self.servers[chosen.server_id]
-     
-                
+        
         distance_km = haversine_km(bts_lat, bts_long, server.lat, server.long)
         delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
-        if 2 * delay_ms > CFG.proximity_l0_ms:
+        
+        # *** هم‌راستا با رفع همین رگرسیون در simulator/engine.py: آستانه باید
+        # روی تأخیر رفت‌وبرگشت (RTT) سنجیده شود، وگرنه با بیشینه‌ی فاصله‌ی
+        # ممکن در این محدوده‌ی جغرافیایی (~182 کیلومتر -> ~5.6ms یک‌طرفه)
+        # این شرط هرگز True نمی‌شود و proximity violation در حالت k8s واقعی
+        # هم کاملاً خاموش می‌ماند.
+        if 2 * delay_ms >= CFG.proximity_l0_ms:
             self._tick_proximity_violated[service_id] += 1
-        self._log("request_routed", request_id=request_id, server_id=server.id, distance_km=distance_km)
+            
+        self._log("request_routed", request_id=request_id, server_id=server.id, 
+                  distance_km=distance_km, network_delay_ms=delay_ms)
 
         ip = redis_state.get_pod_ip(service_id, chosen.server_id)
         port = k8s_client.worker_port(service_id)
-        deadline = CFG.services_info[service_id]["deadline"]
 
         routing_elapsed_sec = max(0.0, time.monotonic() - route_call_started_at)
         remaining_deadline = max(deadline - routing_elapsed_sec, 0.1)
 
-        redis_state.set_reservation_ttl(service_id, chosen.server_id, request_id,
-                                         ttl_sec=deadline + 5)
+        # *** توجه: رزرو صف با TTL ایمنی از قبل، هم‌زمان با try_reserve_queue_slot
+        # در admit_fn بالا ثبت شد؛ فراخوانی جدا اینجا لازم نیست (set_reservation_ttl
+        # قبلی کد مرده بود - نگاه کنید redis_state.py برای جزئیات رفع باگ).
 
         return {
             "status": "ROUTED",
@@ -530,6 +581,7 @@ class RealtimeEngine:
             self.decision_loop(),
             self.drain_completion_queue(),
             self._utilization_energy_sampler_loop(),
+            self._reservation_sweeper_loop(),
         ]
         if extra_tasks:
             tasks.extend(extra_tasks)
@@ -579,6 +631,17 @@ class RealtimeEngine:
                 s.cumulative_energy_joule += power * elapsed
                 
 
+    async def _reservation_sweeper_loop(self):
+        """امن‌سازی در برابر نشتی صف: هر رزرو صفی که پاد مقصدش هرگز پاسخ
+        نداد (کرش/شبکه قطع/timeout) را پیدا و آزاد می‌کند - نگاه کنید
+        redis_state.sweep_expired_reservations برای توضیح کامل باگ رفع‌شده."""
+        while self._running:
+            await asyncio.sleep(RESERVATION_SWEEP_INTERVAL_SEC)
+            released = redis_state.sweep_expired_reservations(CFG.n_servers, CFG.n_services)
+            if released:
+                self._log("reservation_sweep", released_count=released)
+
+
 async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger=None,
                                 http_host="0.0.0.0", http_port=9000) -> dict:
     from k8s_adapter import dispatcher_api
@@ -598,4 +661,4 @@ async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger
             server.should_exit = True
             await serve_task
 
-    return await engine.run(extra_tasks=[_serve_and_shutdown()])                
+    return await engine.run(extra_tasks=[_serve_and_shutdown()])

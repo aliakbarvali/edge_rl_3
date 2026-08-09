@@ -58,11 +58,14 @@ class EdgeResourceEnv(gym.Env):
         server_actions = {sid: _PROVISION_MAP[int(action[N_SERVICES + j])]
                            for j, sid in enumerate(_SERVER_IDS)}
 
-        provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE) 
-        non_noop_servers = [sid for sid, ptype in server_actions.items()
-                             if ptype != ProvisionActionType.NO_CHANGE]
-        if non_noop_servers:
-            chosen_sid = int(self.np_random.choice(non_noop_servers))
+        provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE)
+        turn_ons = sorted(sid for sid, ptype in server_actions.items()
+                           if ptype == ProvisionActionType.TURN_ON)
+        turn_offs = sorted(sid for sid, ptype in server_actions.items()
+                            if ptype == ProvisionActionType.TURN_OFF)
+        chosen_list = turn_ons or turn_offs
+        if chosen_list:
+            chosen_sid = chosen_list[0]
             provision_action = ProvisionAction(server_actions[chosen_sid], chosen_sid)
 
         external = {"provision": provision_action, "scale": service_actions}

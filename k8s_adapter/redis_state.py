@@ -19,6 +19,7 @@ scale/provision را اجرا می‌کند، ۲: dispatcher که هر درخو�
 from __future__ import annotations
 from typing import Optional
 import json
+import time
 try:
     import redis
 except ImportError as e:
@@ -89,26 +90,74 @@ def ready_replica_server_ids(service_id: int) -> list[int]:
 # ---------------------------------------------------------------------------
 # صف (برای اعمال قید queue_len دستی - چون uvicorn/HTTP خودش این ظرفیت را
 # دقیقاً به شکل دلخواه ما مدیریت نمی‌کند)
+#
+# *** رفع باگ (نشتی صف / queue-slot leak): نسخه‌ی قبلی فقط یک شمارنده‌ی
+# INCR/DECR ساده داشت و یک تابع set_reservation_ttl جدا که یک کلید TTLدار
+# می‌نوشت، ولی هیچ‌کس هرگز آن کلید را نمی‌خواند یا منقضی‌شدنش را رصد
+# نمی‌کرد (کد مرده). یعنی اگر پاد worker بین رزرو صف (try_reserve_queue_slot،
+# همین‌جا در دیسپچر) و پردازش واقعی (app.py) کرش می‌کرد یا در دسترس نبود،
+# شمارنده‌ی صف *برای همیشه* یک واحد بالاتر از واقعیت می‌ماند - این نشتی
+# به‌تدریج صف را «پر» نشان می‌دهد، درخواست‌های بعدی را رد می‌کند و تصمیمات
+# scale/provision را (که دقیقاً روی همین avg_queue_occupancy لحظه‌ای حساب
+# می‌شوند) گمراه می‌کند - یعنی برخلاف هدف صریح این نسخه (utilization واقعی و
+# لحظه‌ای دقیق).
+#
+# راه‌حل: هر رزرو موفق هم در شمارنده‌ی سریع (INCR، برای مسیر hot-path
+# ادمیشن) و هم در یک ZSET جداگانه‌ی «edge:reservations:{svc}:{srv}» با
+# score = زمان انقضا ثبت می‌شود. پردازش موفق در worker (app.py) رزرو خودش
+# را از این ZSET پاک می‌کند. یک تسک دوره‌ای در RealtimeEngine
+# (sweep_expired_reservations) رزروهایی را که از انقضا گذشته‌اند ولی هنوز
+# در ZSET مانده‌اند (یعنی پاد هرگز جواب نداد) پیدا و شمارنده‌ی صف را برایشان
+# آزاد می‌کند.
 # ---------------------------------------------------------------------------
 
-def try_reserve_queue_slot(service_id: int, server_id: int, queue_len: int) -> bool:
-    """اتمیک: اگر صف پر نبود، ۱ واحد رزرو می‌کند و True برمی‌گرداند."""
+def try_reserve_queue_slot(service_id: int, server_id: int, queue_len: int,
+                            request_id: Optional[int] = None,
+                            ttl_sec: Optional[float] = None) -> bool:
+    """اتمیک: اگر صف پر نبود، ۱ واحد رزرو می‌کند و True برمی‌گرداند.
+    اگر request_id/ttl_sec داده شود، رزرو برای پاک‌سازی خودکار (در صورت
+    لو رفتن/بی‌پاسخی پاد) هم در ZSET انقضا ثبت می‌شود."""
     key = f"edge:replica:{service_id}:{server_id}:queue"
     new_val = _r.incr(key)
     if new_val > queue_len:
         _r.decr(key)
         return False
+    if request_id is not None and ttl_sec is not None:
+        _r.zadd(f"edge:reservations:{service_id}:{server_id}",
+                {str(request_id): time.time() + ttl_sec})
     return True
 
 
-def release_queue_slot(service_id: int, server_id: int):
+def release_queue_slot(service_id: int, server_id: int, request_id: Optional[int] = None):
     key = f"edge:replica:{service_id}:{server_id}:queue"
     if int(_r.get(key) or 0) > 0:
         _r.decr(key)
+    if request_id is not None:
+        _r.zrem(f"edge:reservations:{service_id}:{server_id}", str(request_id))
 
 
 def get_queue_occupancy(service_id: int, server_id: int) -> int:
     return int(_r.get(f"edge:replica:{service_id}:{server_id}:queue") or 0)
+
+
+def sweep_expired_reservations(n_servers: int, n_services: int) -> int:
+    """برای هر (سرویس، سرور)، رزروهایی که از زمان انقضایشان گذشته ولی هنوز
+    در ZSET مانده‌اند (یعنی worker هرگز /process را کامل نکرد تا خودش پاک
+    کند) را پیدا می‌کند، از ZSET حذف و شمارنده‌ی صف را برایشان یک واحد آزاد
+    می‌کند. خروجی: تعداد رزروهای منقضی‌شده‌ی آزادشده (برای لاگ/مانیتورینگ)."""
+    now = time.time()
+    released = 0
+    for svc_id in range(1, n_services + 1):
+        for srv_id in range(1, n_servers + 1):
+            zkey = f"edge:reservations:{svc_id}:{srv_id}"
+            expired = _r.zrangebyscore(zkey, "-inf", now)
+            if not expired:
+                continue
+            for member in expired:
+                _r.zrem(zkey, member)
+                release_queue_slot(svc_id, srv_id)
+                released += 1
+    return released
 
 
 # ---------------------------------------------------------------------------
@@ -133,11 +182,6 @@ def reset_all(n_servers: int, n_services: int):
             all_keys.extend(keys)
     if all_keys:
         _r.delete(*all_keys) 
-
-def set_reservation_ttl(service_id: int, server_id: int, request_id: int, ttl_sec: float): 
-    key = f"edge:reservation:{service_id}:{server_id}:{request_id}"
-    _r.setex(key, int(ttl_sec), "1")
- 
 
 def push_completion(service_id: int, server_id: int, request_id: int,
                      success: bool, response_time_sec: float): 
@@ -169,4 +213,4 @@ def pop_busy_seconds_acc(service_id: int, server_id: int) -> float:
     """اتمیک: مقدار انباشته را می‌خواند و هم‌زمان صفر می‌کند (GETSET) —
     از race با INCRBYFLOAT هم‌زمان ورکر جلوگیری می‌کند."""
     val = _r.getset(f"service:{service_id}:server:{server_id}:busy_seconds_acc", 0.0)
-    return float(val) if val else 0.0    
+    return float(val) if val else 0.0

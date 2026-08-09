@@ -27,10 +27,11 @@ def _try_build(name: str, ppo_args=None):
             seed = (ppo_args or {}).get("seed") or CFG.seed
             resolved_path = model_path_for_seed(seed)
             if not os.path.exists(resolved_path):
-                raise SystemExit(
+            
+                raise FileNotFoundError(
                     f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
                     f"اول اجرا کنید: python -m algorithms.ppo.train"
-                ) 
+                )
             ppo_args = ppo_args or {} 
             return PPOAlgorithm(
                 model_path=resolved_path,
@@ -38,7 +39,7 @@ def _try_build(name: str, ppo_args=None):
                 use_solver_placement=ppo_args.get("use_solver_placement", True),
                 placement_weights=ppo_args.get("placement_weights"),
             )
-    except (ImportError, NotImplementedError) as e:
+    except (ImportError, NotImplementedError, FileNotFoundError) as e:
         print(f"[رد شد] {name}: {e}")
         return None
     return None

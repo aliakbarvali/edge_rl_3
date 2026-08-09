@@ -76,16 +76,33 @@ class AlgorithmBase(ABC):
 
         return selected
 
-    def select_replica(self, request, candidate_replicas, servers, now):
+    def select_replica(self, request, candidate_replicas, servers, now, admit_fn=None):
+
         if not candidate_replicas:
             return None
-        ranked = sorted(
-            candidate_replicas,
-            key=lambda r: haversine_km(request.bts_lat, request.bts_long,
-                                        servers[r.server_id].lat, servers[r.server_id].long),
-        )
-        for r in ranked:
-            if r.queue_occupancy(now) < r.queue_len:
+        admit_fn = admit_fn or (lambda r: r.queue_occupancy(now) < r.queue_len)
+
+        # *** توجه: Replica یک dataclass غیر-frozen است و به‌طور پیش‌فرض
+        # __hash__ ندارد (unhashable) - پس نباید از خودِ آبجکت به‌عنوان کلید
+        # dict استفاده شود. به‌جایش فاصله را در یک لیست از تاپل‌های
+        # (distance, replica) نگه می‌داریم.
+        dist_pairs = [
+            (haversine_km(request.bts_lat, request.bts_long,
+                          servers[r.server_id].lat, servers[r.server_id].long), r)
+            for r in candidate_replicas
+        ]
+        min_dist = min(d for d, _ in dist_pairs)
+
+        # همه‌ی سرورهایی که تقریباً هم‌فاصله‌اند (در محدوده‌ی +۵ کیلومتر
+        # نزدیک‌ترین) و در حال حاضر پذیرا هستند
+        near_pool = [(d, r) for d, r in dist_pairs if d <= min_dist + 5.0 and admit_fn(r)]
+        if near_pool:
+            # بین هم‌فاصله‌ها، کم‌ترافیک‌ترین (کم‌ترین نسبت اشغال صف) انتخاب می‌شود
+            return min(near_pool, key=lambda pair: pair[1].queue_occupancy(now) / max(pair[1].queue_len, 1))[1]
+
+        # اگر در استخر نزدیک هیچ‌کدام صف خالی نداشتند، به ترتیب فاصله ادامه بده
+        for d, r in sorted(dist_pairs, key=lambda pair: pair[0]):
+            if admit_fn(r):
                 return r
         return None
  

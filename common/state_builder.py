@@ -13,9 +13,9 @@ STATE_DIM = CFG.n_servers * 6 + CFG.n_services * 6 + 2
 
 _SERVER_STATE_ORDER = [ServerState.OFF, ServerState.BOOTING, ServerState.ACTIVE, ServerState.DRAINING]
  
-_NORM_RESPONSE_TIME_SEC = 0.098    
+_NORM_RESPONSE_TIME_SEC = 2.057    
                                    
-_NORM_ENERGY_JOULE = 10_221.51     
+_NORM_ENERGY_JOULE = 4_524.910     
                                    
 _NORM_ARRIVAL_RATE = 3.0           
 NORM_RESPONSE_TIME_SEC = _NORM_RESPONSE_TIME_SEC
@@ -32,7 +32,7 @@ def build_state_vector(snapshot: dict, servers: dict) -> np.ndarray:
         n_replicas = len(servers[sid].hosted_replicas)
         parts.extend(one_hot)
         parts.append(float(s_snap["utilization"]))
-        parts.append(n_replicas / 15.0)  
+        parts.append(n_replicas / float(CFG.n_services))
 
     for svc_id in CFG.active_services:
         sv = snapshot["services"][svc_id]

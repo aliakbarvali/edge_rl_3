@@ -6,7 +6,6 @@ algorithms/ppo/ppo_algorithm.py
 from __future__ import annotations
 from typing import Dict, List, Optional
 
-import random as _tie_break_random
 from common.config import CFG
 from common.models import Server, ServerState
 from common.state_builder import build_state_vector
@@ -32,8 +31,7 @@ class PPOAlgorithm(AlgorithmBase):
                 "sb3-contrib نصب نیست. اجرا کنید: pip install -r requirements.txt"
             ) from e
         self.model = MaskablePPO.load(model_path)
-        self.deterministic = deterministic 
-        self._tie_break_rng = _tie_break_random.Random(CFG.seed)
+        self.deterministic = deterministic
         self._cached_tick_key: Optional[float] = None
         self._cached_scale: Dict[int, ScaleAction] = {}
         self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE) 
@@ -90,16 +88,17 @@ class PPOAlgorithm(AlgorithmBase):
     def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float): 
         self._last_snapshot = metrics_snapshot
         if self._cached_tick_key == now:
-            return  # این تیک قبلاً پیش‌بینی شده
+            return 
         obs = build_state_vector(metrics_snapshot, servers)
         action_masks = self._build_action_masks(servers, metrics_snapshot, now=now)
         action, _ = self.model.predict(obs, action_masks=action_masks, deterministic=self.deterministic)
 
         self._cached_scale = {sid: _SCALE_MAP[int(action[i])] for i, sid in enumerate(_SERVICE_IDS)}
-        # ردیابی cooldown برای inference masks
+ 
         for _sid, _act in self._cached_scale.items():
             if _act != ScaleAction.NO_CHANGE:
                 self._infer_svc_last_scale[_sid] = now
+  
         non_noop = []
         for j, sid in enumerate(_SERVER_IDS):
             ptype = _PROVISION_MAP[int(action[len(_SERVICE_IDS) + j])]
@@ -107,7 +106,9 @@ class PPOAlgorithm(AlgorithmBase):
                 non_noop.append((sid, ptype))
         provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
         if non_noop:
-            chosen_sid, chosen_ptype = self._tie_break_rng.choice(non_noop)
+            turn_ons = sorted((sid, pt) for sid, pt in non_noop if pt == ProvisionActionType.TURN_ON)
+            turn_offs = sorted((sid, pt) for sid, pt in non_noop if pt == ProvisionActionType.TURN_OFF)
+            chosen_sid, chosen_ptype = (turn_ons or turn_offs)[0]
             provision = ProvisionAction(chosen_ptype, chosen_sid)
         self._cached_provision = provision
         self._cached_tick_key = now
@@ -171,17 +172,17 @@ class PPOAlgorithm(AlgorithmBase):
                             servers: Dict[int, Server]) -> List[MigrationStep]:
         return self._helper.migration_decision(draining_server, servers)
 
-    def select_replica(self, request, candidate_replicas, servers, now):
+    def select_replica(self, request, candidate_replicas, servers, now, admit_fn=None):
         if not candidate_replicas:
             return None
         if not self.latency_aware_routing:
-            return super().select_replica(request, candidate_replicas, servers, now)
+            return super().select_replica(request, candidate_replicas, servers, now, admit_fn=admit_fn)
 
-
+        admit_check = admit_fn or (lambda r: r.queue_occupancy(now) < r.queue_len)
         best, best_latency = None, float("inf")
         for r in candidate_replicas:
-            if r.queue_occupancy(now) >= r.queue_len:
-                continue  
+            if not admit_check(r):
+                continue
             server = servers[r.server_id]
             distance_km = haversine_km(request.bts_lat, request.bts_long, server.lat, server.long)
             delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)

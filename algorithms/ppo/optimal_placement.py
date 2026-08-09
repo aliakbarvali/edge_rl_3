@@ -89,9 +89,9 @@ def solve_optimal_server_selection(
     prob.solve(solver)
 
     status = pulp.LpStatus[prob.status]
-    if status not in ("Optimal", "Not Solved"):  
-        if status != "Optimal":
-            return []
+
+    if status not in ("Optimal", "Not Solved"):
+        return []
 
     selected = [sid for sid in server_ids if pulp.value(y[sid]) is not None and pulp.value(y[sid]) > 0.5]
     return selected if selected else []

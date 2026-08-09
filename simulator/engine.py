@@ -320,7 +320,21 @@ class SimulationEngine:
         self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
         self._log("request_arrived", request_id=req.id, service_id=req.service_id)
 
-        routing_delay_ms = 2 * CFG.dispatch_overhead_ms
+        dispatcher_lat = (CFG.lat_min + CFG.lat_max) / 2
+        dispatcher_lon = (CFG.lon_min + CFG.lon_max) / 2
+        distance_to_dispatcher_km = haversine_km(req.bts_lat, req.bts_long, 
+                                                  dispatcher_lat, dispatcher_lon)
+        # *** رفت‌وبرگشت واقعی: BTS باید منتظر پاسخ دیسپچر (آدرس سرور مقصد)
+        # بماند قبل از این‌که بتواند به سرویس واقعی وصل شود - دقیقاً مثل
+        # k8s_adapter/worker_service/bts_simulator.py که واقعاً یک POST به
+        # dispatcher_api می‌زند و منتظر جواب HTTP آن می‌ماند (رفت‌وبرگشت
+        # واقعی روی شبکه)، نه یک ارسال یک‌طرفه. بدون این ضرب‌در۲، این تأخیر
+        # با تأخیر شبکه‌ی BTS<->سرور (که پایین‌تر با 2*delay_ms محاسبه
+        # می‌شود) ناهم‌خوان می‌ماند.
+        one_way_dispatch_delay_ms = (CFG.base_latency_ms
+                                      + CFG.k_ms_per_km * distance_to_dispatcher_km
+                                      + CFG.dispatch_overhead_ms)
+        routing_delay_ms = 2 * one_way_dispatch_delay_ms
         req.routing_delay_sec = routing_delay_ms / 1000.0
         self._push(self.now + req.routing_delay_sec, EventType.REQUEST_ROUTED, req)
 
@@ -352,7 +366,15 @@ class SimulationEngine:
         req.network_delay_ms = delay_ms
         req.assigned_server_id = server.id
 
-        if 2 * delay_ms > CFG.proximity_l0_ms:
+        # *** رفع رگرسیون: با محدوده‌ی جغرافیایی فعلی پروژه (LAT/LON_MIN..MAX)
+        # بیشینه‌ی فاصله‌ی ممکن BTS<->سرور حدود ۱۸۲ کیلومتر است، یعنی بیشینه‌ی
+        # delay_ms یک‌طرفه فقط ~5.6ms می‌شود - همیشه کمتر از PROXIMITY_L0_MS=7.0
+        # است. اگر اینجا delay_ms (یک‌طرفه) به‌جای 2*delay_ms (رفت‌وبرگشت) با
+        # آستانه مقایسه شود، این شرط عملاً هرگز True نمی‌شود و سیگنال
+        # proximity-violation که VOILA برای scale-up جغرافیایی استفاده می‌کند
+        # کاملاً خاموش می‌ماند. آستانه باید همان‌طور که در نسخه‌ی اصلی بود، روی
+        # تأخیر رفت‌وبرگشت (RTT) سنجیده شود.
+        if 2 * delay_ms >= CFG.proximity_l0_ms:
             self._tick_proximity_violated[req.service_id] += 1
         
         
@@ -364,7 +386,8 @@ class SimulationEngine:
         if chosen.ready_since is not None and (self.now - chosen.ready_since) <= CFG.cold_start_window_sec:
     
             from common.config import compute_cold_start_penalty_sec
-            cold_start_extra = compute_cold_start_penalty_sec(req.service_id) 
+            cold_start_extra = compute_cold_start_penalty_sec(
+                req.service_id, CFG.server_profiles[server.profile]["mips_per_core"])
         admit = chosen.try_admit(self.now, cold_start_extra=cold_start_extra)
         if admit is None:
    
@@ -385,9 +408,10 @@ class SimulationEngine:
         self._log("request_queued", request_id=req.id, service_id=req.service_id,
                   server_id=server.id, wait_time_sec=req.wait_time_sec)
 
-        self._push(req.service_end_time, EventType.ENERGY_RESYNC, None)        
-        req.response_time_sec = req.routing_delay_sec + (2 * delay_ms / 1000.0) + \
-                                 req.wait_time_sec + (req.service_end_time - req.service_start_time)
+        self._push(req.service_end_time, EventType.ENERGY_RESYNC, None)
+        
+        req.response_time_sec = (req.routing_delay_sec + (2.0 * delay_ms / 1000.0) + 
+                                 req.wait_time_sec + (req.service_end_time - req.service_start_time))
         req.deadline_violated = req.response_time_sec > CFG.services_info[req.service_id]["deadline"]
         req.status = RequestStatus.COMPLETED
         if req.deadline_violated:
@@ -395,7 +419,8 @@ class SimulationEngine:
  
         self._tick_response_times.append(req.response_time_sec)
         self._log("request_completed", request_id=req.id, service_id=req.service_id,
-                  server_id=server.id, response_time_sec=req.response_time_sec)
+                  server_id=server.id, response_time_sec=req.response_time_sec,
+                  distance_km=distance_km, network_delay_ms=delay_ms)
 
         self._finalize_request(req)
     def _finalize_request(self, req: Request):

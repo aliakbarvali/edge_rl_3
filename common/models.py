@@ -118,6 +118,7 @@ class Server:
 
     
     def instantaneous_utilization(self, now: float) -> float:
+      
         busy_cpu = 0
         for r in self.hosted_replicas.values():
             if r.state in (ReplicaState.READY, ReplicaState.DRAINING) and not r.is_idle(now):
@@ -129,7 +130,6 @@ class Server:
             return 0.0
         if self.state == ServerState.BOOTING:
             return self.p_idle
-        # ACTIVE یا DRAINING: مدل خطی idle->max بر اساس utilization
         util = self.instantaneous_utilization(now)
         return self.p_idle + (self.p_max - self.p_idle) * util
 

@@ -75,7 +75,9 @@ Kubernetes واقعی را فراهم می‌کند.
 | **Greedy** | آستانه‌ساده و مکان‌آگاه: بر اساس اشغال صف و نرخ رد شدن تصمیم می‌گیرد؛ placement/migration را بر مبنای نزدیک‌ترین سرور به مرکز سرورهای فعال انتخاب می‌کند. baseline پروژه است. |
 | **VOILA** | مبتنی بر مقاله‌ی VOILA؛ placement و migration را بر اساس **مرکز ثقل تقاضای واقعی** هر سرویس (میانگین متحرک موقعیت درخواست‌های اخیر) انتخاب می‌کند، نه صرفاً نزدیک‌ترین به مرکز سرورهای فعال. علاوه بر نقض ظرفیت (queue occupancy)، نقض نزدیکی جغرافیایی (proximity violation) را هم به‌عنوان سیگنال scale-up در نظر می‌گیرد و برای scale-down به یک «streak» چند-تیکی از وضعیت سالم نیاز دارد (ضد نوسان). |
 | **HPA** | معادل الگوریتم Kubernetes Horizontal Pod Autoscaler: کاملاً location-unaware، فقط بر اساس نسبت اشغال صف نسبت به یک هدف ثابت (۷۰٪) تعداد replica مطلوب را محاسبه می‌کند. |
-| **PPO-DRL** | یک عامل یادگیری تقویتی (Proximal Policy Optimization، با `MaskablePPO` از `sb3-contrib`) که هر سه نوع تصمیم را هم‌زمان از یک بردار حالت ۱۲۲بعدی یاد می‌گیرد. آموزش با **warm-start از دموی Greedy** (Behavior Cloning) شروع می‌شود و سپس با RL روی پاداشی وزن‌دار از زمان پاسخ، نقض سررسید، انرژی، توازن بار و نرخ رد شدن fine-tune می‌شود. |
+| **PPO-DRL** | یک عامل یادگیری تقویتی (Proximal Policy Optimization، با `MaskablePPO` از `sb3-contrib`) که هر سه نوع تصمیم را هم‌زمان از یک بردار حالت ۱۵۲بعدی
+(`6×n_servers + 6×n_services + 2` = `6×10 + 6×15 + 2` با تنظیمات فعلی -
+نگاه کنید `common/state_builder.py:STATE_DIM`) یاد می‌گیرد. آموزش با **warm-start از دموی Greedy** (Behavior Cloning) شروع می‌شود و سپس با RL روی پاداشی وزن‌دار از زمان پاسخ، نقض سررسید، انرژی، توازن بار و نرخ رد شدن fine-tune می‌شود. |
 
 هر چهار الگوریتم از همان منطق مشترک برای **جای‌گذاری اولیه** (پوشش حریصانه‌ی
 BTSهای فعال، مشابه Set-Cover) و **مسیریابی درخواست** (نزدیک‌ترین replica
@@ -376,4 +378,3 @@ adapter کلاستر هیچ تغییری نیاز ندارند.
 Terminal 1: uvicorn k8s_adapter.dispatcher_api:app --port 9000   # control-plane + engine.run()
 
 Terminal 2: python3 -m k8s_adapter.bts_simulator                  # traffic generator (جای BTS واقعی)
-

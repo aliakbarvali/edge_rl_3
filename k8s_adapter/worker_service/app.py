@@ -58,6 +58,14 @@ async def process(req: ProcessRequest):
         key = f"edge:replica:{SERVICE_ID}:{SERVER_ID}:queue"
         if int(_redis.get(key) or 0) > 0:
             _redis.decr(key)
+        # *** رفع باگ (نشتی صف): همراه با آزادسازی شمارنده، رزرو متناظر این
+        # request_id را هم از ZSET انقضا (edge:reservations:{svc}:{srv}) پاک
+        # می‌کنیم - وگرنه بعد از این‌که پردازش موفق کامل شد، sweep دوره‌ی
+        # دیسپچر (RealtimeEngine._reservation_sweeper_loop) دیرتر همین
+        # entry را «منقضی‌شده» تشخیص می‌دهد و شمارنده را یک واحد دیگر (غلط)
+        # کم می‌کند. نگاه کنید k8s_adapter/redis_state.py برای شرح کامل.
+        if req.request_id is not None:
+            _redis.zrem(f"edge:reservations:{SERVICE_ID}:{SERVER_ID}", str(req.request_id))
     except Exception:
         pass  # نبود Redis نباید کل پردازش را بشکند؛ فقط صف کمی ناهماهنگ می‌ماند
 
@@ -84,5 +92,3 @@ async def process(req: ProcessRequest):
         "exec_time_sec": elapsed,
         "processed_at": datetime.now(timezone.utc).isoformat(),
     }
-    
-    

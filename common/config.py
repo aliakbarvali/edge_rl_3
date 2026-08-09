@@ -52,9 +52,12 @@ SERVICES_INFO: Dict[int, dict] = {
     15: {"resource_mips": 5800, "task_length_mi": 150000, "queue_len": 20, "deadline": 40.0,  "memory": "768Mi"},
 }
 N_SERVICES = len(SERVICES_INFO)
-# اعتبارسنجی: مجموع resource_mips
-_total_resource = sum(s["resource_mips"] for s in SERVICES_INFO.values())
-assert _total_resource <= 24000, f"Total resource ({_total_resource}) > edge_small capacity (24000)"
+
+_max_single_service = max(s["resource_mips"] for s in SERVICES_INFO.values())
+_min_server_capacity = min(p["capacity_mips"] for p in SERVER_PROFILES.values())
+assert _max_single_service <= _min_server_capacity, (
+    f"سرویس با resource_mips={_max_single_service} روی کوچک‌ترین سرور "
+    f"({_min_server_capacity} MIPS) هم جا نمی‌شود")
 
 N_SERVICES = len(SERVICES_INFO)
 ACTIVE_SERVICES = tuple(sorted(SERVICES_INFO.keys()))
