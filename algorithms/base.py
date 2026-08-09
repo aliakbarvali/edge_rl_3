@@ -91,8 +91,6 @@ class AlgorithmBase(ABC):
  
     @staticmethod
     def _pick_profile_for_overload(overloaded_servers: List[Server], fallback_capacity: int) -> str:
-        # آستانه‌ها مستقیماً از SERVER_PROFILES خوانده می‌شوند — نه هاردکد.
-        # (هاردکدهای قبلی 200/100 برابر capacity قدیمی بودند و با capacity_mips جدید نادرست‌اند)
         _large_threshold = CFG.server_profiles["large"]["capacity_mips"]
         _medium_threshold = CFG.server_profiles["medium"]["capacity_mips"]
         total = sum(s.capacity for s in overloaded_servers) if overloaded_servers else fallback_capacity
@@ -116,16 +114,7 @@ class AlgorithmBase(ABC):
     @staticmethod
     def _capacity_starved_services(metrics_snapshot: dict, servers: Dict[int, Server],
                                     occ_threshold: float = 0.7) -> List[int]:
-        """
-        *** دو اصلاح نسبت به نسخه‌ی قبلی:
-        ۱) occ_threshold اکنون پارامتر است (نه هاردکد ۰.۷) تا هر الگوریتم
-           بتواند threshold داخلی خودش را پاس بدهد (مثلاً Voila با ۰.۶۸) و
-           بین تشخیص نیاز و trigger شدن سیگنال starvation ناهماهنگی نباشد.
-        ۲) سرور BOOTING هم پذیرفته می‌شود، نه فقط ACTIVE - چون سروری که در
-           حال boot شدن است به‌زودی این starvation را رفع می‌کند؛ بدون این
-           تغییر، تیک تصمیم بعدی (که هنوز BOOTING تمام نشده) دوباره همان
-           starvation را می‌بیند و یک سرور اضافه‌ی غیرضروری boot می‌کند.
-        """
+
         starved = []
         for svc_id, sv in metrics_snapshot["services"].items():
             occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0

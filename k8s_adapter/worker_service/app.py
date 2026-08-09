@@ -73,7 +73,10 @@ async def process(req: ProcessRequest):
         }))
     except Exception:
         pass
-
+    try:
+        _redis.incrbyfloat(f"service:{SERVICE_ID}:server:{SERVER_ID}:busy_seconds_acc", elapsed)
+    except Exception:
+        pass
     return {
         "request_id": req.request_id,
         "service_id": SERVICE_ID,

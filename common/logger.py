@@ -1,8 +1,6 @@
 """
 common/logger.py
-لاگ‌گیری ساخت‌یافته (structured JSON) طبق بخش ۱۲ سند معماری.
-در فاز ۱و۲ (شبیه‌سازی) این لاگ‌ها به فایل نوشته می‌شوند؛ در فاز ۳ (K8s واقعی)
-همین اینترفیس بدون تغییر توسط k8s_adapter/ فراخوانی خواهد شد.
+
 """
 
 from __future__ import annotations
@@ -12,12 +10,6 @@ from datetime import datetime, timezone
 
 
 class EventLogger:
-    """
-    استفاده:
-        logger = EventLogger("outputs/greedy_events.jsonl", algorithm="greedy")
-        logger.log("request_completed", request_id=42, server_id=3, service_id=7,
-                    response_time_sec=1.2)
-    """
 
     def __init__(self, path: str, algorithm: str, enabled: bool = True):
         self.algorithm = algorithm

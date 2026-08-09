@@ -1,6 +1,5 @@
 """
-algorithms/ppo/infer.py
-اجرای مدل PPO آموزش‌دیده به‌صورت inference-only.
+algorithms/ppo/infer.py 
 
 اجرا:
     python3 -m algorithms.ppo.infer
@@ -33,11 +32,7 @@ def run_ppo_inference(events_df, model_path: str, log_path: str | None = None,
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser()
-    # *** رفع باگ: قبلاً --seed اصلاً در CLI تعریف نشده بود، ولی پایین همین
-    # فایل getattr(args, "seed", None) را می‌خواند - چون هیچ‌وقت چنین
-    # attributeی وجود نداشت، همیشه None برمی‌گشت و بی‌صدا به CFG.seed
-    # سقوط می‌کرد؛ کاربر هیچ راهی برای انتخاب seed از CLI نداشت.
+    parser = argparse.ArgumentParser() 
     parser.add_argument("--seed", type=int, default=None,
                          help="اگر داده شود: مدل PPO مخصوص همین seed بارگذاری می‌شود و "
                               "نتایج در <output-dir>/seed<N>/ ذخیره می‌شوند (هماهنگ با "
@@ -69,10 +64,7 @@ if __name__ == "__main__":
             f"اول اجرا کنید: python -m algorithms.ppo.train"
         )
 
-    if args.seed is not None:
-        # *** هماهنگ با evaluation/compare_runs.py --seed: زیرپوشه‌ی
-        # خودکار seed<N> تا خروجی چند seed مختلف روی هم نوشته نشود و
-        # مستقیماً قابل مصرف توسط evaluation/aggregate_seeds.py باشد.
+    if args.seed is not None: 
         args.output_dir = os.path.join(args.output_dir, f"seed{args.seed}")
 
     test_events = load_test()

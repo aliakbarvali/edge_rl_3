@@ -23,5 +23,4 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 
 def network_delay_ms(distance_km: float, base_latency_ms: float, k_ms_per_km: float) -> float:
-    """بخش ۳ سند: مدل تاخیر شبکه یک‌طرفه (برای response_time دو برابر می‌شود - رفت و برگشت)."""
     return base_latency_ms + k_ms_per_km * distance_km

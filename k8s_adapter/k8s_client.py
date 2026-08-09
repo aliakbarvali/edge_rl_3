@@ -1,23 +1,6 @@
 """
 k8s_adapter/k8s_client.py
-
-لایه‌ی نازک روی kubernetes Python client برای عملیات واقعی فاز ۳.
-
-*** پیش‌نیازهای یک‌باره روی کلاستر شما (قبل از استفاده از این ماژول):
-    ۱) هر ۱۰ worker node را طبق SERVER_INFO لیبل بزنید تا nodeSelector کار کند:
-           kubectl label node <نام‌نود-متناظر-با-192.168.1.11> edge-server-id=1
-           kubectl label node <نام‌نود-متناظر-با-192.168.1.12> edge-server-id=2
-           ... (تا سرور ۱۰ -> 192.168.1.20)
-       (خودِ این پروژه نمی‌داند نام واقعی نودهای شما در `kubectl get nodes`
-       چیست؛ فقط IP را در common/config.py:SERVER_INFO می‌دانیم - این نگاشت
-       IP<->نام‌نود را باید یک‌بار خودتان با `kubectl get nodes -o wide` پیدا
-       و لیبل‌گذاری کنید.)
-    ۲) namespace بسازید: kubectl create namespace edge-rl
-    ۳) image سرویس (k8s_adapter/worker_service/) را build/push کنید و
-       نامش را در common/config.py یا آرگومان WORKER_IMAGE اینجا بدهید.
-    ۴) روی ماشین ۱۹۲.۱۶۸.۱.۳۰ (جایی که این کد اجرا می‌شود)، `~/.kube/config`
-       باید به کلاستر شما دسترسی داشته باشد (همان kubeconfig که kubectl
-       استفاده می‌کند).
+ 
 """
 
 from __future__ import annotations
@@ -41,21 +24,15 @@ NODE_LABEL_KEY = "edge-server-id"
 
 
 def resource_mips_to_millicpu(resource_mips: int, server_profile: dict) -> int:
-    """
-    تبدیل resource_mips سرویس به میلی‌سی‌پی‌یوی K8s.
-    قرارداد K8s: 1000m = یک هسته‌ی کامل.
-    فرمول: resource_mips / mips_per_core × 1000
-    چون mips_per_core برای هر پروفایل سرور متفاوت است (750/2500/3750)،
-    یک ضریب ثابت سراسری دیگر درست نیست.
-    """
+ 
     return round(resource_mips / server_profile["mips_per_core"] * 1000)
 
 
 def _load_kube_config():
     try:
-        config.load_kube_config()  # از ~/.kube/config (حالت معمول خارج از کلاستر)
+        config.load_kube_config()   
     except Exception:
-        config.load_incluster_config()  # اگر خودِ کد داخل یک پاد در کلاستر اجرا شود
+        config.load_incluster_config()  
 
 
 _load_kube_config()
@@ -67,30 +44,19 @@ def _deployment_name(service_id: int, server_id: int) -> str:
     return f"svc{service_id}-srv{server_id}"
 
 
-def worker_port(service_id: int) -> int:
-    """
-    *** پورت اختصاصیِ هر سرویس (نه هر پاد). چون از این پس با hostNetwork=True
-    اجرا می‌کنیم، اگر چند سرویس روی یک نود زمان‌بندی بشن، همه روی IP واقعیِ
-    همان نود گوش می‌دهند و اگر همه پورت ثابت 8000 داشتند تداخل پیش می‌آمد؛
-    پس هر service_id پورت خودش را می‌گیرد (دقیقاً همان الگویی که در
-    پروژه‌ی قبلی‌تان با SERVICE_PORT = SERVICE_ID + 8000 کار می‌کرد).
-    """
+def worker_port(service_id: int) -> int: 
     return 8000 + service_id
 
-
-# ---------------------------------------------------------------------------
-# Deployment (رپلیکا) - ایجاد/حذف/وضعیت
-# ---------------------------------------------------------------------------
+ 
 
 def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deployment:
     svc = CFG.services_info[service_id]
     name = _deployment_name(service_id, server_id)
     
     server_profile = CFG.server_profiles[CFG.server_info[server_id]["profile"]]
-    cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"], server_profile)
-    # exec_time واقعی به سرعت MIPS همین کلاس سرور (server_profile["capacity_mips"])
-    # بستگی دارد - نه به resource_mips (که فقط رزرو منطقی/K8s است).
-    exec_time_sec = compute_exec_time_sec(service_id, server_profile["capacity_mips"])
+    cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"], server_profile) 
+    
+    exec_time_sec = compute_exec_time_sec(service_id, server_profile["mips_per_core"])
 
     port = worker_port(service_id)
 
@@ -119,11 +85,7 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
         metadata=client.V1ObjectMeta(labels=labels),
         spec=client.V1PodSpec(
             containers=[container],
-            node_selector={NODE_LABEL_KEY: str(server_id)},
-            # *** کلید اصلی رفع مشکل timeout: با hostNetwork=True، پاد روی
-            # IP واقعی نود (192.168.1.x) گوش می‌دهد و pod.status.pod_ip هم
-            # همان IP واقعی نود را برمی‌گرداند - یعنی از ماشین base مستقیماً
-            # reachable است (برخلاف IP overlay شبکه‌ی CNI که قبلاً برمی‌گشت).
+            node_selector={NODE_LABEL_KEY: str(server_id)}, 
             host_network=True,
             dns_policy="ClusterFirstWithHostNet",
         ),
@@ -172,12 +134,7 @@ def is_deployment_ready(service_id: int, server_id: int) -> bool:
     except ApiException as e:
         if e.status == 404:
             return False
-        # *** رفع باگ: قبلاً هر ApiException غیر از 404 (مثلاً 401/403 یا هر
-        # مشکل واقعی اتصال/دسترسی) هم بی‌صدا False برمی‌گرداند - یعنی
-        # _poll_until_ready فقط بعد از timeout کامل (بدون هیچ اطلاعاتی از
-        # علت واقعی) متوقف می‌شد. حالا خطای غیر-404 دوباره raise می‌شود تا
-        # except Exception در _poll_until_ready آن را با service_id/server_id
-        # کامل لاگ کند و مشکل واقعی زودتر قابل تشخیص باشد.
+   
         raise
     return (dep.status.ready_replicas or 0) >= 1
 
@@ -206,12 +163,7 @@ def list_all_deployments() -> list[dict]:
  
 
 def _call_with_retry(func, *args, max_retries: int = 3, base_delay: float = 1.0, **kwargs):
-    """
-    *** لایه‌ی مقاومت در برابر خطاهای گذرای API Server (۵۰۰/۵۰۳/۴۲۹ - از
-    جمله «context deadline exceeded» که از etcd کند می‌آید). بدون این، یک
-    خطای گذرا کل کار (create/poll) را برای همیشه می‌کشد، چون بالادست
-    (asyncio task در realtime_dispatcher.py) هیچ retry ندارد.
-    """
+ 
     last_exc = None
     for attempt in range(max_retries):
         try:
@@ -219,12 +171,10 @@ def _call_with_retry(func, *args, max_retries: int = 3, base_delay: float = 1.0,
         except ApiException as e:
             last_exc = e
             if e.status not in (500, 503, 429):
-                raise  # خطای غیرگذرا (مثلاً 404/401) - retry بی‌فایده است
+                raise  
             _time.sleep(base_delay * (2 ** attempt))
     raise last_exc
-# ---------------------------------------------------------------------------
-# Node (سرور) - cordon/uncordon (طبق پاسخ شما: بدون خاموشی فیزیکی واقعی)
-# ---------------------------------------------------------------------------
+ 
 
 def _get_node_name(server_id: int) -> str:
     nodes = _core_v1.list_node(label_selector=f"{NODE_LABEL_KEY}={server_id}")

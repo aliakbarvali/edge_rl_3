@@ -13,12 +13,7 @@ class HPAAlgorithm(AlgorithmBase):
     name = "hpa"
 
     def scale_decision(self, service_id, metrics_snapshot):
-        sv = metrics_snapshot["services"][service_id]
-        # *** رفع باگ: n_replicas شامل STARTING هم می‌شود (رپلیکایی که هنوز
-        # درخواست نمی‌گیرد). فرمول رسمی HPA بر پایه‌ی ظرفیت *واقعاً در
-        # سرویس* است، نه ظرفیت "در راه" - با n_replicas، اگر یک رپلیکا تازه
-        # STARTING باشد، current_replicas به‌غلط بالاتر حساب می‌شود و HPA
-        # کمتر از نیاز واقعی scale می‌کند.
+        sv = metrics_snapshot["services"][service_id] 
         current_replicas = max(sv["n_ready_replicas"], 1)
         current_util = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
@@ -52,22 +47,15 @@ class HPAAlgorithm(AlgorithmBase):
 
         avg_util = sum(metrics_snapshot["servers"][s.id]["utilization"] for s in active) / len(active)
         overloaded = [s for s in active
-                      if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
-        # *** بخش ۶.۱ / یافته‌ی جدید: مثل Greedy/Voila، سیگنال «کاملاً پر ولی
-        # busy-fraction<0.95» هم اضافه شد تا مقایسه‌ی چهارگانه منصفانه بماند.
-        # همچنان location-unaware (بدون haversine) طبق تعریف صریح سند از HPA.
+                      if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold] 
         starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)
 
         if avg_util > CFG.util_scale_up_threshold or starved_services:
             off_servers = sorted([s for s in servers.values() if s.state == ServerState.OFF],
-                                  key=lambda s: s.id)  # *** ترتیب ثابت/دلخواه، نه بر اساس مکان
-            if off_servers:
-                # *** بخش ۶.۱: پروفایل متناسب با اضافه‌بار - همچنان
-                # location-unaware (بدون haversine)، فقط بر پایه‌ی ظرفیت،
-                # چون HPA طبق تعریف صریح سند «کاملاً latency-unaware» است.
+                                  key=lambda s: s.id)  
+            if off_servers: 
                 desired_profile = self._pick_profile_for_overload(overloaded or active, active[0].capacity)
-                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
-                # پایداری تای‌بریک: بین کاندیدهای هم‌پروفایل هم بر اساس id
+                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile) 
                 pool = sorted(pool, key=lambda s: s.id)
                 return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
 

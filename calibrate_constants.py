@@ -1,50 +1,10 @@
-# calibrate_constants.py
-"""
-اندازه‌گیری واقعی ثابت‌های نرمال‌سازی (common/state_builder.py و
-algorithms/ppo/env.py) روی Data4.csv با اجرای Greedy - دقیقاً همان روش
-مستندشده برای _NORM_ENERGY_JOULE.
 
-اجرا: python3 calibrate_constants.py
-"""
-# calibrate_rejected.py
 import numpy as np
-from data.loader import load_test
+from data.loader import load_train
 from simulator.engine import SimulationEngine
 from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
 
-events = load_test()
-engine = SimulationEngine(events, GreedyAlgorithm(), "greedy")
-engine.prime()
-
-rejected_per_tick = []
-while True:
-    snapshot, done = engine.step()
-    if done:
-        break
-    rejected_per_tick.append(snapshot["global"]["num_rejected_recent"])
-
-arr = np.array(rejected_per_tick, dtype=float)
-nonzero = arr[arr > 0]
-
-print(f"کل تیک‌ها: {len(arr)}")
-print(f"تیک‌های با رد>0: {len(nonzero)}  ({100*len(nonzero)/len(arr):.2f}%)")
-print(f"\n--- روی کل تیک‌ها (شامل صفرها) ---")
-for p in [90, 95, 99, 99.9]:
-    print(f"  p{p} = {np.percentile(arr, p):.2f}")
-print(f"  max = {arr.max():.2f}")
-
-print(f"\n--- فقط روی تیک‌های با رد>0 (شرطی) ---")
-if len(nonzero) > 0:
-    for p in [50, 75, 90, 95]:
-        print(f"  p{p} = {np.percentile(nonzero, p):.2f}")
-    print(f"  max = {nonzero.max():.2f}")
-    print(f"  mean = {nonzero.mean():.2f}")
-import numpy as np
-from data.loader import load_test
-from simulator.engine import SimulationEngine
-from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
-
-events = load_test()
+events = load_train()
 engine = SimulationEngine(events, GreedyAlgorithm(), "greedy")
 engine.prime()
 

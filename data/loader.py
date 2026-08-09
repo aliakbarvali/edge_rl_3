@@ -1,7 +1,6 @@
 """
 data/loader.py
-خواندن CSVها، فیلتر منطقه‌ی جغرافیایی، و اعمال آفست روزانه برای ساخت
-تایم‌لاین پیوسته (بخش ۱.۳ سند: global_start_sec = day_index * 86400 + startSec).
+ 
 """
 
 from __future__ import annotations
@@ -24,11 +23,7 @@ def _load_one_day(filename: str, day_index: int) -> pd.DataFrame:
     return df
 
 
-def load_timeline(filenames: list[str]) -> pd.DataFrame:
-    """
-    خروجی: یک DataFrame واحد، مرتب‌شده بر اساس global_start_sec، شامل تمام
-    فایل‌های ورودی با آفست روزانه‌ی صحیح (بدون تداخل بین روزها).
-    """
+def load_timeline(filenames: list[str]) -> pd.DataFrame: 
     frames = [_load_one_day(f, i) for i, f in enumerate(filenames)]
     events = pd.concat(frames, ignore_index=True)
     events = events.sort_values("global_start_sec").reset_index(drop=True)

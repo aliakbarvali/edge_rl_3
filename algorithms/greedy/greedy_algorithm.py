@@ -30,20 +30,9 @@ class GreedyAlgorithm(AlgorithmBase):
             if off_servers:
                 if overloaded:
                     ref = overloaded[0]
-                elif active:
-                    # *** اضافه‌بار utilization-محور نبود ولی capacity-starved
-                    # بودیم؛ پرمشغول‌ترین سرور ACTIVE فعلی را مرجع جغرافیایی
-                    # می‌گیریم.
+                elif active: 
                     ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
-                else:
-                    # *** لبه‌ی مرزی: هیچ سروری هنوز ACTIVE نیست (مثلاً همان
-                    # اولین DECISION_TICK در t=0 که همه‌ی سرورهای اولیه هنوز
-                    # BOOTING هستند ولی درخواست‌های همین لحظه چون replica
-                    # READY ای نیست REJECTED_NO_REPLICA می‌خورند و سرویس را
-                    # «starved» نشان می‌دهند). در این حالت معیار مکانی معناداری
-                    # نداریم؛ فقط اولین سرور OFF را بدون اولویت جغرافیایی
-                    # انتخاب می‌کنیم (به‌هرحال initial_placement به‌زودی چند
-                    # سرور دیگر هم boot می‌کند).
+                else: 
                     ref = None
                 if ref is not None:
                     desired_profile = self._pick_profile_for_overload(overloaded or active, ref.capacity)

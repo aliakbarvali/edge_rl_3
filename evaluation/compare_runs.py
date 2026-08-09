@@ -23,11 +23,7 @@ def _try_build(name: str, ppo_args=None):
             from algorithms.ppo.ppo_algorithm import PPOAlgorithm
             from algorithms.ppo.train import model_path_for_seed
             from common.config import CFG
-                
-            # *** رفع باگ اول: ppo_args یک dict است، نه یک آبجکت با attribute -
-            # getattr(ppo_args, "seed", None) هرگز مقدار واقعی را پیدا
-            # نمی‌کرد و همیشه به CFG.seed سکوت‌آمیز fallback می‌زد، حتی وقتی
-            # --seed صریحاً داده شده بود.
+                 
             seed = (ppo_args or {}).get("seed") or CFG.seed
             resolved_path = model_path_for_seed(seed)
             if not os.path.exists(resolved_path):
@@ -35,15 +31,7 @@ def _try_build(name: str, ppo_args=None):
                     f"مدل PPO برای seed={seed} پیدا نشد: {resolved_path}\n"
                     f"اول اجرا کنید: python -m algorithms.ppo.train"
                 ) 
-            ppo_args = ppo_args or {}
-            # *** رفع باگ دوم: قبلاً اینجا از MODEL_PATH وارداتی استفاده
-            # می‌شد که در algorithms/ppo/train.py در *زمان import* یک‌بار
-            # با CFG.seed (فقط از EOTCH_SEED محیطی) محاسبه شده - یعنی resolved_path
-            # بالا فقط برای چک وجود فایل استفاده می‌شد ولی مدلی که واقعاً
-            # لود می‌شد همیشه مدل CFG.seed بود، نه seed درخواستی از --seed.
-            # با seed=43 --seed، چک بالا درست resolved_path=...seed43.zip را
-            # پیدا می‌کرد ولی مدل بارگذاری‌شده بی‌صدا seed42 (یا هرچه CFG.seed
-            # بود) باقی می‌ماند.
+            ppo_args = ppo_args or {} 
             return PPOAlgorithm(
                 model_path=resolved_path,
                 latency_aware_routing=ppo_args.get("latency_aware_routing", False),
@@ -59,18 +47,12 @@ def _try_build(name: str, ppo_args=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="test", choices=["train", "test"])
-    parser.add_argument("--output-dir", default="outputs")
-    # *** رفع مشکل «مقایسه‌ی چند-seed دستی و مستعد خطا» (evaluation/aggregate_seeds.py):
-    # قبلاً کاربر باید MODEL_PATH را با EOTCH_SEED محیطی عوض می‌کرد و بعد
-    # دستی نتیجه را در outputs/seed<N>/ کپی می‌کرد تا aggregate_seeds بتواند
-    # آن را پیدا کند. حالا با --seed هم مدل مخصوص همان seed مستقیماً بارگذاری
-    # می‌شود (بدون نیاز به EOTCH_SEED جدا) و هم output-dir خودکار زیرپوشه‌ی
-    # seed<N> می‌گیرد - دقیقاً مسیری که aggregate_seeds.py انتظار دارد.
+    parser.add_argument("--output-dir", default="outputs") 
     parser.add_argument("--seed", type=int, default=None,
                          help="اگر داده شود: مدل PPO مخصوص همین seed بارگذاری می‌شود و "
                               "نتایج در <output-dir>/seed<N>/ ذخیره می‌شوند (برای "
                               "evaluation/aggregate_seeds.py)")
-    # *** فقط برای PPO معنا دارند
+   
     parser.add_argument("--latency-aware-routing", action="store_true")
     parser.add_argument("--no-solver-placement", action="store_true")
     parser.add_argument("--w-count", type=float, default=1.0)
@@ -79,10 +61,7 @@ def main():
 
     args = parser.parse_args()
 
-    if args.seed is not None:
-        # *** خودکار زیرپوشه‌ی seed<N> - همان طرحی که aggregate_seeds.py و
-        # داکیومنت بالای آن فایل از قبل مستند/انتظار داشتند، بدون نیاز به
-        # کپی دستی خروجی بعد از هر اجرا.
+    if args.seed is not None: 
         args.output_dir = os.path.join(args.output_dir, f"seed{args.seed}")
 
     ppo_args = {

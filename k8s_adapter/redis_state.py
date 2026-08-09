@@ -123,27 +123,24 @@ def get_metric(name: str) -> int:
     return int(_r.get(f"edge:metrics:{name}") or 0)
 
 
+ 
 def reset_all(n_servers: int, n_services: int):
-    """پاک‌سازی کامل state قبل از شروع یک اجرای جدید."""
-    keys = _r.keys("edge:*")
-    if keys:
-        _r.delete(*keys)
+  
+    all_keys = []
+    for pattern in ("edge:*", "service:*"):
+        keys = _r.keys(pattern)
+        if keys:
+            all_keys.extend(keys)
+    if all_keys:
+        _r.delete(*all_keys) 
 
-# --- اضافه به بخش صف ---
-
-def set_reservation_ttl(service_id: int, server_id: int, request_id: int, ttl_sec: float):
-    """محافظ در برابر BTSای که بعد از /route هرگز /process را صدا نمی‌زند."""
+def set_reservation_ttl(service_id: int, server_id: int, request_id: int, ttl_sec: float): 
     key = f"edge:reservation:{service_id}:{server_id}:{request_id}"
     _r.setex(key, int(ttl_sec), "1")
-
-
-# --- بخش جدید: صف کامل‌شده‌ها (پرشده توسط خودِ پاد worker) ---
+ 
 
 def push_completion(service_id: int, server_id: int, request_id: int,
-                     success: bool, response_time_sec: float):
-    """*** خودِ پاد worker بعد از پردازش هر درخواست این را صدا می‌زند - نه
-    دیسپچر. این تنها ترافیکی است که از این ماشین عبور می‌کند و بسیار سبک
-    است (یک push به لیست، نه یک HTTP round-trip کامل)."""
+                     success: bool, response_time_sec: float): 
     payload = json.dumps({
         "request_id": request_id, "service_id": service_id, "server_id": server_id,
         "success": success, "response_time_sec": response_time_sec,
@@ -166,3 +163,10 @@ def get_busy_seconds_acc(service_id: int, server_id: int) -> float:
 def reset_busy_seconds_acc(service_id: int, server_id: int) -> None:
     """بعد از هر بار خواندن و commit کردن، صفر می‌شود تا double-count نشود."""
     _r.delete(f"service:{service_id}:server:{server_id}:busy_seconds_acc")
+    
+    
+def pop_busy_seconds_acc(service_id: int, server_id: int) -> float:
+    """اتمیک: مقدار انباشته را می‌خواند و هم‌زمان صفر می‌کند (GETSET) —
+    از race با INCRBYFLOAT هم‌زمان ورکر جلوگیری می‌کند."""
+    val = _r.getset(f"service:{service_id}:server:{server_id}:busy_seconds_acc", 0.0)
+    return float(val) if val else 0.0    

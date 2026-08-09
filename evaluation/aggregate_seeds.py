@@ -57,8 +57,7 @@ def main():
         mean = statistics.mean(values)
         std = statistics.stdev(values) if len(values) > 1 else 0.0
         print(f"{metric:35s} {mean:15.3f} {std:15.3f} {min(values):15.3f} {max(values):15.3f}")
-
-    # جدول خام هر seed هم برای پیوست گزارش
+ 
     print("\n--- جدول خام هر seed ---")
     header = ["seed"] + METRICS
     print(",".join(header))

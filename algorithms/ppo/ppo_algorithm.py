@@ -1,16 +1,6 @@
 """
 algorithms/ppo/ppo_algorithm.py
-پیاده‌سازی AlgorithmBase با مدل PPO آموزش‌دیده، برای استفاده در run() عادی
-موتور (همان مسیری که Greedy/Voila/HPA از آن عبور می‌کنند) تا مقایسه‌ی
-چهارگانه با معیارهای یکسان ممکن شود (بخش ۱۱.۵: ارزیابی inference-only).
-
-*** نکته‌ی طراحی مهم: چون AlgorithmBase.scale_decision() سیگنیچرش شامل `now`
-نیست (فقط service_id و metrics_snapshot)، ولی مدل PPO باید یک‌بار در هر تیک
-(نه یک‌بار به ازای هر سرویس) پیش‌بینی انجام دهد، از این ترتیب فراخوانی
-موتور (simulator/engine.py:_handle_decision_tick) استفاده می‌شود: همیشه
-provision_decision() *قبل* از حلقه‌ی scale_decision() هر سرویس صدا زده
-می‌شود؛ بنابراین پیش‌بینی مدل در provision_decision() یک‌بار محاسبه و کش
-می‌شود و scale_decision() فقط از کش می‌خواند.
+ 
 """
 
 from __future__ import annotations
@@ -42,35 +32,19 @@ class PPOAlgorithm(AlgorithmBase):
                 "sb3-contrib نصب نیست. اجرا کنید: pip install -r requirements.txt"
             ) from e
         self.model = MaskablePPO.load(model_path)
-        self.deterministic = deterministic
-        # *** هماهنگ با algorithms/ppo/env.py:step - رفع بایاس به‌سمت
-        # کمترین server_id، با تصادفی‌سازی بذردار (برای reproducibility
-        # ارزیابی نهایی) به‌جای انتخاب قطعی اولین سرور.
+        self.deterministic = deterministic 
         self._tie_break_rng = _tie_break_random.Random(CFG.seed)
         self._cached_tick_key: Optional[float] = None
         self._cached_scale: Dict[int, ScaleAction] = {}
-        self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE)
-        # *** برای select_placement_server (فیکس location-aware placement) -
-        # مقداردهی اولیه‌ی امن تا اگر select_placement_server قبل از اولین
-        # provision_decision صدا زده شود (نباید در جریان عادی engine رخ
-        # دهد، ولی برای فراخوانی مستقیم/تست ایمن‌تر است)، AttributeError
-        # نگیریم و به fallback مرکز-سرورهای-فعال بیفتیم.
-        self._last_snapshot: Optional[dict] = None
-        # قوانین مشترک غیر-یادگیرنده (placement/migration - خارج از فضای اکشن PPO، بخش ۱۱.۱)
+        self._cached_provision = ProvisionAction(ProvisionActionType.NO_CHANGE) 
+        self._last_snapshot: Optional[dict] = None 
         self._helper = GreedyAlgorithm()
         self.latency_aware_routing = latency_aware_routing
-
-        # *** جای‌گذاری اولیه‌ی بهینه با ILP بر پایه‌ی داده‌ی آموزشی (نگاه کنید
-        # algorithms/ppo/optimal_placement.py). فقط یک‌بار در طول عمر این
-        # instance حل و کش می‌شود - چون همان چیزی است که یک engine واحد در
-        # ابتدای اجرا یک‌بار initial_placement صدا می‌زند.
+ 
         self.use_solver_placement = use_solver_placement
         self._solver_selected_servers: Optional[List[int]] = None
  
-        self._placement_weights = placement_weights or {"w_count": 1.0, "w_energy": 1.0, "w_distance": 1.0}
-        # *** باگ A (inference): ردیابی cooldown سرویس برای _build_action_masks
-        # در inference مسیر engine در دسترس نیست؛ زمان آخرین scale هر سرویس
-        # اینجا ردیابی می‌شود تا masks با گیت‌های واقعی engine هماهنگ بمانند.
+        self._placement_weights = placement_weights or {"w_count": 1.0, "w_energy": 1.0, "w_distance": 1.0} 
         self._infer_svc_last_scale: dict = {sid: -1e18 for sid in sorted(CFG.services_info.keys())}
       
     # ------------------------------------------------------------------
@@ -101,10 +75,7 @@ class PPOAlgorithm(AlgorithmBase):
         return super(PPOAlgorithm, self).initial_placement(servers, active_bts_fallback)
 
     @staticmethod
-    def _ensure_sufficient_capacity(servers: Dict[int, Server], selected: List[int]) -> List[int]:
-        """دقیقاً همان قید انتهای AlgorithmBase.initial_placement: اگر مجموع
-        ظرفیت سرورهای انتخابی کمتر از نیاز کل ۱۵ سرویس بود، نزدیک‌ترین
-        سرورهای باقی‌مانده را هم اضافه کن."""
+    def _ensure_sufficient_capacity(servers: Dict[int, Server], selected: List[int]) -> List[int]: 
         total_cpu_needed = sum(s["resource_mips"] for s in CFG.services_info.values())
         if sum(servers[sid].capacity for sid in selected) >= total_cpu_needed:
             return selected
@@ -116,13 +87,7 @@ class PPOAlgorithm(AlgorithmBase):
             selected.append(remaining.pop(0))
         return selected
     # ------------------------------------------------------------------
-    def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float):
-        # *** برای select_placement_server پایین همین فایل (نگاه کنید فیکس
-        # location-aware placement) - دقیقاً همان الگوی VoilaAlgorithm که
-        # metrics_snapshot را در provision_decision کش می‌کند تا
-        # demand_centroid تازه‌ترین snapshot در دسترس باشد (provision_decision
-        # همیشه در همان تیک *قبل* از scale_decision/select_placement_server
-        # صدا زده می‌شود - نگاه کنید simulator/engine.py:_handle_decision_tick).
+    def _predict_and_cache(self, servers: Dict[int, Server], metrics_snapshot: dict, now: float): 
         self._last_snapshot = metrics_snapshot
         if self._cached_tick_key == now:
             return  # این تیک قبلاً پیش‌بینی شده
@@ -147,42 +112,22 @@ class PPOAlgorithm(AlgorithmBase):
         self._cached_provision = provision
         self._cached_tick_key = now
 
-    def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict, now: float | None = None):
-        """*** باید دقیقاً هم‌راستا با algorithms/ppo/env.py:action_masks()
-        باشد. قبلاً فقط can_host بدون چک ACTIVE بود (فیکس اول)؛ حالا (فیکس
-        دوم - بازبینی) گیت‌های anti-flapping واقعی هم اضافه شدند - نگاه
-        کنید توضیح کامل در env.py:action_masks. از .get(..., default) با
-        fallback امن استفاده می‌شود چون در حالت k8s واقعی
-        (k8s_adapter/realtime_dispatcher.py) این فیلدهای جدید هنوز به
-        snapshot اضافه نشده‌اند - fallback به رفتار قدیمی (بدون این محدودیت
-        اضافه) باعث crash نمی‌شود، فقط این بهبود مختص فاز ۱و۲ می‌ماند."""
+    def _build_action_masks(self, servers: Dict[int, Server], snapshot: dict, now: float | None = None): 
         import numpy as np
         masks = []
         t = now if now is not None else 0.0
         for sid in _SERVICE_IDS:
             sv = snapshot["services"][sid]
-            cpu = CFG.services_info[sid]["resource_mips"]
-            # cooldown سرویس از ردیابی داخلی (دقیق‌تر از snapshot که یک تیک delay دارد)
-            #اصلاحin_svc_cooldown = (t - self._infer_svc_last_scale.get(sid, -1e18)) < CFG.cooldown_sec
+            cpu = CFG.services_info[sid]["resource_mips"] 
             in_svc_cooldown = snapshot["services"][sid].get("scale_cooldown_active", False)
             can_up = (not in_svc_cooldown) and any(
-                s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values())
-            # *** رفع باگ مسدودکننده (بازبینی): fallback قبلی (`0`) یعنی هر
-            # snapshotای که هنوز کلید n_mature_ready_replicas را ندارد (مثل
-            # k8s_adapter/realtime_dispatcher.py قبل از این فیکس) can_down
-            # را همیشه False می‌کرد - یعنی PPO در فاز ۳ واقعی هرگز نمی‌توانست
-            # SCALE_DOWN بزند، دقیقاً برعکس چیزی که کامنت قدیمی ("fallback
-            # به رفتار قدیمی بدون این محدودیت") ادعا می‌کرد. حالا در نبود
-            # این فیلد، fallback امن n_ready_replicas است (یعنی فرض می‌شود
-            # همه‌ی رپلیکاهای READY به‌اندازه‌ی کافی بالغ‌اند) - همان رفتار
-            # واقعاً "بدون این محدودیت اضافه" که ادعا می‌شد.
+                s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values()) 
             n_mature = sv.get("n_mature_ready_replicas", sv["n_ready_replicas"])
             can_down = (not in_svc_cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
             masks.extend([True, can_up, can_down])
         for sid in _SERVER_IDS:
             st = snapshot["servers"][sid]["state"]
-            s = servers[sid]
-            # cooldown سرور مستقیماً از شیء Server (نه snapshot)
+            s = servers[sid] 
              
             can_on = (st == ServerState.OFF) and (not snapshot["servers"][sid]["provision_cooldown_active"])
             can_off = (st == ServerState.ACTIVE
@@ -201,20 +146,7 @@ class PPOAlgorithm(AlgorithmBase):
         self._predict_and_cache(servers, metrics_snapshot, now)
         return self._cached_provision
 
-    def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
-        # *** بهبود (بازبینی): طبق بخش ۱۱.۳، placement بخشی از فضای اکشن
-        # یادگیرنده‌ی PPO *نیست* - یعنی این قانون را می‌شود بدون نیاز به
-        # train مجدد عوض کرد. قبلاً فقط «بیشترین ظرفیت آزاد» بود که کاملاً
-        # location-unaware است - PPO تنها الگوریتمی بود که موقعیت جغرافیایی
-        # واقعی تقاضا را در انتخاب مقصد رپلیکای جدید کاملاً نادیده می‌گرفت
-        # (برخلاف Greedy که به مرکز سرورهای فعال نزدیک می‌شود، و Voila که
-        # از demand_centroid واقعی استفاده می‌کند). این مستقیماً روی
-        # avg_distance_km/network_delay_ms اثر منفی دارد. حالا از همان الگوی
-        # اثبات‌شده‌ی VoilaAlgorithm.select_placement_server استفاده می‌شود:
-        # نزدیک‌ترین کاندیدها (در بازه‌ی ۵ کیلومتری نزدیک‌ترین) به مرکز ثقل
-        # تقاضای واقعی این سرویس (demand_centroid، از snapshot کش‌شده در
-        # provision_decision - نگاه کنید _predict_and_cache)، و در میان
-        # آن‌ها بیشترین ظرفیت آزاد (برای حفظ توازن بار، دقیقاً مثل قبل).
+    def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]: 
         cpu = CFG.services_info[service_id]["resource_mips"]
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
@@ -254,9 +186,7 @@ class PPOAlgorithm(AlgorithmBase):
             distance_km = haversine_km(request.bts_lat, request.bts_long, server.lat, server.long)
             delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
             rtt_sec = 2 * delay_ms / 1000.0
-
-            # تخمین واقعیِ زمان انتظار: دقیقاً همون چیزی که Replica.try_admit
-            # استفاده می‌کنه (available_at) - نه یک heuristic بر پایه‌ی occupancy
+ 
             est_wait_sec = max(0.0, r.available_at - now)
             est_total_latency = rtt_sec + est_wait_sec + r.exec_time
 

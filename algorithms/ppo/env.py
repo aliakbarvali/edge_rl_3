@@ -1,36 +1,6 @@
 """
 algorithms/ppo/env.py
-محیط Gymnasium طبق بخش ۱۱ سند. هر گام env = یک DECISION_TICK از موتور
-(بخش ۱۱.۱: عامل هر DECISION_INTERVAL_SEC سه نوع تصمیم می‌گیرد).
-
-Action (بخش ۱۱.۳): MultiDiscrete
-    ۱۵ بعد اول: برای هر سرویس {0=NO_CHANGE, 1=SCALE_UP, 2=SCALE_DOWN}
-    ۱۰ بعد بعدی: برای هر سرور {0=NO_CHANGE, 1=TURN_ON, 2=TURN_OFF}
-
-Reward (بخش ۱۱.۴): ترکیب وزن‌دار منفی از ۴ معیار + جریمه‌ی درخواست ردشده +
-    جریمه‌ی ثابت کوچک هر اکشن (برای جلوگیری از flapping بی‌مورد عامل).
-
-*** CHANGELOG (بازبینی ۳): جریمه‌ی «درخواست ردشده» قبلاً به‌صورت خام
-(PPO_PENALTY_PER_REJECTED * num_rejected_recent) اضافه می‌شد - یعنی یک عدد
-*نامحدود* و *نرمال‌نشده*، در حالی‌که ۴ جزء دیگر reward همه در بازه‌ی [۰,۲]
-نرمال شده بودند. در تیک‌های شلوغ که چند درخواست هم‌زمان رد می‌شدند (مثلاً
-۶-۱۰ تا)، این جمله می‌توانست ۵ تا ۱۵ برابر بزرگ‌تر از مجموع ۴ جزء دیگر
-باشد و کل سیگنال reward را تحت‌الشعاع قرار دهد. نتیجه‌ی مشاهده‌شده (روی
-Data4.csv): عامل یاد گرفت تقریباً هیچ اکشنی نزند (۵۵ اکشن در کل ۲۸۸۰ تیک،
-در برابر ۵۰۵ تای Greedy) و فقط تعداد سرور فعال را از ابتدا بالا نگه دارد
-(avg_active_servers=3.07 در برابر ~۲ بقیه) تا هرگز درخواستی رد نشود - که
-باعث بدترین انرژی (۳۸.۱M ژول در برابر ۳۲-۳۵.۷M) و بدترین توازن بار
-(cv=0.71 در برابر ۰.۲۸-۰.۵۸) در بین هر ۴ الگوریتم شد.
-
-اصلاح: num_rejected_recent هم مثل بقیه نرمال و به [۰,۲] کلمپ می‌شود
-(_NORM_REJECTED_PER_TICK به‌عنوان مقیاس کالیبراسیون - بخش ۱۳: قابل تنظیم)
-و یک وزن صریح w5_rejected به آن اختصاص می‌یابد؛ دیگر PPO_PENALTY_PER_REJECTED
-جداگانه استفاده نمی‌شود (نگاه کنید common/config.py برای وزن‌های جدید).
-
-*** طبق تأیید معماری، از sb3-contrib's MaskablePPO استفاده می‌شود که قبل از
-sample کردن اکشن، گزینه‌های نامعتبر را از توزیع احتمال حذف می‌کند؛ به همین
-دلیل action_masks() پیاده‌سازی شده (اینترفیس مورد انتظار MaskableMultiDiscrete
-در sb3-contrib).
+ 
 """
 
 from __future__ import annotations
@@ -49,54 +19,27 @@ N_SERVICES = CFG.n_services
 N_SERVERS = CFG.n_servers
 _SERVICE_IDS = sorted(CFG.services_info.keys())
 _SERVER_IDS = sorted(CFG.server_info.keys())
-
-# نگاشت اکشن گسسته -> enum
+ 
 _SCALE_MAP = {0: ScaleAction.NO_CHANGE, 1: ScaleAction.SCALE_UP, 2: ScaleAction.SCALE_DOWN}
 _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_ON,
                    2: ProvisionActionType.TURN_OFF}
-
-# *** بخش ۱۳ سند (قابل کالیبراسیون): مقیاس نرمال‌سازی num_rejected_recent.
-# بازکالیبره‌شده با calibrate_constants.py روی Data4.csv *بعد از* migration
-# استاندارد MIPS/MI + اصلاح exec_time وابسته به میزبان (n=2882 تیک کل):
-# p90=0.0, p95=1.0, p99=1.0, p99.9=16.26, max=71.0. فقط ۵.۲٪ تیک‌ها اصلاً
-# رد شدنی دارند (توزیع شدیداً دم‌سنگین)؛ روی همان زیرمجموعه‌ی رد>0:
-# p50=1.0, p90=1.0, p95=2.0, mean=2.25.
-# طبق راهنمای خودِ اسکریپت (p90/p95 روی کل تیک‌ها، نه max خام که یک outlier
-# است) مقدار انتخابی p95 کل تیک‌ها = 1.0 است. این یعنی هر تیکی با ≥۲ رد
-# تقریباً بلافاصله به سقف کلمپ می‌رسد؛ عمداً همین‌طور نگه داشته شده چون
-# سرویس‌های URLLC (deadline تا ۱۰ms) رد شدن مکرر را نباید تحمل کنند - سیگنال
-# باید تند و صریح باشد، نه تدریجی. مقدار قبلی (6.0) کاملاً بی‌ربط به این
-# توزیع بود.
+ 
 _NORM_REJECTED_PER_TICK = 1.0
 
 
-class EdgeResourceEnv(gym.Env):
-    """
-    events_df_provider: callable بدون آرگومان که یک DataFrame رویداد تازه
-    برمی‌گرداند (برای آموزش: هر اپیزود می‌تواند یک بازه‌ی تصادفی از تایم‌لاین
-    سه‌روزه‌ی train باشد - نگاه کنید به train.py).
-    """
+class EdgeResourceEnv(gym.Env): 
     metadata = {"render_modes": []}
 
     def __init__(self, events_df_provider, teacher_algorithm=None):
         super().__init__()
-        self.events_df_provider = events_df_provider
-        # از initial_placement/select_replica مشترک AlgorithmBase استفاده می‌شود؛
-        # چون این دو متد abstract نیستند نیازی به نمونه‌ی کامل الگوریتم نداریم،
-        # ولی چون AlgorithmBase انتزاعی است یک پیاده‌ساز حداقلی لازم است:
+        self.events_df_provider = events_df_provider 
         self._shared_algo = teacher_algorithm or _MinimalSharedAlgorithm()
 
         self.action_space = spaces.MultiDiscrete([3] * N_SERVICES + [3] * N_SERVERS)
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(STATE_DIM,), dtype=np.float32)
 
         self.engine: SimulationEngine | None = None
-        self._last_snapshot = None
-        # *** بازبینی ۴: اجزای خام (نرمال‌شده ولی بدون وزن) آخرین محاسبه‌ی
-        # reward، برای مانیتورینگ جداگانه در حین آموزش - نگاه کنید
-        # algorithms/ppo/train.py:RewardComponentLoggingCallback. بدون این،
-        # غالب‌شدن یک جزء (مثل انرژی - دقیقاً همان چیزی که باعث رگرسیون
-        # «فروپاشی provisioning» شد) فقط بعد از اتمام کامل training و اجرای
-        # evaluation/compare_runs قابل تشخیص بود.
+        self._last_snapshot = None 
         self._last_reward_components: dict | None = None
 
     # ------------------------------------------------------------------
@@ -105,7 +48,7 @@ class EdgeResourceEnv(gym.Env):
         events_df = self.events_df_provider()
         self.engine = SimulationEngine(events_df, self._shared_algo, "ppo_train")
         self.engine.prime()
-        snapshot = self.engine.peek_snapshot()  # observation اولیه، بدون اجرای واقعی تیک
+        snapshot = self.engine.peek_snapshot()  
         self._last_snapshot = snapshot
         obs = build_state_vector(snapshot, self.engine.servers)
         return obs, {}
@@ -115,14 +58,7 @@ class EdgeResourceEnv(gym.Env):
         server_actions = {sid: _PROVISION_MAP[int(action[N_SERVICES + j])]
                            for j, sid in enumerate(_SERVER_IDS)}
 
-        provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE)
-        # *** رفع بایاس سیستماتیک: قبلاً همیشه اولین سرور غیر-NO_CHANGE به
-        # ترتیب id صعودی انتخاب می‌شد (چون dict/for ترتیب insertion=sorted
-        # id را حفظ می‌کند) - یعنی اگر عامل هم‌زمان برای دو سرور مختلف
-        # اکشن غیرصفر می‌زد، همیشه کمترین id برنده بود، صرف‌نظر از اهمیت
-        # واقعی. این یک بایاس مصنوعی و ثابت در سیگنال یادگیری ایجاد می‌کرد.
-        # حالا بین کاندیدهای هم‌زمان، با RNG خودِ محیط (بذردار، برای
-        # reproducibility) به‌صورت یکنواخت انتخاب می‌شود.
+        provision_action = ProvisionAction(ProvisionActionType.NO_CHANGE) 
         non_noop_servers = [sid for sid, ptype in server_actions.items()
                              if ptype != ProvisionActionType.NO_CHANGE]
         if non_noop_servers:
@@ -130,24 +66,7 @@ class EdgeResourceEnv(gym.Env):
             provision_action = ProvisionAction(server_actions[chosen_sid], chosen_sid)
 
         external = {"provision": provision_action, "scale": service_actions}
-
-        # *** رفع باگ (جریمه‌ی اکشن بر پایه‌ی اکشن *واقعاً اعمال‌شده*، نه
-        # صرفاً درخواست‌شده): قبلاً n_actions_taken قبل از engine.step()
-        # از روی خودِ اکشن خام محاسبه می‌شد - یعنی حتی اگر engine بعداً آن
-        # را به‌خاطر cooldown/min-replica-age/آخرین سرور فعال/... بی‌صدا
-        # skip می‌کرد (نگاه کنید simulator/engine.py:_apply_scale_decision/
-        # _apply_provisioning و skip_reason)، عامل همچنان جریمه‌ی هزینه‌ی
-        # اکشن (CFG.ppo_penalty_per_action) را می‌گرفت بدون این‌که هیچ
-        # تغییر واقعی (churn/هزینه‌ی واقعی روی سیستم) رخ داده باشد - یک
-        # سیگنال یادگیری نویزی، دقیقاً همان کلاس مشکلی که در بخش mask هم
-        # وجود داشت. با اضافه‌شدن action_masks هماهنگ با گیت‌های واقعی (پایین
-        # همین فایل)، بیشتر این حالت‌ها از اساس دیگر sample نمی‌شوند؛ ولی
-        # برای گیت‌های "necessity" (مثلاً overload_not_sustained) که عمداً
-        # mask نشده‌اند (چون سیگنال یادگیری معناداری درباره‌ی زمان‌بندی
-        # می‌دهند)، اینجا هم باید جریمه‌ی واقعی صفر بماند. راه‌حل: شمارنده‌های
-        # MetricsCollector (که فقط در applied=True افزایش می‌یابند) قبل/بعد
-        # از step مقایسه می‌شوند تا تعداد اکشن‌های *واقعاً اعمال‌شده* دقیق
-        # به دست بیاید.
+ 
         m = self.engine.metrics
         before_counts = (m.num_scale_up, m.num_scale_down, m.num_turn_on, m.num_turn_off)
 
@@ -181,17 +100,10 @@ class EdgeResourceEnv(gym.Env):
         load_cv = 0.0
         if len(active_utils) >= 2 and np.mean(active_utils) > 0:
             load_cv = float(np.std(active_utils) / np.mean(active_utils))
-
-        # *** رفع باگ مسدودکننده: قبلاً اینجا 300.0 و 12_000.0 هاردکد بود -
-        # مقادیر *قدیمی* و کالیبره‌نشده که با بازکالیبراسیون common/state_builder.py
-        # (85.2 و 20843.65) دیگر هماهنگ نبودند. حالا مستقیماً از همان ثابت‌های
-        # public-export-شده‌ی state_builder.py استفاده می‌شود تا reward و state
-        # همیشه از یک مقیاس واحد استفاده کنند و دوباره از هم جدا نیفتند.
+ 
         norm_rt = min(g["avg_response_time_recent"] / NORM_RESPONSE_TIME_SEC, 2.0)
         norm_energy = min(g["energy_recent_joule"] / NORM_ENERGY_JOULE, 2.0)
-        norm_lb = min(load_cv, 2.0)
-        # *** رفع مشکل غالب‌شدن reward توسط جریمه‌ی رد (نگاه کنید CHANGELOG بالا):
-        # قبلاً این جمله نرمال نبود و می‌توانست ۵-۱۵ برابر بقیه‌ی اجزا شود.
+        norm_lb = min(load_cv, 2.0) 
         norm_rejected = min(g["num_rejected_recent"] / _NORM_REJECTED_PER_TICK, 2.0)
   
         
@@ -201,9 +113,7 @@ class EdgeResourceEnv(gym.Env):
                    w["w4_load_balance"] * norm_lb +
                    w["w5_rejected"] * norm_rejected)
         penalty += CFG.ppo_penalty_per_action * n_actions_applied
-
-        # *** بازبینی ۴: ثبت اجزای وزن‌دار (سهم واقعی هرکدام در penalty نهایی)
-        # برای لاگ جداگانه - نگاه کنید __init__ برای دلیل.
+ 
         self._last_reward_components = {
             "response_time": w["w1_response_time"] * norm_rt,
             "deadline": w["w2_deadline"] * avg_dv_rate,
@@ -215,43 +125,7 @@ class EdgeResourceEnv(gym.Env):
         return -float(penalty) 
 
     # ------------------------------------------------------------------
-    def action_masks(self) -> np.ndarray:
-        """اینترفیس مورد انتظار sb3_contrib.common.wrappers.ActionMasker /
-        MaskableMultiDiscrete: یک آرایه‌ی بولی مسطح به طول sum(nvec).
-
-        *** رفع باگ عدم‌تطابق mask/اجرای واقعی (قدیمی): قبلاً can_up فقط
-        can_host() (ظرفیت خام، بدون چک state) را می‌سنجید، در حالی‌که
-        select_placement_server واقعی فقط سرورهای ACTIVE را کاندید می‌کند.
-        همچنین can_down از n_replicas (شامل STARTING) به n_ready_replicas
-        تغییر کرد چون اجرای واقعی SCALE_DOWN فقط رپلیکاهای READY را می‌شمارد.
-
-        *** رفع باگ دوم (بازبینی): mask تا اینجا هنوز هیچ‌کدام از گیت‌های
-        anti-flapping واقعی simulator/engine.py را نمی‌سنجید - یعنی عامل
-        می‌توانست SCALE_UP/DOWN یا TURN_ON/OFF‌ای را "مجاز" ببیند که
-        _apply_scale_decision/_apply_provisioning با skip_reason="cooldown"،
-        "no_mature_replica"، "last_active_server" یا "min_active_duration"
-        بی‌صدا رد می‌کرد - یک اکشن بدون اثر واقعی که فقط جریمه می‌گرفت
-        (سیگنال یادگیری نویزی). حالا این گیت‌های *مکانیکی* (نه گیت‌های
-        "sustained overload/underload" که عمداً mask نمی‌شوند، چون آن‌ها
-        سیگنال معناداری درباره‌ی زمان‌بندی/پیش‌بینی می‌دهند - نگاه کنید
-        analyze_decision_quality.py برای اهمیت رفتار anticipatory) از
-        فیلدهای جدید snapshot (simulator/engine.py:_build_metrics_snapshot)
-        خوانده می‌شوند.
-        """
-        # *** رفع باگ ظریف (بازبینی - staleness یک‌تیکی مخصوص حلقه‌ی آموزش):
-        # snapshotای که engine.step() برمی‌گرداند، در *ابتدای* همان تیک (قبل
-        # از اعمال اکشن‌های همان تیک) ساخته می‌شود (نگاه کنید
-        # simulator/engine.py:_handle_decision_tick) - یعنی وضعیت cooldown
-        # داخلش هنوز اثر اکشنِ *همین* تیک را نشان نمی‌دهد. در حلقه‌ی gym
-        # (reset/step)، همین snapshot برای انتخاب اکشن *تیک بعدی* مصرف
-        # می‌شود - پس اگر از مقدار baked-in خودِ snapshot استفاده کنیم، اثر
-        # cooldown یک تیک دیرتر از موعد واقعی در mask دیده می‌شود (یک تیک
-        # کامل که عامل می‌تواند دوباره همان سرویس/سرور را انتخاب کند در
-        # حالی‌که engine واقعی آن را با cooldown رد خواهد کرد). چون این کلاس
-        # به self.engine دسترسی مستقیم دارد (خلاف ppo_algorithm.py که فقط
-        # snapshot را از رابط AlgorithmBase می‌گیرد و این مشکل را ندارد، چون
-        # همان snapshot را در *همان* تیک مصرف می‌کند)، این‌جا state زنده‌ی
-        # موتور مستقیماً می‌خوانیم - نه کپی باخته‌شده‌ی snapshot.
+    def action_masks(self) -> np.ndarray: 
         masks = []
         now = self.engine.now
         for sid in _SERVICE_IDS:
@@ -274,22 +148,13 @@ class EdgeResourceEnv(gym.Env):
         return np.array(masks, dtype=bool)
 
     def _any_server_can_host(self, service_id: int) -> bool:
-        cpu = CFG.services_info[service_id]["resource_mips"]
-        # *** فقط سرور ACTIVE می‌تواند واقعاً میزبان replica جدید شود -
-        # هماهنگ با select_placement_server در _MinimalSharedAlgorithm/
-        # سایر الگوریتم‌ها که همگی state == ACTIVE را شرط می‌گذارند.
+        cpu = CFG.services_info[service_id]["resource_mips"] 
         return any(s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)
                    for s in self.engine.servers.values())
 
 
 
-class _MinimalSharedAlgorithm:
-    """
-    پیاده‌سازی حداقلی فقط برای initial_placement/select_replica (که طبق سند
-    بین همه‌ی الگوریتم‌ها مشترک است - AlgorithmBase پیش‌فرض دارد). متدهای
-    scale_decision/provision_decision/... اینجا صدا زده نمی‌شوند چون
-    EdgeResourceEnv مستقیماً external_actions به engine.step() می‌دهد.
-    """
+class _MinimalSharedAlgorithm: 
     def __init__(self):
         from algorithms.base import AlgorithmBase
 
@@ -302,8 +167,7 @@ class _MinimalSharedAlgorithm:
             def provision_decision(self, *a, **k):
                 raise NotImplementedError
 
-            def select_placement_server(self, service_id, servers):
-                """بخش ۱۱.۳: «انتخاب سرور مقصد با بیشترین ظرفیت آزاد» - قانون مشترک."""
+            def select_placement_server(self, service_id, servers): 
                 from common.models import ServerState
                 from common.config import CFG as _CFG
                 cpu = _CFG.services_info[service_id]["resource_mips"]
@@ -313,17 +177,7 @@ class _MinimalSharedAlgorithm:
                     return None
                 return max(candidates, key=lambda s: s.free_capacity()).id
 
-            def migration_decision(self, draining_server, servers):
-                """
-                *** رفع ناهماهنگی مهم: قبلاً اینجا [] برمی‌گشت (بدون migration
-                واقعی)، در حالی‌که در PPOAlgorithm (زمان inference/ارزیابی)
-                از منطق واقعی GreedyAlgorithm استفاده می‌شد. این یعنی عامل در
-                آموزش یاد می‌گرفت TURN_OFF روی سروری با سرویس تک‌رپلیکا «امن»
-                است (چون drain بدون migration خودکار لغو می‌شد - نگاه کنید
-                simulator/engine.py:_start_server_drain)، ولی موقع ارزیابی
-                واقعی همان اکشن رفتار متفاوتی داشت. حالا هر دو از همان منطق
-                (GreedyAlgorithm.migration_decision) استفاده می‌کنند.
-                """
+            def migration_decision(self, draining_server, servers): 
                 from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
                 return GreedyAlgorithm().migration_decision(draining_server, servers)
 

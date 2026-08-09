@@ -1,6 +1,5 @@
 """
 common/models.py
-موجودیت‌های اصلی دامنه، طبق بخش ۲ سند معماری.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ class RequestStatus(Enum):
 
 @dataclass
 class Replica:
-    """بخش ۲.۲: نمونه‌ی یک سرویس روی یک سرور."""
     service_id: int
     server_id: int
     queue_len: int
@@ -43,39 +41,20 @@ class Replica:
     ready_since: Optional[float] = None
     drain_started_at: Optional[float] = None
 
-    # --- وضعیت صف FIFO واقعی (M/M/1-like؛ سرویس تک‌سرور، زمان سرویس ثابت) ---
-    available_at: float = 0.0            # زمانی که رپلیکا از پردازش فعلی آزاد می‌شود
-    departures: deque = field(default_factory=deque)  # زمان اتمام درخواست‌های در حال حاضر در سیستم (صف+سرویس)
+    available_at: float = 0.0           
+    departures: deque = field(default_factory=deque)  
 
     def is_selectable(self) -> bool:
         return self.state == ReplicaState.READY
 
     def queue_occupancy(self, now: float) -> int:
-        """تعداد درخواست‌های فعلاً در سیستم (در صف + در حال پردازش) در لحظه‌ی now."""
+        
         while self.departures and self.departures[0] <= now:
             self.departures.popleft()
         return len(self.departures)
 
     def try_admit(self, arrival_time: float, cold_start_extra: float = 0.0):
-        """
-        تلاش برای پذیرش یک درخواست در صف FIFO این رپلیکا.
-        خروجی: None اگر صف پر بود (رد شود)، وگرنه dict شامل
-        queue_enter_time, service_start_time, service_end_time, wait_time_sec.
-
-        *** تصمیم طراحی صریح (بخش ۲.۵ سند): cold_start_extra مستقیماً به
-        service_time اضافه می‌شود، یعنی self.available_at هم به همان اندازه
-        عقب می‌افتد. این یعنی جریمه‌ی cold-start فقط روی response_time
-        همین درخواست اثر نمی‌گذارد، بلکه wait_time تمام درخواست‌های بعدیِ
-        همین replica در صف را هم افزایش می‌دهد (اثر زنجیره‌ای)، و چون
-        instantaneous_utilization بر پایه‌ی is_idle/departures محاسبه
-        می‌شود، این مدت اضافه در محاسبه‌ی انرژی (busy تا مدت طولانی‌تر) و
-        reward PPO هم اثر غیرمستقیم دارد.
-        این عمداً واقع‌گرایانه نگه داشته شده (یک replica در حال cold-start
-        واقعاً کندتر است، نه فقط دیرتر پاسخ می‌دهد)؛ جداکردن این دو (فقط
-        اثر روی response_time گزارش‌شده، بدون تأخیر واقعی در available_at)
-        نیازمند حسابداری جدا برای departures/queue_occupancy می‌شد که
-        ریسک ناهماهنگی جدید بین "اشغال صف" و "زمان واقعی پاسخ" داشت.
-        """
+       
         occ = self.queue_occupancy(arrival_time)
         if occ >= self.queue_len:
             return None
@@ -97,19 +76,18 @@ class Replica:
 
 @dataclass
 class Server:
-    """بخش ۲.۱: سرور فیزیکی (worker node)."""
     id: int
     profile: str
     lat: float
     long: float
-    capacity: int  # = capacity_mips (MIPS) — طبق SERVER_PROFILES: 3000/10000/30000    
+    capacity: int 
     p_idle: float
     p_max: float
     state: ServerState = ServerState.OFF
-    hosted_replicas: Dict[int, Replica] = field(default_factory=dict)  # service_id -> Replica
+    hosted_replicas: Dict[int, Replica] = field(default_factory=dict) 
     boot_started_at: Optional[float] = None
     drain_started_at: Optional[float] = None
-    last_transition_time: float = -1e18  # برای cooldown/anti-flapping
+    last_transition_time: float = -1e18 
     cumulative_energy_joule: float = 0.0
     cumulative_busy_cpu_seconds: float = 0.0  
     num_boots: int = 0
@@ -117,7 +95,7 @@ class Server:
 
 
     def used_cpu(self) -> int:
-        """مجموع resource_mips همه‌ی رپلیکاهای مستقر (READY یا STARTING یا DRAINING - همه رزرو ظرفیت دارند)."""
+        
         return sum(self._cpu_of(r) for r in self.hosted_replicas.values())
 
     def _cpu_of(self, replica: Replica) -> int:
@@ -129,11 +107,7 @@ class Server:
 
 
     def can_host(self, service_id: int, cpu_demand: int) -> bool:
-        """قید سخت: max 1 replica per service + sum(resource_mips) <= capacity_mips.
-        
-        Args:
-            cpu_demand: میزان resource_mips مورد نیاز (واحد MIPS)
-        """
+   
         if service_id in self.hosted_replicas:
             return False
         return self.free_capacity() >= cpu_demand  # free_capacity() → MIPS
@@ -162,7 +136,6 @@ class Server:
 
 @dataclass
 class Request:
-    """بخش ۲.۳."""
     id: int
     bts_lat: float
     bts_long: float
@@ -172,11 +145,7 @@ class Request:
     queue_enter_time: Optional[float] = None
     service_start_time: Optional[float] = None
     service_end_time: Optional[float] = None
-    network_delay_ms: float = 0.0
-    # *** بخش جدید (اصلاح معماری دیسپچر): تأخیر رفت‌وبرگشت مرحله‌ی مسیریابی
-    # (BTS<->دیسپچر، قبل از این‌که سرور مقصد اصلاً معلوم شود) - جدا از
-    # network_delay_ms که فقط تأخیر یک‌طرفه‌ی مرحله‌ی داده‌ی واقعی
-    # (BTS<->سرور) است. response_time_sec هر دو را جمع می‌زند.
+    network_delay_ms: float = 0.0    
     routing_delay_sec: float = 0.0
     wait_time_sec: float = 0.0
     response_time_sec: float = 0.0

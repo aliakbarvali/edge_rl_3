@@ -1,54 +1,7 @@
 """
 algorithms/voila/voila_algorithm.py
 
-پیاده‌سازی فاز ۲: الگوریتم مبتنی بر فلسفه‌ی مقاله‌ی Voila (بخش ۱ تا ۷ آن)،
-تطبیق‌داده‌شده با معماری این پروژه:
 
-    - initial_placement/select_replica: از پیاده‌سازی مشترک AlgorithmBase
-      استفاده می‌شود (خودِ سند در بخش ۴/۵ این دو را بین همه‌ی الگوریتم‌ها
-      مشترک تعریف کرده - دقیقاً همان Procedure 3 مقاله).
-    - تفاوت اصلی Voila با Greedy اینجاست که placement/migration را بر پایه‌ی
-      *مرکز ثقل تقاضای واقعی* هر سرویس (demand_centroid، میانگین متحرک
-      موقعیت جغرافیایی درخواست‌های اخیر - نگاه کنید به
-      simulator/engine.py:_build_metrics_snapshot) انتخاب می‌کند، نه صرفاً
-      نزدیک‌ترین به مرکز سرورهای فعال (که Greedy انجام می‌دهد).
-    - scale_decision مشابه Procedure 4 مقاله: ترکیب نقض ظرفیت (اشغال صف) و
-      نقض دسترس‌پذیری (rejection_rate) به‌عنوان معیار E سرویس؛ scale-down
-      فقط بعد از چند تیک متوالی بدون نقض (safety/patience - بخش V-C مقاله).
-
-*** پچ (بازبینی): نسخه‌ی قبلی این فایل نقض deadline (`deadline_violation_rate`)
-را در محاسبه‌ی `violation` نادیده می‌گرفت - فقط `occ_ratio` (نقض ظرفیت) و
-`rejection_rate` چک می‌شدند. این یعنی یک سرویس که به‌خاطر *فاصله‌ی جغرافیایی*
-(نه ازدحام صف) دائم deadline نقض می‌کرد - یعنی دقیقاً نقض proximity طبق
-Procedure 4 مقاله (Vlo) - می‌توانست occ_ratio پایین داشته باشد،
-good_streak بالا برود، و بعد از SCALE_DOWN_PATIENCE_TICKS واقعاً
-SCALE_DOWN بخورد؛ درست برعکسِ آنچه سند می‌خواهد (Vlo هم باید نقض حساب
-شود، نه فقط Vco). حالا `deadline_violation_rate > 0` هم بخشی از تشخیص
-نقض است؛ چون این‌جا AlgorithmBase اکشن مستقیم "Replace" ندارد (برای اصلاح
-tail-latency بدون افزودن replica جدید - دقیقاً Procedure 5 مقاله)، در حالت
-نقض proximity-محض (occ_ratio پایین ولی deadline_violation_rate>0) به‌جای
-SCALE_UP بی‌مورد فقط جلوی SCALE_DOWN اشتباه گرفته می‌شود (NO_CHANGE)؛
-اصلاح واقعی مکان از طریق select_placement_server/migration_decision که هر
-دو از قبل proximity-aware بودند به‌تدریج اتفاق می‌افتد.
-
-*** نکته‌ی طراحی: چون select_placement_server(service_id, servers) در
-اینترفیس AlgorithmBase به metrics_snapshot دسترسی ندارد ولی Voila برای
-انتخاب مکان به demand_centroid نیاز دارد، scale_decision (که همیشه بلافاصله
-قبل از select_placement_server برای همان سرویس در همان تیک صدا زده می‌شود -
-نگاه کنید به simulator/engine.py:_apply_scale_decision) آخرین snapshot را
-کش می‌کند.
-
-*** انحراف عمدی از بخش ۵ سند (مستند، با تأیید صریح): سند صراحتاً می‌گوید
-routing/instance-selection بین هر ۴ الگوریتم مشترک و صرفاً بر پایه‌ی فاصله‌ی
-جغرافیایی *واقعی* (oracle) است، نه latency واقعاً اندازه‌گیری‌شده مثل مقاله‌ی
-اصلی VOILA (که از Vivaldi/Serf استفاده می‌کند). طبق درخواست صریح برای
-مقایسه‌ی وفادارتر به مقاله، *فقط* VoilaAlgorithm.select_replica اینجا override
-شده تا به‌جای فاصله‌ی جغرافیایی واقعی، از یک سیستم مختصات Vivaldi واقعی
-(common/network_coordinates.py) استفاده کند - یعنی هیچ دانش پیشینی از موقعیت
-BTS ندارد و فقط از طریق RTT مشاهده‌شده‌ی درخواست‌های قبلی یاد می‌گیرد.
-Greedy/HPA/PPO دست‌نخورده می‌مانند و همچنان از AlgorithmBase.select_replica
-(oracle) استفاده می‌کنند - این عمداً یک مقایسه‌ی نامتقارن‌تر ولی وفادارتر به
-مقاله‌ی هرکدام ایجاد می‌کند: Voila دیگر oracle نیست.
 """
  
 from __future__ import annotations
@@ -68,14 +21,6 @@ class VoilaAlgorithm(AlgorithmBase):
    
     SCALE_DOWN_PATIENCE_TICKS = 3
     PROXIMITY_SUSTAIN_TICKS = 2
-    # *** رفع باگ: مقدار قبلی (۳) دقیقاً برابر SCALE_DOWN_PATIENCE_TICKS بود.
-    # چون good_streak (که patience را می‌سنجد) و proximity_recent (که این
-    # محافظت را می‌سنجد) هر دو هم‌زمان و با نرخ یکسان (۱ واحد در هر تیک بدون
-    # violation) تغییر می‌کنند، محافظت دقیقاً همان تیکی صفر می‌شد که patience
-    # هم برآورده می‌شد - یعنی محافظت عملاً صفر تیک اضافه فراتر از آنچه
-    # patience به‌تنهایی نیاز داشت ایجاد می‌کرد. برای محافظت واقعی، این عدد
-    # باید اکیداً بزرگ‌تر از SCALE_DOWN_PATIENCE_TICKS باشد؛ ۲ تیک اضافه
-    # (SUSTAIN_TICKS به‌عنوان مقیاس مرجع) به‌عنوان مقدار معقول انتخاب شد.
     PROXIMITY_PROTECTION_TICKS = 5
 
     def __init__(self):
@@ -85,10 +30,6 @@ class VoilaAlgorithm(AlgorithmBase):
         self._proximity_violation_streak: Dict[int, int] = {} 
         self._proximity_recent: Dict[int, int] = {}
 
-        # *** lazy: چون ساخت VivaldiNetwork نیاز به دیکشنری servers دارد که
-        # در __init__ الگوریتم در دسترس نیست (VoilaAlgorithm() بدون آرگومان
-        # ساخته می‌شود - نگاه کنید run.py/compare_runs.py)، اولین بار که
-        # select_replica صدا زده شود ساخته می‌شود.
         self._vivaldi: Optional[VivaldiNetwork] = None
 
     def scale_decision(self, service_id: int, metrics_snapshot: dict) -> ScaleAction:
@@ -96,10 +37,7 @@ class VoilaAlgorithm(AlgorithmBase):
         sv = metrics_snapshot["services"][service_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
-        # Vco (Procedure 4): نقض ظرفیت واقعی
         capacity_violation = occ_ratio > self.OCC_UP_THRESHOLD or sv["rejection_rate"] > 0.0
-        # *** Vlo واقعی حالا از proximity_violation_rate (RTT>l0 خالص) می‌آید،
-        # نه از deadline_violation_rate که پروکسی نویزی بود.
         proximity_violation = (not capacity_violation) and sv["proximity_violation_rate"] > 0.0
         
         if capacity_violation:
@@ -153,8 +91,6 @@ class VoilaAlgorithm(AlgorithmBase):
                 break
 
         if chosen is not None:
-            # *** بازخورد پس از انتخاب: تنها اینجا RTT واقعی (نه تخمینی) در
-            # دسترس است - چون فقط برای رپلیکای واقعاً انتخاب‌شده معنادار است.
             true_dist_km = haversine_km(request.bts_lat, request.bts_long,
                                          servers[chosen.server_id].lat, servers[chosen.server_id].long)
             true_rtt_ms = 2 * network_delay_ms(true_dist_km, CFG.base_latency_ms, CFG.k_ms_per_km)
@@ -190,23 +126,11 @@ class VoilaAlgorithm(AlgorithmBase):
     # ------------------------------------------------------------------
     def provision_decision(self, servers: Dict[int, Server], metrics_snapshot: dict,
                             now: float) -> ProvisionAction:
-        # *** رفع باگ staleness: قبلاً _last_snapshot فقط داخل scale_decision
-        # آپدیت می‌شد. ولی simulator/engine.py:_handle_decision_tick همیشه
-        # provision_decision (و در صورت TURN_OFF، migration_decision از طریق
-        # _start_server_drain) را *قبل* از حلقه‌ی scale_decision هر سرویس صدا
-        # می‌زند. یعنی اگر همین تیک TURN_OFF رخ دهد، migration_decision با
-        # demand_centroid تیک *قبلی* (نه تیک جاری) صدا زده می‌شد - چون
-        # scale_decision این تیک هنوز اجرا نشده بود. حالا metrics_snapshot
-        # همین‌جا هم کش می‌شود تا migration_decision/select_placement_server
-        # همیشه از آخرین snapshot واقعی استفاده کنند.
         self._last_snapshot = metrics_snapshot
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
        
-        # *** هماهنگ با threshold داخلی خودِ Voila (OCC_UP_THRESHOLD=0.68)،
-        # نه ۰.۷ هاردکد Greedy - تا سیگنال starvation دقیقاً همان لحظه‌ای
-        # trigger شود که scale_decision خودِ Voila هم نیاز را تشخیص می‌دهد.
         starved_services = self._capacity_starved_services(metrics_snapshot, servers,
                                                              occ_threshold=self.OCC_UP_THRESHOLD)
         if overloaded or starved_services:
@@ -267,19 +191,7 @@ class VoilaAlgorithm(AlgorithmBase):
    
             
     def select_scale_down_victim(self, service_id, ready_replicas, servers, now, occupancy_fn=None):
-        """
-        *** رفع باگ مسدودکننده (بازبینی): این override قبلاً پارامتر
-        occupancy_fn را نمی‌پذیرفت، در حالی‌که هم موتور شبیه‌ساز (احتمالاً
-        در آینده) و هم realtime_dispatcher.py (فاز ۳) آن را به‌صورت keyword
-        پاس می‌دهند - در حالت k8s این باعث TypeError واقعی و کرش کامل
-        decision_loop روی اولین SCALE_DOWN می‌شد.
-        علاوه‌براین، فراخوانی مستقیم r.queue_occupancy(now) روی آبجکت سایه‌ی
-        Replica در فاز ۳ همیشه ۰ برمی‌گرداند (چون try_admit/departures آنجا
-        هرگز به‌روزرسانی نمی‌شود - اشغال واقعی صف فقط در Redis نگه داشته
-        می‌شود). حالا وقتی occupancy_fn داده شود (حالت k8s)، همان تابع
-        استفاده می‌شود؛ در حالت شبیه‌سازی (occupancy_fn=None) رفتار قبلی
-        (r.queue_occupancy(now) مستقیم) حفظ شده.
-        """
+
         occ = occupancy_fn or (lambda r: r.queue_occupancy(now))
         centroid = None
         if self._last_snapshot is not None:
