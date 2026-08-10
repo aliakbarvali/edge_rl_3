@@ -23,6 +23,7 @@ WORKER_IMAGE = "192.168.1.30:5000/edge-worker:latest"
 NODE_LABEL_KEY = "edge-server-id"
 
 
+
 def resource_mips_to_millicpu(resource_mips: int, server_profile: dict) -> int:
  
     return round(resource_mips / server_profile["mips_per_core"] * 1000)

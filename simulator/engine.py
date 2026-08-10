@@ -319,9 +319,10 @@ class SimulationEngine:
 
         self._recent_positions[req.service_id].append((req.bts_lat, req.bts_long))
         self._log("request_arrived", request_id=req.id, service_id=req.service_id)
-
-        dispatcher_lat = (CFG.lat_min + CFG.lat_max) / 2
-        dispatcher_lon = (CFG.lon_min + CFG.lon_max) / 2
+ 
+        dispatcher_lat = sum(s.lat for s in self.servers.values()) / len(self.servers)   # ≈ 31.185
+        dispatcher_lon = sum(s.long for s in self.servers.values()) / len(self.servers)  # ≈ 121.431
+ 
         distance_to_dispatcher_km = haversine_km(req.bts_lat, req.bts_long, 
                                                   dispatcher_lat, dispatcher_lon)
         # *** رفت‌وبرگشت واقعی: BTS باید منتظر پاسخ دیسپچر (آدرس سرور مقصد)
@@ -383,9 +384,12 @@ class SimulationEngine:
             server_id=server.id, distance_km=distance_km, network_delay_ms=delay_ms,
             routing_delay_sec=req.routing_delay_sec)
         cold_start_extra = 0.0
-        if chosen.ready_since is not None and (self.now - chosen.ready_since) <= CFG.cold_start_window_sec:
+        
+        from common.config import compute_cold_start_penalty_sec,compute_cold_start_window_sec
+        window_sec = compute_cold_start_window_sec(req.service_id, CFG.server_profiles[server.profile]["mips_per_core"])
+        
+        if chosen.ready_since is not None and (self.now - chosen.ready_since) <= window_sec:
     
-            from common.config import compute_cold_start_penalty_sec
             cold_start_extra = compute_cold_start_penalty_sec(
                 req.service_id, CFG.server_profiles[server.profile]["mips_per_core"])
         admit = chosen.try_admit(self.now, cold_start_extra=cold_start_extra)
@@ -549,11 +553,11 @@ class SimulationEngine:
             elif not turn_on_necessary:
                 skip_reason = "overload_not_sustained"
             else:
+                necessary_now = self._was_turn_on_necessary_audit(snapshot)  
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
                 applied = True
-                self.metrics.record_decision_correctness(
-                    "TURN_ON", self._was_turn_on_necessary_audit(snapshot))
+                self.metrics.record_decision_correctness("TURN_ON", necessary_now)                
         elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
@@ -749,6 +753,10 @@ class SimulationEngine:
         start_time = float(self.events_df.global_start_sec.min()) if len(self.events_df) else 0.0
         max_time = float(self.events_df.global_start_sec.max()) if len(self.events_df) else 0.0
         self.now = start_time
+            
+        self._energy_last_update = {sid: start_time for sid in self.servers} 
+        self._util_window_start_time = start_time 
+        
         self._initial_placement()
         self._push(start_time, EventType.DECISION_TICK) 
         self._cutoff = (max_time + 2 * CFG.dispatch_overhead_ms / 1000.0

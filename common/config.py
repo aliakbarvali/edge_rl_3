@@ -35,21 +35,21 @@ for _sid, _info in SERVER_INFO.items():
     _info["profile"] = _CAPACITY_TO_PROFILE[_info["capacity_mips"]]
 N_SERVERS = len(SERVER_INFO)
 SERVICES_INFO: Dict[int, dict] = {
-    1:  {"resource_mips": 4800, "task_length_mi": 30,     "queue_len": 1,  "deadline": 0.010, "memory": "32Mi"},
-    2:  {"resource_mips": 5200, "task_length_mi": 50,     "queue_len": 2,  "deadline": 0.015, "memory": "40Mi"},
-    3:  {"resource_mips": 5200, "task_length_mi": 100,    "queue_len": 2,  "deadline": 0.030, "memory": "48Mi"},
-    4:  {"resource_mips": 5400, "task_length_mi": 140,    "queue_len": 3,  "deadline": 0.040, "memory": "56Mi"},
-    5:  {"resource_mips": 4900, "task_length_mi": 250,    "queue_len": 3,  "deadline": 0.080, "memory": "64Mi"},
-    6:  {"resource_mips": 5400, "task_length_mi": 350,    "queue_len": 4,  "deadline": 0.100, "memory": "80Mi"},
-    7:  {"resource_mips": 5800, "task_length_mi": 450,    "queue_len": 4,  "deadline": 0.120, "memory": "96Mi"},
-    8:  {"resource_mips": 5400, "task_length_mi": 700,    "queue_len": 5,  "deadline": 0.200, "memory": "112Mi"},
-    9:  {"resource_mips": 5600, "task_length_mi": 900,    "queue_len": 5,  "deadline": 0.250, "memory": "128Mi"},
-    10: {"resource_mips": 5700, "task_length_mi": 1100,   "queue_len": 6,  "deadline": 0.300, "memory": "144Mi"},
-    11: {"resource_mips": 5400, "task_length_mi": 3500,   "queue_len": 8,  "deadline": 1.0,   "memory": "192Mi"},
-    12: {"resource_mips": 5400, "task_length_mi": 7000,   "queue_len": 10, "deadline": 2.0,   "memory": "256Mi"},
-    13: {"resource_mips": 5200, "task_length_mi": 10000,  "queue_len": 12, "deadline": 3.0,   "memory": "320Mi"},
-    14: {"resource_mips": 5200, "task_length_mi": 50000,  "queue_len": 15, "deadline": 15.0,  "memory": "512Mi"},
-    15: {"resource_mips": 5800, "task_length_mi": 150000, "queue_len": 20, "deadline": 40.0,  "memory": "768Mi"},
+    1 : {"resource_mips": 4800, "task_length_mi": 55,     "queue_len": 1,  "deadline": 0.030, "memory": "32Mi"},   # 5QI=84  Intelligent Transport Systems (V2X پایه)
+    2 : {"resource_mips": 4900, "task_length_mi": 110,    "queue_len": 2,  "deadline": 0.050, "memory": "48Mi"},   # 5QI=3   Real-Time Gaming / V2X Messages
+    3 : {"resource_mips": 5000, "task_length_mi": 140,    "queue_len": 2,  "deadline": 0.060, "memory": "48Mi"},   # 5QI=69  Mission-Critical Delay-Sensitive Signalling
+    4 : {"resource_mips": 5100, "task_length_mi": 190,    "queue_len": 3,  "deadline": 0.075, "memory": "56Mi"},   # 5QI=65  Mission-Critical PTT Voice
+    5 : {"resource_mips": 5200, "task_length_mi": 260,    "queue_len": 3,  "deadline": 0.100, "memory": "64Mi"},   # 5QI=7   Voice / Live Video / Interactive Gaming
+    6 : {"resource_mips": 5300, "task_length_mi": 310,    "queue_len": 3,  "deadline": 0.100, "memory": "72Mi"},   # 5QI=66  Non-Mission-Critical PTT Voice
+    7 : {"resource_mips": 5400, "task_length_mi": 420,    "queue_len": 4,  "deadline": 0.150, "memory": "96Mi"},   # 5QI=2   Conversational Video (Live Streaming)
+    8 : {"resource_mips": 5400, "task_length_mi": 570,    "queue_len": 5,  "deadline": 0.200, "memory": "128Mi"},  # 5QI=70  Mission-Critical Data
+    9 : {"resource_mips": 5500, "task_length_mi": 880,    "queue_len": 6,  "deadline": 0.300, "memory": "160Mi"},  # 5QI=8   Video Buffered Streaming (TCP-based)
+    10: {"resource_mips": 5600, "task_length_mi": 1050,   "queue_len": 6,  "deadline": 0.300, "memory": "176Mi"},  # 5QI=9   Video Buffered Streaming / Default Bearer
+    11: {"resource_mips": 5400, "task_length_mi": 3500,   "queue_len": 8,  "deadline": 1.0,   "memory": "192Mi"},  # فراتر از 5QI رسمی — IoT Batch Telemetry Aggregation
+    12: {"resource_mips": 5400, "task_length_mi": 7000,   "queue_len": 10, "deadline": 2.0,   "memory": "256Mi"},  # فراتر از 5QI رسمی — Video Analytics / Object Detection Offload
+    13: {"resource_mips": 5200, "task_length_mi": 10000,  "queue_len": 12, "deadline": 3.0,   "memory": "320Mi"},  # فراتر از 5QI رسمی — ML Inference Batch
+    14: {"resource_mips": 5200, "task_length_mi": 50500,  "queue_len": 15, "deadline": 15.0,  "memory": "512Mi"},  # فراتر از 5QI رسمی — Large-Scale Data Aggregation
+    15: {"resource_mips": 5800, "task_length_mi": 151000, "queue_len": 20, "deadline": 40.0,  "memory": "768Mi"},  # فراتر از 5QI رسمی — Heavy Batch Analytics / Retraining Offload
 }
 N_SERVICES = len(SERVICES_INFO)
 
@@ -80,7 +80,13 @@ def compute_exec_time_sec(service_id: int, host_mips_per_core: float) -> float:
 COLD_START_PENALTY_FRACTION = 0.20  
 COLD_START_PENALTY_CAP_SEC  = 0.500  
 COLD_START_WINDOW_SEC       = 10.0   
- 
+
+COLD_START_WINDOW_RATIO = 3.0        # چند برابر exec_time این سرویس روی این سرور
+COLD_START_WINDOW_CAP_SEC = 10.0   
+
+def compute_cold_start_window_sec(service_id: int, host_mips_per_core: float) -> float:
+    et = compute_exec_time_sec(service_id, host_mips_per_core)
+    return min(et * COLD_START_WINDOW_RATIO, COLD_START_WINDOW_CAP_SEC) 
 
 def compute_cold_start_penalty_sec(service_id: int, host_mips_per_core: float) -> float:
  
@@ -95,6 +101,17 @@ def compute_cold_start_penalty_sec(service_id: int, host_mips_per_core: float) -
     return min(penalty, COLD_START_PENALTY_CAP_SEC)
 
 
+def is_sla_feasible(service_id: int, server_lat: float, server_long: float,
+                     server_mips_per_core: float, bts_lat: float = None, bts_long: float = None) -> bool:
+    """
+    حداقل زمان پاسخ ممکن (بدون صف، در بهترین حالت مسیریابی) رو با deadline مقایسه می‌کند.
+    اگر bts مشخص نباشه، محافظه‌کارانه بدترین فاصله‌ی ممکن در محدوده‌ی جغرافیایی رو فرض می‌کند.
+    """
+    svc = SERVICES_INFO[service_id]
+    et = compute_exec_time_sec(service_id, server_mips_per_core)
+    # حداقل overhead شبکه (بدون فاصله) + dispatcher hop
+    min_overhead_sec = 2 * BASE_LATENCY_MS / 1000.0 + 2 * DISPATCH_OVERHEAD_MS / 1000.0
+    return (min_overhead_sec + et) <= svc["deadline"]
 
 import os as _os
 
@@ -147,7 +164,7 @@ PPO_REWARD_WEIGHTS = {
     "w4_load_balance": 0.12,
     "w5_rejected": 0.25,
 }
-PPO_PENALTY_PER_ACTION = 0.012
+PPO_PENALTY_PER_ACTION = 0.02
 
 SEED = int(_os.environ.get("EOTCH_SEED", "42"))
 

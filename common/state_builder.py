@@ -13,11 +13,11 @@ STATE_DIM = CFG.n_servers * 6 + CFG.n_services * 6 + 2
 
 _SERVER_STATE_ORDER = [ServerState.OFF, ServerState.BOOTING, ServerState.ACTIVE, ServerState.DRAINING]
  
-_NORM_RESPONSE_TIME_SEC = 2.057    
-                                   
-_NORM_ENERGY_JOULE = 4_524.910     
-                                   
-_NORM_ARRIVAL_RATE = 3.0           
+_NORM_RESPONSE_TIME_SEC = 1.232     
+_NORM_ENERGY_JOULE      = 4431.91   
+_NORM_ARRIVAL_RATE      = 3.0       
+                                     
+                                    
 NORM_RESPONSE_TIME_SEC = _NORM_RESPONSE_TIME_SEC
 NORM_ENERGY_JOULE = _NORM_ENERGY_JOULE
 NORM_ARRIVAL_RATE = _NORM_ARRIVAL_RATE

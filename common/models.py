@@ -106,11 +106,16 @@ class Server:
         return self.capacity - self.used_cpu()
 
 
+
     def can_host(self, service_id: int, cpu_demand: int) -> bool:
-   
+        from common.config import CFG, is_sla_feasible
         if service_id in self.hosted_replicas:
             return False
-        return self.free_capacity() >= cpu_demand  # free_capacity() → MIPS
+        if self.free_capacity() < cpu_demand:
+            return False
+        return is_sla_feasible(service_id, self.lat, self.long,
+                                CFG.server_profiles[self.profile]["mips_per_core"])
+
 
     def in_cooldown(self, now: float, cooldown_sec: float) -> bool:
         return (now - self.last_transition_time) < cooldown_sec
