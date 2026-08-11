@@ -76,7 +76,14 @@ def collect_greedy_demonstrations(events_df, max_ticks: int | None = None):
         if done:
             break
         obs_list.append(build_state_vector(snapshot, engine.servers))
-        act_list.append(_encode_action(engine._last_tick_decisions))
+        # *** رفع BUG-B: از _last_tick_applied_actions استفاده می‌شود (نه
+        # _last_tick_decisions که صرفاً پیشنهاد خام Greedy را قبل از بررسی
+        # گیت‌های cooldown/ظرفیت/migration نگه می‌دارد). اگر اینجا از
+        # پیشنهاد خام استفاده شود، وقتی مثلاً Greedy یک SCALE_UP پیشنهاد
+        # می‌دهد که به‌خاطر cooldown واقعاً اعمال نمی‌شود، BC یاد می‌گیرد در
+        # همان state دوباره SCALE_UP بزند - یعنی از چیزی که معلم *گفت* تقلید
+        # می‌کند، نه از چیزی که معلم *واقعاً انجام داد*.
+        act_list.append(_encode_action(engine._last_tick_applied_actions))
         n += 1
         if max_ticks and n >= max_ticks:
             break

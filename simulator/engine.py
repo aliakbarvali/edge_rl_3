@@ -47,6 +47,15 @@ class SimulationEngine:
         
         self._energy_at_last_tick = 0.0
         self._last_tick_decisions = {"provision": None, "scale": {}}
+        # *** رفع BUG-B: _last_tick_decisions همان چیزی است که الگوریتم
+        # *پیشنهاد* داده (قبل از بررسی گیت‌های cooldown/ظرفیت/...)، نه
+        # چیزی که واقعاً *اعمال* شده. اگر BC warm-start از روی همین دیکشنری
+        # عمل کند، وقتی مثلاً Greedy یک SCALE_UP پیشنهاد می‌دهد که به‌خاطر
+        # cooldown رد می‌شود، مدل یاد می‌گیرد در آن state دقیقاً همان
+        # SCALE_UP (که رد شد) را انجام دهد - یعنی از رفتار واقعی معلم، نه
+        # رفتار پیشنهادی‌اش، تقلید نمی‌کند. این دیکشنری‌ی جدا فقط اکشن‌هایی
+        # را نگه می‌دارد که applied=True شده‌اند (پیش‌فرض NO_CHANGE/None).
+        self._last_tick_applied_actions = {"provision": None, "scale": {}}
 
         self._request_seq = 0
         self._service_demand_centroid: Dict[int, tuple] = {}
@@ -557,7 +566,8 @@ class SimulationEngine:
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
                 applied = True
-                self.metrics.record_decision_correctness("TURN_ON", necessary_now)                
+                self.metrics.record_decision_correctness("TURN_ON", necessary_now)
+                self._last_tick_applied_actions["provision"] = action
         elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
             s = self.servers[action.server_id]
             n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
@@ -578,13 +588,29 @@ class SimulationEngine:
                     applied = True
                     self.metrics.record_decision_correctness(
                         "TURN_OFF", self._was_turn_off_necessary_audit(action.server_id, snapshot))
+                    self._last_tick_applied_actions["provision"] = action
                 else:
                     skip_reason = "migration_incomplete"
 
-        if turn_on_necessary and not (action.action == ProvisionActionType.TURN_ON and applied):
-            self.metrics.record_missed_opportunity("TURN_ON")
+        # *** رفع BUG-G: قبلاً هر دو حالت «الگوریتم اصلاً TURN_ON/OFF لازم
+        # را پیشنهاد نداد» و «الگوریتم پیشنهاد داد ولی یک گیت سیستمی
+        # (cooldown/migration ناقص/...) جلویش را گرفت» هر دو یکسان
+        # missed_opportunity حساب می‌شدند - یعنی این معیار نمی‌توانست ضعف
+        # واقعی الگوریتم را از یک محدودیت سیستمی موقت تفکیک کند. حالا حالت
+        # دوم (پیشنهاد داده شد ولی مسدود شد) جدا در «blocked» ثبت می‌شود.
+        proposed_turn_on = action.action == ProvisionActionType.TURN_ON and action.server_id is not None
+        proposed_turn_off = action.action == ProvisionActionType.TURN_OFF and action.server_id is not None
+
+        if turn_on_necessary and not applied:
+            if proposed_turn_on:
+                self.metrics.record_blocked_opportunity("TURN_ON")
+            else:
+                self.metrics.record_missed_opportunity("TURN_ON")
         if turn_off_opportunity and not (action.action == ProvisionActionType.TURN_OFF and applied):
-            self.metrics.record_missed_opportunity("TURN_OFF")
+            if proposed_turn_off:
+                self.metrics.record_blocked_opportunity("TURN_OFF")
+            else:
+                self.metrics.record_missed_opportunity("TURN_OFF")
 
         self._log("provision_decision", action=action.action.name, server_id=action.server_id,
                   applied=applied, skip_reason=skip_reason,
@@ -659,6 +685,7 @@ class SimulationEngine:
                     self._service_last_scale_up_time[svc_id] = self.now
                     applied = True
                     self.metrics.record_decision_correctness("SCALE_UP", necessary_up)
+                    self._last_tick_applied_actions["scale"][svc_id] = decision
                 else:
                     skip_reason = "placement_failed"
             else:
@@ -678,6 +705,7 @@ class SimulationEngine:
                     self._service_last_scale_time[svc_id] = self.now
                     applied = True
                     self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
+                    self._last_tick_applied_actions["scale"][svc_id] = decision
             else:
                 skip_reason = "only_one_replica_left"
  
@@ -714,6 +742,7 @@ class SimulationEngine:
         snapshot = self._build_metrics_snapshot()
         self._update_sustain_tracking(snapshot)
         self._last_tick_decisions = {"provision": None, "scale": {}}
+        self._last_tick_applied_actions = {"provision": None, "scale": {}}
 
         if external_actions is not None:
             self._apply_provisioning(external_actions["provision"], snapshot)

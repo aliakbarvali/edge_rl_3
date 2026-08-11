@@ -47,6 +47,17 @@ class RealtimeEngine:
         self._tick_rejected = defaultdict(int)
         self._tick_violated = defaultdict(int)  
         self._tick_proximity_violated = defaultdict(int)
+        # *** رفع باگ: قبلاً snapshot["global"]["avg_response_time_recent"] و
+        # ["energy_recent_joule"] در این موتور همیشه هاردکد 0.0 بودند (هیچ‌جا
+        # محاسبه نمی‌شدند) - یعنی دو بعد آخر بردار state (152بعدی) که PPO روی
+        # آن‌ها آموزش دیده، در اجرای واقعی k8s همیشه صفر بودند: یک شکاف
+        # توزیعی sim<->real در دقیقاً همان چیزی که مدل روی آن یاد گرفته.
+        # این بافر مثل _tick_response_times در simulator/engine.py هر تیک
+        # پر و در پایان هر تیک خالی می‌شود (نگاه کنید decision_loop پایین‌تر).
+        self._tick_response_times: List[float] = []
+        # هم‌راستا با simulator/engine.py:_energy_at_last_tick - دلتای انرژی
+        # تجمعی بین دو تیک تصمیم را نگه می‌دارد.
+        self._energy_at_last_tick: float = 0.0
         self._recent_positions: Dict[int, deque] = defaultdict(lambda: deque(maxlen=30))
         self._service_demand_centroid: Dict[int, Optional[Tuple[float, float]]] = {}
         
@@ -291,6 +302,12 @@ class RealtimeEngine:
         snapshot = {"servers": {}, "services": {}, "global": {}}
         now = time.monotonic()
         window_elapsed = now - self._util_window_start_time
+        # *** رفع باگ بحرانی: PPOAlgorithm._build_action_masks (بدون .get،
+        # بی‌قید‌وشرط) این سه کلید را از snapshot["servers"][sid] می‌خواند؛
+        # نبودشان باعث KeyError واقعی در همان تیک تصمیم اول اجرای
+        # `run.py --algorithm ppo --mode k8s` می‌شد (بازتولید و تأیید شد).
+        # همین‌جا هم برای محاسبه‌ی is_last_active_server لازم است.
+        n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
 
         for sid, s in self.servers.items():
             if window_elapsed > 1e-9 and s.capacity > 0:
@@ -301,7 +318,10 @@ class RealtimeEngine:
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
-            } 
+                "provision_cooldown_active": s.in_cooldown(now, CFG.cooldown_sec),
+                "min_active_duration_met": (now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
+            }
         for svc_id in CFG.active_services:
             reps = self.replicas_by_service.get(svc_id, [])
             ready = [r for r in reps if r.state == ReplicaState.READY]
@@ -328,9 +348,27 @@ class RealtimeEngine:
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
+                # *** رفع باگ: بدون این، PPOAlgorithm._build_action_masks با
+                # snapshot["services"][sid].get("scale_cooldown_active", False)
+                # همیشه False می‌گرفت - یعنی ماسک PPO در k8s واقعی هیچ‌وقت
+                # SCALE_UP/DOWN را به‌خاطر cooldown غیرفعال نمی‌کرد (اجرای
+                # واقعی decision_loop جداگانه cooldown را چک می‌کند و اکشن را
+                # بی‌صدا/بدون لاگ رد می‌کند - یعنی مدل مدام اکشن‌هایی
+                # "انتخاب" می‌کرد که دور ریخته می‌شدند، بدون هیچ سرنخ دیباگ).
+                "scale_cooldown_active": (now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec,
             }
-        snapshot["global"] = {"avg_response_time_recent": 0.0, "energy_recent_joule": 0.0,
-                               "num_rejected_recent": sum(self._tick_rejected.values())} 
+
+        # *** رفع باگ: قبلاً همیشه هاردکد 0.0 بود (نگاه کنید __init__ برای
+        # توضیح کامل) - حالا هم‌راستا با simulator/engine.py:_build_metrics_snapshot
+        # از میانگین واقعیِ پنجره‌ی جاری محاسبه می‌شود.
+        current_energy = sum(s.cumulative_energy_joule for s in self.servers.values())
+        snapshot["global"] = {
+            "avg_response_time_recent": (sum(self._tick_response_times) / len(self._tick_response_times))
+                                         if self._tick_response_times else 0.0,
+            "energy_recent_joule": current_energy - self._energy_at_last_tick,
+            "num_rejected_recent": sum(self._tick_rejected.values()),
+        }
+        self._energy_at_last_tick = current_energy
         return snapshot
 
     def _update_sustain_tracking(self, snapshot: dict, now: float):
@@ -380,7 +418,12 @@ class RealtimeEngine:
             if not necessary:
                 continue
             cpu = CFG.services_info[svc_id]["resource_mips"]
-            if not any(s.state == ServerState.ACTIVE and s.can_host(svc_id, cpu)
+            # *** رفع واگرایی sim/real: simulator/engine.py سرورهای BOOTING را
+            # هم "قابل‌اتکا" حساب می‌کند (چون به‌زودی ACTIVE می‌شوند)؛ این
+            # نسخه قبلاً فقط ACTIVE را می‌پذیرفت، یعنی وقتی سروری همین الان
+            # داشت برای همین سرویس بوت می‌شد، سیستم همچنان "starved" تشخیص
+            # می‌داد و می‌توانست TURN_ON اضافه‌ی غیرضروری صادر کند.
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
                        for s in self.servers.values()):
                 return True
         return False
@@ -447,6 +490,7 @@ class RealtimeEngine:
             self._tick_rejected.clear()
             self._tick_violated.clear()
             self._tick_proximity_violated.clear()
+            self._tick_response_times.clear()
 
 
     async def route_request(self, request_id: int, service_id: int,
@@ -561,6 +605,10 @@ class RealtimeEngine:
         deadline = CFG.services_info[service_id]["deadline"]
         req.deadline_violated = (not success) or (response_time_sec > deadline)
         req.status = RequestStatus.COMPLETED if success else RequestStatus.REJECTED_NO_REPLICA
+        if success:
+            # *** برای snapshot["global"]["avg_response_time_recent"] - نگاه
+            # کنید __init__ و _build_metrics_snapshot برای توضیح کامل باگ.
+            self._tick_response_times.append(response_time_sec)
         if req.deadline_violated:
             self._tick_violated[service_id] += 1
         self._log("request_completed" if success else "request_failed", request_id=request_id,

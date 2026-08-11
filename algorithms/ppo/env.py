@@ -23,8 +23,17 @@ _SERVER_IDS = sorted(CFG.server_info.keys())
 _SCALE_MAP = {0: ScaleAction.NO_CHANGE, 1: ScaleAction.SCALE_UP, 2: ScaleAction.SCALE_DOWN}
 _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_ON,
                    2: ProvisionActionType.TURN_OFF}
- 
-_NORM_REJECTED_PER_TICK = 1.0
+
+# *** رفع BUG-C: مقدار قبلی (1.0) خیلی کوچک بود - با ۱۵ سرویس و میانگین
+# چند درخواست در تیک به‌ازای هر سرویس، num_rejected_recent به‌راحتی از ۱
+# رد می‌شود، یعنی norm_rejected = min(rejected/1.0, 2.0) تقریباً همیشه در
+# سقف ۲.۰ قفل می‌ماند و PPO نمی‌تواند رد‌کردن ۵ درخواست را از ۵۰ درخواست
+# تشخیص دهد (سیگنال reward برای w5_rejected عملاً باینری می‌شود، نه پیوسته).
+# مقدار پیش‌فرض جدید یک تخمین معقول‌تر است؛ برای کالیبراسیون دقیق،
+# calibrate_constants.py را اجرا کنید (ستون num_rejected_recent) و p90/p95
+# واقعی را در EOTCH_NORM_REJECTED_PER_TICK بگذارید.
+import os as _os
+_NORM_REJECTED_PER_TICK = float(_os.environ.get("EOTCH_NORM_REJECTED_PER_TICK", "6.0"))
 
 
 class EdgeResourceEnv(gym.Env): 
@@ -140,13 +149,30 @@ class EdgeResourceEnv(gym.Env):
                       if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
             can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
             masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
+
+        # *** رفع BUG-A: قبلاً can_on/can_off فقط state+cooldown را چک
+        # می‌کردند، در حالی‌که engine._apply_provisioning علاوه‌بر این‌ها
+        # شرط «واقعاً لازم بودن» را هم گیت می‌کند:
+        #   TURN_ON  -> نیاز به sustained_overload (یا capacity-starved) دارد
+        #   TURN_OFF -> نیاز به sustained_underload (_was_turn_off_necessary) دارد
+        # بدون این هم‌راستایی، PPO می‌توانست یک TURN_ON/TURN_OFF را «انتخاب
+        # کند» ولی موتور بی‌صدا آن را رد کند (skip_reason="overload_not_sustained"
+        # یا "low_util_not_sustained")؛ چون reward بر مبنای همان تیک محاسبه
+        # می‌شود، PPO سیگنالی می‌گرفت که انگار اکشنش اعمال شده - نویز مستقیم
+        # روی مهم‌ترین بُعد تصمیم (provisioning). حالا از همان متدهای عمومی
+        # خودِ SimulationEngine استفاده می‌شود تا mask دقیقاً با گیت واقعی
+        # یکی باشد.
+        turn_on_necessary = (self.engine._any_active_server_sustained_overloaded()
+                              or self.engine._any_service_capacity_starved(self._last_snapshot))
+
         n_active = sum(1 for s in self.engine.servers.values() if s.state == ServerState.ACTIVE)
         for sid in _SERVER_IDS:
             s = self.engine.servers[sid]
             cooldown = s.in_cooldown(now, CFG.cooldown_sec)
-            can_on = (s.state == ServerState.OFF) and (not cooldown)
+            can_on = (s.state == ServerState.OFF) and (not cooldown) and turn_on_necessary
             can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
-                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
+                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec
+                       and self.engine._was_turn_off_necessary(sid))
             masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 

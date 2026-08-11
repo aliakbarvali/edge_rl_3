@@ -110,24 +110,13 @@ class Server:
     def free_capacity(self) -> int:
         return self.capacity - self.used_cpu()
 
-    def can_host(self, service_id: int, cpu_demand: int) -> bool:
-        # cpu_demand طبق قرارداد پروژه، resource_mips خام (نسبت به سرور مرجع)
-        # است - همان‌طور که همه‌ی الگوریتم‌ها صدایش می‌زنند؛ اینجا آن را به
-        # effective_mips واقعیِ *این* میزبان تبدیل می‌کنیم تا با واحد
-        # capacity (که خودش واقعی است) قابل‌مقایسه شود.
-        if service_id in self.hosted_replicas:
-            return False
-        real_demand = round(cpu_demand * self._speed_factor())
-        return self.free_capacity() >= real_demand
-    
-
-
 
     def can_host(self, service_id: int, cpu_demand: int) -> bool:
         from common.config import CFG, is_sla_feasible
         if service_id in self.hosted_replicas:
             return False
-        if self.free_capacity() < cpu_demand:
+        effective_demand = round(cpu_demand * self._speed_factor())
+        if self.free_capacity() < effective_demand:
             return False
         return is_sla_feasible(service_id, self.lat, self.long,
                                 CFG.server_profiles[self.profile]["mips_per_core"])

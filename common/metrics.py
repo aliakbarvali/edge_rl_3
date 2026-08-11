@@ -34,13 +34,23 @@ class MetricsCollector:
     _active_server_counts: List[int] = field(default_factory=list)
     _load_balance_cvs: List[float] = field(default_factory=list)
     _decision_correctness: dict = field(
-        default_factory=lambda: defaultdict(lambda: {"correct": 0, "incorrect": 0, "missed": 0}))
+        default_factory=lambda: defaultdict(lambda: {"correct": 0, "incorrect": 0, "missed": 0,
+                                                       "blocked": 0}))
 
     def record_decision_correctness(self, kind: str, necessary: bool):
         self._decision_correctness[kind]["correct" if necessary else "incorrect"] += 1
 
     def record_missed_opportunity(self, kind: str):
+        """اکشن لازم بود ولی الگوریتم اصلاً آن را پیشنهاد نداد."""
         self._decision_correctness[kind]["missed"] += 1
+
+    def record_blocked_opportunity(self, kind: str):
+        """(رفع BUG-G) اکشن لازم بود *و* الگوریتم واقعاً همان اکشن را
+        پیشنهاد داد، ولی یک گیت سیستمی (cooldown/migration ناقص/...) مانع
+        اعمالش شد. این را نباید با 'missed' (که یعنی الگوریتم اصلاً تلاش
+        نکرد) یکی حساب کرد - وگرنه معیار decision_correctness نمی‌تواند بین
+        «ضعف الگوریتم» و «محدودیت سیستمی» تمایز بگذارد."""
+        self._decision_correctness[kind]["blocked"] += 1
 
     def record_request(self, req: Request):
         self.total_requests += 1
@@ -106,6 +116,7 @@ class MetricsCollector:
                 "correct": counts["correct"],
                 "incorrect": counts["incorrect"],
                 "missed_opportunities": counts["missed"],
+                "blocked_opportunities": counts.get("blocked", 0),
                 "correctness_rate_pct": (100.0 * counts["correct"] / applied_total)
                                         if applied_total else None,
             }
