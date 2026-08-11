@@ -101,17 +101,38 @@ def compute_cold_start_penalty_sec(service_id: int, host_mips_per_core: float) -
     return min(penalty, COLD_START_PENALTY_CAP_SEC)
 
 
+
 def is_sla_feasible(service_id: int, server_lat: float, server_long: float,
                      server_mips_per_core: float, bts_lat: float = None, bts_long: float = None) -> bool:
     """
     حداقل زمان پاسخ ممکن (بدون صف، در بهترین حالت مسیریابی) رو با deadline مقایسه می‌کند.
     اگر bts مشخص نباشه، محافظه‌کارانه بدترین فاصله‌ی ممکن در محدوده‌ی جغرافیایی رو فرض می‌کند.
     """
+    from common.geo import haversine_km
+
     svc = SERVICES_INFO[service_id]
     et = compute_exec_time_sec(service_id, server_mips_per_core)
-    # حداقل overhead شبکه (بدون فاصله) + dispatcher hop
-    min_overhead_sec = 2 * BASE_LATENCY_MS / 1000.0 + 2 * DISPATCH_OVERHEAD_MS / 1000.0
-    return (min_overhead_sec + et) <= svc["deadline"]
+
+    dispatcher_lat = (LAT_MIN + LAT_MAX) / 2
+    dispatcher_lon = (LON_MIN + LON_MAX) / 2
+
+    if bts_lat is not None and bts_long is not None:
+        dist_to_dispatcher_km = haversine_km(bts_lat, bts_long, dispatcher_lat, dispatcher_lon)
+        dist_to_server_km = haversine_km(bts_lat, bts_long, server_lat, server_long)
+    else:
+        # محافظه‌کارانه: بدترین فاصله‌ی ممکن در کل محدوده‌ی جغرافیایی، از هر ۴ گوشه
+        corners = [(LAT_MIN, LON_MIN), (LAT_MIN, LON_MAX), (LAT_MAX, LON_MIN), (LAT_MAX, LON_MAX)]
+        dist_to_dispatcher_km = max(haversine_km(c[0], c[1], dispatcher_lat, dispatcher_lon) for c in corners)
+        dist_to_server_km = max(haversine_km(c[0], c[1], server_lat, server_long) for c in corners)
+
+    # RTT دیسپچر (BTS<->Dispatcher) - هم‌راستا با simulator/engine.py:_handle_arrival
+    dispatcher_rtt_sec = 2 * (BASE_LATENCY_MS + K_MS_PER_KM * dist_to_dispatcher_km
+                               + DISPATCH_OVERHEAD_MS) / 1000.0
+    # RTT سرور (BTS<->Server) - هم‌راستا با common/geo.py:network_delay_ms
+    server_rtt_sec = 2 * (BASE_LATENCY_MS + K_MS_PER_KM * dist_to_server_km) / 1000.0
+
+    min_response_sec = dispatcher_rtt_sec + server_rtt_sec + et
+    return min_response_sec <= svc["deadline"]
 
 import os as _os
 

@@ -486,6 +486,12 @@ class RealtimeEngine:
             candidates, 
             self.servers, 
             time.monotonic(),
+            # *** فیکس: occupancy_fn جدا و فقط-خواندنی از Redis؛ بدون این،
+            # select_replica برای رتبه‌بندی/تخمین ترافیک به‌جای مقدار واقعی
+            # صف، به deque محلی و همیشه-صفر Replica.queue_occupancy برمی‌گشت
+            # (چون try_admit فقط در simulator صدا زده می‌شود، نه اینجا) -
+            # یعنی «مسیریابی بر اساس فاصله و ترافیک» عملاً فقط فاصله بود.
+            occupancy_fn=lambda r: redis_state.get_queue_occupancy(service_id, r.server_id),
             admit_fn=lambda r: redis_state.try_reserve_queue_slot(
                 service_id, r.server_id, r.queue_len,
                 request_id=request_id, ttl_sec=reservation_ttl_sec))

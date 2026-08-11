@@ -93,17 +93,33 @@ class Server:
     num_boots: int = 0
     num_shutdowns: int = 0
 
+    def _speed_factor(self) -> float:
+        from common.config import CFG, REFERENCE_MIPS_PER_CORE
+        return CFG.server_profiles[self.profile]["mips_per_core"] / REFERENCE_MIPS_PER_CORE
 
     def used_cpu(self) -> int:
-        
+        # مجموع effective_mips واقعیِ رزروشده روی *این* میزبان مشخص
+        # (نه resource_mips خام که نسبت به سرور مرجع تعریف شده)
         return sum(self._cpu_of(r) for r in self.hosted_replicas.values())
 
     def _cpu_of(self, replica: Replica) -> int:
         from common.config import CFG
-        return CFG.services_info[replica.service_id]["resource_mips"]
+        resource_mips = CFG.services_info[replica.service_id]["resource_mips"]
+        return round(resource_mips * self._speed_factor())
 
     def free_capacity(self) -> int:
         return self.capacity - self.used_cpu()
+
+    def can_host(self, service_id: int, cpu_demand: int) -> bool:
+        # cpu_demand طبق قرارداد پروژه، resource_mips خام (نسبت به سرور مرجع)
+        # است - همان‌طور که همه‌ی الگوریتم‌ها صدایش می‌زنند؛ اینجا آن را به
+        # effective_mips واقعیِ *این* میزبان تبدیل می‌کنیم تا با واحد
+        # capacity (که خودش واقعی است) قابل‌مقایسه شود.
+        if service_id in self.hosted_replicas:
+            return False
+        real_demand = round(cpu_demand * self._speed_factor())
+        return self.free_capacity() >= real_demand
+    
 
 
 

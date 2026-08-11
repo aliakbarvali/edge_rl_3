@@ -23,10 +23,17 @@ WORKER_IMAGE = "192.168.1.30:5000/edge-worker:latest"
 NODE_LABEL_KEY = "edge-server-id"
 
 
+def resource_mips_to_millicpu(resource_mips: int) -> int:
+    from common.config import REFERENCE_MIPS_PER_CORE
+    # سهم هسته‌ی رزروشده مستقل از سرعت میزبان است (مثل خودِ CPU request در
+    # k8s که سهم‌محور است نه فرکانس‌محور)؛ توان واقعی تحویل‌داده‌شده روی هر
+    # میزبان طبیعتاً بر اساس speed_factor همان میزبان فرق می‌کند - دقیقاً
+    # همان چیزی که common/models.py:Server._speed_factor و
+    # common/config.py:compute_exec_time_sec هم فرض می‌کنند.
+    return round(resource_mips / REFERENCE_MIPS_PER_CORE * 1000)
 
-def resource_mips_to_millicpu(resource_mips: int, server_profile: dict) -> int:
- 
-    return round(resource_mips / server_profile["mips_per_core"] * 1000)
+#def resource_mips_to_millicpu(resource_mips: int, server_profile: dict) -> int: 
+#    return round(resource_mips / server_profile["mips_per_core"] * 1000)
 
 
 def _load_kube_config():
@@ -55,8 +62,8 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
     name = _deployment_name(service_id, server_id)
     
     server_profile = CFG.server_profiles[CFG.server_info[server_id]["profile"]]
-    cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"], server_profile) 
-    
+    #cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"], server_profile) 
+    cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"])
     exec_time_sec = compute_exec_time_sec(service_id, server_profile["mips_per_core"])
 
     port = worker_port(service_id)

@@ -172,27 +172,43 @@ class PPOAlgorithm(AlgorithmBase):
                             servers: Dict[int, Server]) -> List[MigrationStep]:
         return self._helper.migration_decision(draining_server, servers)
 
-    def select_replica(self, request, candidate_replicas, servers, now, admit_fn=None):
+    def select_replica(self, request, candidate_replicas, servers, now, admit_fn=None, occupancy_fn=None):
         if not candidate_replicas:
             return None
         if not self.latency_aware_routing:
-            return super().select_replica(request, candidate_replicas, servers, now, admit_fn=admit_fn)
+            return super().select_replica(request, candidate_replicas, servers, now,
+                                           admit_fn=admit_fn, occupancy_fn=occupancy_fn)
 
-        admit_check = admit_fn or (lambda r: r.queue_occupancy(now) < r.queue_len)
-        best, best_latency = None, float("inf")
+        # *** فیکس: مثل base.select_replica، خواندن (occupancy_fn) از رزرو
+        # واقعی (admit_fn) جدا شده تا در حالت realtime که admit_fn واقعاً یک
+        # اسلات صف را در Redis رزرو می‌کند، روی همه‌ی کاندیدها هم‌زمان صدا
+        # زده نشود (وگرنه فقط یکی استفاده و بقیه تا انقضای TTL نشت می‌کنند).
+        # *** فیکس: r.available_at در مسیر realtime هرگز آپدیت نمی‌شود
+        # (چون try_admit فقط در simulator صدا زده می‌شود)، پس همیشه ۰ می‌ماند
+        # و "ترافیک" را کاملاً نادیده می‌گرفت. حالا تأخیر صف از روی همان
+        # occupancy واقعی (که در realtime از Redis می‌آید) تخمین زده می‌شود:
+        # occupancy فعلی × زمان اجرای هر درخواست ≈ زمان انتظار تخمینی.
+        occupancy_fn = occupancy_fn or (lambda r: r.queue_occupancy(now))
+        admit_fn = admit_fn or (lambda r: occupancy_fn(r) < r.queue_len)
+
+        ranked = []
         for r in candidate_replicas:
-            if not admit_check(r):
-                continue
+            occ = occupancy_fn(r)
+            if occ >= r.queue_len:
+                continue  # از قبل معلوم است رد می‌شود؛ رزروش نکن
             server = servers[r.server_id]
             distance_km = haversine_km(request.bts_lat, request.bts_long, server.lat, server.long)
             delay_ms = network_delay_ms(distance_km, CFG.base_latency_ms, CFG.k_ms_per_km)
             rtt_sec = 2 * delay_ms / 1000.0
- 
-            est_wait_sec = max(0.0, r.available_at - now)
+
+            est_wait_sec = occ * r.exec_time
             est_total_latency = rtt_sec + est_wait_sec + r.exec_time
+            ranked.append((est_total_latency, r))
 
-            if est_total_latency < best_latency:
-                best_latency = est_total_latency
-                best = r
-
-        return best
+        # به ترتیب کمترین تأخیر تخمینی امتحان کن؛ رزروِ واقعی فقط روی
+        # کاندیدایی انجام می‌شود که واقعاً انتخاب و برگردانده می‌شود
+        ranked.sort(key=lambda pair: pair[0])
+        for _, r in ranked:
+            if admit_fn(r):
+                return r
+        return None

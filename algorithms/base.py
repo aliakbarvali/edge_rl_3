@@ -76,11 +76,22 @@ class AlgorithmBase(ABC):
 
         return selected
 
-    def select_replica(self, request, candidate_replicas, servers, now, admit_fn=None):
+    def select_replica(self, request, candidate_replicas, servers, now,
+                        admit_fn=None, occupancy_fn=None):
 
         if not candidate_replicas:
             return None
-        admit_fn = admit_fn or (lambda r: r.queue_occupancy(now) < r.queue_len)
+        # *** admit_fn ممکن است side-effect داشته باشد (مثلاً واقعاً یک
+        # اسلات صف را در Redis رزرو کند - نگاه کنید realtime_dispatcher.py).
+        # به همین دلیل نباید در حین ساختن/رتبه‌بندی «استخر نزدیک» (near_pool)
+        # روی چند کاندید مختلف صدا زده شود، وگرنه هر رپلیکای هم‌فاصله‌ای که
+        # فقط برای رتبه‌بندی چک می‌شود هم واقعاً رزرو می‌شود و رزروهای
+        # استفاده‌نشده تا انقضای TTL به‌صورت phantom باقی می‌مانند (نشتی صف).
+        # پس اینجا فقط از یک تابع فقط-خواندنی (occupancy_fn) برای رتبه‌بندی
+        # استفاده می‌کنیم و admit_fn (رزرو واقعی) را دقیقاً یک‌بار، فقط روی
+        # کاندیدای نهایی انتخاب‌شده صدا می‌زنیم.
+        occupancy_fn = occupancy_fn or (lambda r: r.queue_occupancy(now))
+        admit_fn = admit_fn or (lambda r: occupancy_fn(r) < r.queue_len)
 
         # *** توجه: Replica یک dataclass غیر-frozen است و به‌طور پیش‌فرض
         # __hash__ ندارد (unhashable) - پس نباید از خودِ آبجکت به‌عنوان کلید
@@ -94,16 +105,18 @@ class AlgorithmBase(ABC):
         min_dist = min(d for d, _ in dist_pairs)
 
         # همه‌ی سرورهایی که تقریباً هم‌فاصله‌اند (در محدوده‌ی +۵ کیلومتر
-        # نزدیک‌ترین) و در حال حاضر پذیرا هستند
-        near_pool = [(d, r) for d, r in dist_pairs if d <= min_dist + 5.0 and admit_fn(r)]
-        if near_pool:
-            # بین هم‌فاصله‌ها، کم‌ترافیک‌ترین (کم‌ترین نسبت اشغال صف) انتخاب می‌شود
-            return min(near_pool, key=lambda pair: pair[1].queue_occupancy(now) / max(pair[1].queue_len, 1))[1]
+        # نزدیک‌ترین) و طبق آخرین اطلاعات (بدون رزرو کردن) هنوز جا دارند
+        near_pool = [(d, r) for d, r in dist_pairs
+                     if d <= min_dist + 5.0 and occupancy_fn(r) < r.queue_len]
+        # بین هم‌فاصله‌ها، کم‌ترافیک‌ترین (کم‌ترین نسبت اشغال صف) در اولویت است؛
+        # بقیه به‌عنوان fallback اگر رزروِ گزینه‌ی اول به‌خاطر race شکست بخورد
+        ordered = sorted(near_pool, key=lambda pair: occupancy_fn(pair[1]) / max(pair[1].queue_len, 1))
+        # هر چیزی خارج از near_pool هم به ترتیب فاصله به‌عنوان fallback نهایی
+        ordered += sorted([p for p in dist_pairs if p not in near_pool], key=lambda pair: pair[0])
 
-        # اگر در استخر نزدیک هیچ‌کدام صف خالی نداشتند، به ترتیب فاصله ادامه بده
-        for d, r in sorted(dist_pairs, key=lambda pair: pair[0]):
-            if admit_fn(r):
-                return r
+        for _, r in ordered:
+            if admit_fn(r):          # رزرو واقعی، دقیقاً یک‌بار برای هر کاندیدا،
+                return r              # و فقط تا وقتی که یکی موفق بشود
         return None
  
     @staticmethod

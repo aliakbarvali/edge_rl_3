@@ -191,7 +191,7 @@ def make_random_window_provider(train_events, window_sec: float, seed: int = CFG
     return provider
 
 
-def main(total_timesteps: int = 2_000_000, bc_epochs: int = 50, window_hours: float = 24.0,
+def main(total_timesteps: int = 3_000_000, bc_epochs: int = 50, window_hours: float = 24.0,
          bc_max_ticks: int = 10_000, n_envs: int = 8):
     try:
         from sb3_contrib import MaskablePPO
