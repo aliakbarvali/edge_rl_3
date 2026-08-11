@@ -818,3 +818,4 @@ class SimulationEngine:
             elif ev.type == EventType.ENERGY_RESYNC:
                 pass   
         return None, True
+    

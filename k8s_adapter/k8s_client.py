@@ -66,6 +66,7 @@ def build_deployment_manifest(service_id: int, server_id: int) -> client.V1Deplo
     cpu_millicpu = resource_mips_to_millicpu(svc["resource_mips"])
     exec_time_sec = compute_exec_time_sec(service_id, server_profile["mips_per_core"])
 
+
     port = worker_port(service_id)
 
     container = client.V1Container(

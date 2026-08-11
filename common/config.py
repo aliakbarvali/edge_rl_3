@@ -34,6 +34,7 @@ SERVER_INFO = {
 for _sid, _info in SERVER_INFO.items():
     _info["profile"] = _CAPACITY_TO_PROFILE[_info["capacity_mips"]]
 N_SERVERS = len(SERVER_INFO)
+
 SERVICES_INFO: Dict[int, dict] = {
     1 : {"resource_mips": 4800, "task_length_mi": 55,     "queue_len": 1,  "deadline": 0.030, "memory": "32Mi"},   # 5QI=84  Intelligent Transport Systems (V2X پایه)
     2 : {"resource_mips": 4900, "task_length_mi": 110,    "queue_len": 2,  "deadline": 0.050, "memory": "48Mi"},   # 5QI=3   Real-Time Gaming / V2X Messages

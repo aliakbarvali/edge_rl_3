@@ -212,5 +212,6 @@ class _MinimalSharedAlgorithm:
 
         self._impl = _Impl()
 
+
     def __getattr__(self, item):
         return getattr(self._impl, item)

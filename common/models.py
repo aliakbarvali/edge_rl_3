@@ -110,7 +110,6 @@ class Server:
     def free_capacity(self) -> int:
         return self.capacity - self.used_cpu()
 
-
     def can_host(self, service_id: int, cpu_demand: int) -> bool:
         from common.config import CFG, is_sla_feasible
         if service_id in self.hosted_replicas:
