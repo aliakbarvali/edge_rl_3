@@ -22,6 +22,24 @@ _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_
 
 class PPOAlgorithm(AlgorithmBase):
     name = "ppo"
+
+    # *** جدید: برخلاف Greedy/HPA/VOILA، تصمیمات provisioning (TURN_ON/
+    # TURN_OFF) این الگوریتم لازم نیست منتظر گیت sustain-tracking مشترک
+    # (SUSTAIN_HIGH_SEC/SUSTAIN_LOW_SEC در simulator/engine.py و
+    # k8s_adapter/realtime_dispatcher.py:_apply_provisioning) بمانند. دلیل:
+    # action mask (algorithms/ppo/env.py:compute_action_masks) از قبل فقط
+    # امکان‌پذیری فیزیکی را چک می‌کند و به PPO اجازه می‌دهد هر زمان TURN_ON/
+    # TURN_OFF را *انتخاب* کند؛ بدون این پرچم، آن انتخاب توسط
+    # _apply_provisioning همیشه به NO_CHANGE تنزل پیدا می‌کرد (چون سیگنال
+    # necessity هنوز sustained نشده) و PPO هرگز فرصت واقعی نداشت رفتار
+    # پیش‌بینانه (anticipatory) را در عمل امتحان و از طریق reward واقعی
+    # (تعادل هزینه‌ی انرژی/اکشن در برابر کاهش زمان پاسخ و نقض deadline)
+    # یاد بگیرد. توجه: cooldown و min_active_duration صرف‌نظر از این پرچم
+    # همچنان اعمال می‌شوند (قیود عملیاتی سخت، نه بخشی از این آستانه‌ی
+    # reactive)؛ ممیزی decision_correctness هم دست‌نخورده می‌ماند - این
+    # پرچم فقط تعیین می‌کند اکشن اعمال می‌شود یا نه، نه اینکه "درست" شمرده
+    # شود.
+    bypass_sustain_gate: bool = True
  
     def __init__(self, model_path, deterministic=True, latency_aware_routing=False , use_solver_placement = True, placement_weights=None): 
         try:

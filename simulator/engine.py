@@ -556,13 +556,25 @@ class SimulationEngine:
                               or self._any_service_capacity_starved(snapshot))
         turn_off_opportunity = self._any_active_server_sustained_underloaded()
 
+        # *** جدید: برخی الگوریتم‌ها (فعلاً فقط PPO - نگاه کنید
+        # algorithms/ppo/ppo_algorithm.py:bypass_sustain_gate) اجازه دارند
+        # اکشن TURN_ON/TURN_OFF خودشان را حتی *قبل* از sustained شدن
+        # necessity اعمال کنند. این پرچم به‌صراحت روی خودِ الگوریتم تعریف
+        # شده (نه اینجا هاردکد)، طبق AlgorithmBase.bypass_sustain_gate
+        # (پیش‌فرض False برای Greedy/HPA/VOILA - رفتارشان دقیقاً حفظ
+        # می‌شود). ممیزی decision_correctness/missed/blocked هیچ‌کدام
+        # تغییر نمی‌کنند - همچنان دقیقاً طبق همان معیار عینی مستقل
+        # (necessary_now/turn_off_necessary_audit) قضاوت می‌شوند؛ این پرچم
+        # فقط تعیین می‌کند آیا اکشن *اعمال* می‌شود یا نه.
+        bypass = getattr(self.algorithm, "bypass_sustain_gate", False)
+
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
             s = self.servers[action.server_id]
             if s.state != ServerState.OFF:
                 skip_reason = "not_off"
             elif s.in_cooldown(self.now, CFG.cooldown_sec):
                 skip_reason = "cooldown"
-            elif not turn_on_necessary:
+            elif not turn_on_necessary and not bypass:
                 skip_reason = "overload_not_sustained"
             else:
                 necessary_now = self._was_turn_on_necessary_audit(snapshot)
@@ -590,7 +602,7 @@ class SimulationEngine:
             turn_off_necessary = self._was_turn_off_necessary(action.server_id)
             if s.state != ServerState.ACTIVE:
                 skip_reason = "not_active"
-            elif not turn_off_necessary:
+            elif not turn_off_necessary and not bypass:
                 skip_reason = "low_util_not_sustained"
             elif n_active <= 1:
                 skip_reason = "last_active_server"
@@ -631,6 +643,7 @@ class SimulationEngine:
         self._log("provision_decision", action=action.action.name, server_id=action.server_id,
                   applied=applied, skip_reason=skip_reason,
                   necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity,
+                  bypassed_sustain_gate=bypass,
                   via_capacity_starved_only=(via_capacity_starved_only if applied and
                       action.action == ProvisionActionType.TURN_ON else None))
 

@@ -102,7 +102,14 @@ def compute_cold_start_penalty_sec(service_id: int, host_mips_per_core: float) -
     return min(penalty, COLD_START_PENALTY_CAP_SEC)
 
 
-
+# *** رفع باگ: قبلاً is_sla_feasible موقعیت دیسپچر را از مرکز باکس جغرافیایی
+# داده (LAT_MIN..MAX) می‌ساخت، در حالی که simulator/engine.py:_handle_arrival
+# (منبع واقعی زمان‌بندی response_time) دیسپچر را میانگین موقعیت ۱۰ سرور
+# می‌سازد - این دو با هم ~۱۲ کیلومتر اختلاف دارند که برای سرویس‌های سفت
+# (svc1: deadline=30ms) می‌تواند نتیجه‌ی is_sla_feasible را عوض کند. حالا
+# هر دو مسیر از همین دو ثابت (تک منبع حقیقت) استفاده می‌کنند.
+DISPATCHER_LAT = sum(info["lat"] for info in SERVER_INFO.values()) / len(SERVER_INFO)
+DISPATCHER_LON = sum(info["long"] for info in SERVER_INFO.values()) / len(SERVER_INFO)
 def is_sla_feasible(service_id: int, server_lat: float, server_long: float,
                      server_mips_per_core: float, bts_lat: float = None, bts_long: float = None) -> bool:
     """
@@ -113,10 +120,9 @@ def is_sla_feasible(service_id: int, server_lat: float, server_long: float,
 
     svc = SERVICES_INFO[service_id]
     et = compute_exec_time_sec(service_id, server_mips_per_core)
-
-    dispatcher_lat = (LAT_MIN + LAT_MAX) / 2
-    dispatcher_lon = (LON_MIN + LON_MAX) / 2
-
+ 
+    dispatcher_lat = DISPATCHER_LAT
+    dispatcher_lon = DISPATCHER_LON
     if bts_lat is not None and bts_long is not None:
         dist_to_dispatcher_km = haversine_km(bts_lat, bts_long, dispatcher_lat, dispatcher_lon)
         dist_to_server_km = haversine_km(bts_lat, bts_long, server_lat, server_long)
@@ -240,6 +246,8 @@ class Config:
     dispatch_overhead_ms: float = DISPATCH_OVERHEAD_MS
     k_ms_per_km: float = K_MS_PER_KM
     l0_ms: float = L0_MS
+    dispatcher_lat: float = DISPATCHER_LAT
+    dispatcher_lon: float = DISPATCHER_LON
     proximity_l0_ms: float = PROXIMITY_L0_MS
     boot_delay_sec: float = BOOT_DELAY_SEC
     pod_startup_delay_sec: float = POD_STARTUP_DELAY_SEC

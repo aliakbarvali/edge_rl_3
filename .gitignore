@@ -36,6 +36,8 @@ htmlcov/
 *.zip
 # Logs
 *.log
+*.json
+*.jsonl
 *.csv
 *.pkl
 *.html

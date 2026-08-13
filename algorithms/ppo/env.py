@@ -36,6 +36,71 @@ import os as _os
 _NORM_REJECTED_PER_TICK = float(_os.environ.get("EOTCH_NORM_REJECTED_PER_TICK", "6.0"))
 
 
+# ----------------------------------------------------------------------
+# *** رفع باگ ۲ (BC warm-start بدون action mask): منطق ماسک قبلاً فقط
+# داخل متد EdgeResourceEnv.action_masks بود و به self.engine/self._last_snapshot
+# (attributeهای نمونه) وابسته بود - یعنی هیچ‌جای دیگری (از جمله
+# algorithms/ppo/train.py:collect_greedy_demonstrations، که مستقیماً یک
+# SimulationEngine می‌سازد، نه EdgeResourceEnv) نمی‌توانست بدون کپی‌کردن
+# کامل این منطق از آن استفاده کند. طبق فلسفه‌ی صریح خودِ پروژه (README:
+# «هیچ منطق تصمیم‌گیری‌ای دو بار نوشته نمی‌شود»)، این منطق به دو تابع
+# ماژول‌سطح مستقل (بدون وابستگی به EdgeResourceEnv) استخراج شده تا هم
+# EdgeResourceEnv.action_masks و هم collect_greedy_demonstrations در
+# train.py از همان یک منبع واحد استفاده کنند. رفتار محاسباتی نسبت به
+# نسخه‌ی قبلی هیچ تغییری نکرده - فقط محل تعریف عوض شده.
+# ----------------------------------------------------------------------
+
+def _any_server_can_host(engine: SimulationEngine, last_snapshot: dict | None,
+                          service_id: int) -> bool:
+    # *** رفع باگ (هم‌خانواده‌ی can_host بدون centroid): can_host بدون
+    # مختصات همیشه از مسیر محافظه‌کارانه‌ی بدترین‌حالت SLA رد می‌شود، حتی
+    # وقتی موقعیت واقعی تقاضا (demand_centroid) در دسترس است.
+    cpu = CFG.services_info[service_id]["resource_mips"]
+    centroid = None
+    if last_snapshot is not None:
+        centroid = last_snapshot["services"][service_id].get("demand_centroid")
+    bts_lat, bts_long = centroid if centroid else (None, None)
+    return any(s.state == ServerState.ACTIVE
+               and s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
+               for s in engine.servers.values())
+
+
+def compute_action_masks(engine: SimulationEngine, last_snapshot: dict | None) -> np.ndarray:
+    """ماسک اکشن معتبر برای وضعیت *فعلی* موتور (engine.now)، مستقل از
+    EdgeResourceEnv. last_snapshot همان snapshotِ تیک قبلی است (برای
+    demand_centroid هر سرویس) - دقیقاً همان چیزی که EdgeResourceEnv در
+    self._last_snapshot نگه می‌داشت.
+
+    *** یادداشت طراحی (بدون تغییر نسبت به نسخه‌ی قبلی): این تابع فقط
+    امکان‌پذیری *فیزیکی* هر اکشن را چک می‌کند (state سرور/رپلیکا، cooldown،
+    ظرفیت، min_active_duration) - نه اینکه آیا آن اکشن "لازم" است یا نه
+    (turn_on_necessary/turn_off_necessary). آن گیت‌های necessity به‌صورت
+    عمدی اینجا اعمال نمی‌شوند (نگاه کنید کامنت «رفع بازبینی BUG-A» پایین‌تر
+    در action_masks قبلی/simulator/engine.py) چون آن‌ها بخشی از قید
+    مشترکِ ضد-فلپینگ زیرساخت‌اند، نه بخشی از فضای انتخاب سیاست."""
+    masks = []
+    now = engine.now
+    for sid in _SERVICE_IDS:
+        cooldown = (now - engine._service_last_scale_time[sid]) < CFG.cooldown_sec
+        can_up = (not cooldown) and _any_server_can_host(engine, last_snapshot, sid)
+        reps = engine.replicas_by_service.get(sid, [])
+        ready = [r for r in reps if r.state == ReplicaState.READY]
+        mature = [r for r in ready
+                  if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
+        can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
+        masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
+
+    n_active = sum(1 for s in engine.servers.values() if s.state == ServerState.ACTIVE)
+    for sid in _SERVER_IDS:
+        s = engine.servers[sid]
+        cooldown = s.in_cooldown(now, CFG.cooldown_sec)
+        can_on = (s.state == ServerState.OFF) and (not cooldown)
+        can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
+                   and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
+        masks.extend([True, can_on, can_off])
+    return np.array(masks, dtype=bool)
+
+
 class EdgeResourceEnv(gym.Env): 
     metadata = {"render_modes": []}
 
@@ -156,72 +221,12 @@ class EdgeResourceEnv(gym.Env):
         return -float(penalty) 
 
     # ------------------------------------------------------------------
-    def action_masks(self) -> np.ndarray: 
-        masks = []
-        now = self.engine.now
-        for sid in _SERVICE_IDS:
-            cooldown = (now - self.engine._service_last_scale_time[sid]) < CFG.cooldown_sec
-            can_up = (not cooldown) and self._any_server_can_host(sid)
-            reps = self.engine.replicas_by_service.get(sid, [])
-            ready = [r for r in reps if r.state == ReplicaState.READY]
-            mature = [r for r in ready
-                      if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
-            can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
-            masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
-
-        # *** رفع بازبینی (برگرداندن BUG-A): نسخه‌ی قبلی can_on/can_off را
-        # علاوه‌بر state+cooldown، به شرط «واقعاً لازم بودن» هم گیت می‌کرد
-        # (turn_on_necessary/_was_turn_off_necessary - همان چیزی که
-        # engine._apply_provisioning برای تشخیص necessary_now استفاده
-        # می‌کند). نیتش درست بود (هم‌راستایی mask با گیت واقعی موتور) ولی
-        # اثرش برعکس بود: در MaskablePPO یک اکشن ماسک‌شده احتمال دقیقاً
-        # صفر می‌گیرد - یعنی PPO هرگز نمی‌توانست TURN_ON/TURN_OFF را
-        # *زودتر* از آستانه‌ی ثابت sustain_high/low_sec امتحان کند، نه
-        # فقط این‌که یاد بگیرد بد است. چون NO_CHANGE همیشه مجاز می‌ماند،
-        # فضای تصمیم provisioning عملاً به زیرمجموعه‌ای از چیزی که
-        # Greedy/HPA/VOILA (که هر تیک آزادانه پیشنهاد می‌دهند و فقط لحظه‌ی
-        # اعمال توسط موتور گیت می‌شود) هم می‌توانند انجام دهند تنزل پیدا
-        # کرده بود - دقیقاً همان bypass_sustain_gate‌ای که قرار بود PPO یاد
-        # بگیرد، از فضای جستجو حذف شده بود.
-        #
-        # توجیه اصلی آن فیکس («بدون هم‌راستایی، PPO سیگنال reward نویزی
-        # می‌گیرد») هم نادرست بود: n_actions_applied در step() فقط از
-        # تفاضل شمارنده‌های self.engine.metrics.num_turn_on/off قبل و بعد
-        # از engine.step() ساخته می‌شود، و این شمارنده‌ها فقط در شاخه‌ی
-        # applied=True داخل _apply_provisioning افزایش می‌یابند - یعنی یک
-        # TURN_ON که با skip_reason="overload_not_sustained" رد می‌شود از
-        # دید reward/observation دقیقاً معادل NO_CHANGE است (نه mutation
-        # روی سرور، نه اثر روی state بعدی، نه پنالتی اکشن). پس مسیر درست
-        # این است که mask فقط امکان‌پذیری *فیزیکی* را چک کند (state،
-        # cooldown، ظرفیت، min_active_duration، last_active_server) - نه
-        # این‌که آیا Greedy هم همین را تأیید می‌کند - و بگذاریم PPO خودش
-        # از طریق reward واقعی یاد بگیرد کِی TURN_ON/TURN_OFF زودهنگام
-        # ارزش دارد.
-        n_active = sum(1 for s in self.engine.servers.values() if s.state == ServerState.ACTIVE)
-        for sid in _SERVER_IDS:
-            s = self.engine.servers[sid]
-            cooldown = s.in_cooldown(now, CFG.cooldown_sec)
-            can_on = (s.state == ServerState.OFF) and (not cooldown)
-            can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
-                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
-            masks.extend([True, can_on, can_off])
-        return np.array(masks, dtype=bool)
-
-    def _any_server_can_host(self, service_id: int) -> bool:
-        # *** رفع باگ (هم‌خانواده‌ی can_host بدون centroid): این متد can_up
-        # را در action_masks تعیین می‌کند؛ قبلاً بدون مختصات can_host صدا
-        # می‌زد، یعنی ماسک می‌توانست SCALE_UP یک سرویس را غیرمجاز اعلام کند
-        # (بدترین‌حالت fail) در حالی که با موقعیت واقعی تقاضا (demand_centroid)
-        # جای‌گذاری واقعاً ممکن بود - PPO حتی فرصت امتحان‌کردنش را نمی‌دید.
-        cpu = CFG.services_info[service_id]["resource_mips"]
-        centroid = None
-        if self._last_snapshot is not None:
-            centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
-        bts_lat, bts_long = centroid if centroid else (None, None)
-        return any(s.state == ServerState.ACTIVE
-                   and s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
-                   for s in self.engine.servers.values())
-
+    def action_masks(self) -> np.ndarray:
+        # *** رفع باگ ۲: بدنه‌ی این متد به تابع ماژول‌سطح compute_action_masks
+        # منتقل شد تا algorithms/ppo/train.py:collect_greedy_demonstrations هم
+        # بتواند دقیقاً همین منطق را (بدون کپی) روی یک SimulationEngine خام
+        # (بدون EdgeResourceEnv) صدا بزند - نگاه کنید تعریف تابع بالای فایل.
+        return compute_action_masks(self.engine, self._last_snapshot)
 
 
 class _MinimalSharedAlgorithm: 

@@ -30,7 +30,7 @@ from common.config import CFG
 from common.state_builder import build_state_vector
 from algorithms.base import ScaleAction, ProvisionActionType
 from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
-from algorithms.ppo.env import EdgeResourceEnv, _SERVICE_IDS, _SERVER_IDS
+from algorithms.ppo.env import EdgeResourceEnv, _SERVICE_IDS, _SERVER_IDS, compute_action_masks
 from simulator.engine import SimulationEngine
 
 
@@ -65,13 +65,33 @@ def _encode_action(decisions: dict) -> np.ndarray:
 
 
 def collect_greedy_demonstrations(events_df, max_ticks: int | None = None):
-    """اجرای Greedy روی داده و ثبت (state, action) هر تیک برای BC warm-start."""
+    """اجرای Greedy روی داده و ثبت (state, action, action_mask) هر تیک برای BC warm-start.
+
+    *** رفع باگ ۲ (BC warm-start بدون action mask): قبلاً این تابع فقط
+    (obs, act) برمی‌گرداند و behavior_cloning_pretrain توزیع اکشن را بدون
+    هیچ ماسکی محاسبه می‌کرد - یعنی warm-start می‌توانست به اکشن‌هایی که در
+    آن state واقعاً نامعتبر بودند (مثلاً SCALE_UP سرویسی که هیچ سروری
+    نمی‌تواند میزبانی‌اش کند، یا TURN_ON سروری که در cooldown است) احتمال
+    غیرصفر بدهد؛ در حالی که هم fine-tune با MaskablePPO و هم inference
+    همیشه ماسک‌شده‌اند. این ناهم‌خوانی بین فاز warm-start و فاز واقعی را
+    برطرف می‌کند.
+
+    ماسک هر تیک *قبل* از فراخوانی engine.step() محاسبه می‌شود - یعنی درست
+    در همان لحظه‌ای (همان engine.now و همان وضعیت cooldown/سرور) که Greedy
+    تصمیمش را برای آن تیک گرفته، دقیقاً هم‌راستا با نحوه‌ی فراخوانی
+    EdgeResourceEnv.action_masks() توسط ActionMasker پیش از هر step واقعی
+    (نگاه کنید algorithms/ppo/env.py:compute_action_masks). last_snapshot
+    برای demand_centroid هر سرویس از تیک قبلی (یا peek_snapshot اولیه) کش
+    می‌شود - همان الگویی که EdgeResourceEnv با self._last_snapshot دارد.
+    """
     algo = GreedyAlgorithm()
     engine = SimulationEngine(events_df, algo, "greedy_teacher")
     engine.prime()
-    obs_list, act_list = [], []
+    obs_list, act_list, mask_list = [], [], []
+    last_snapshot = engine.peek_snapshot()
     n = 0
     while True:
+        mask = compute_action_masks(engine, last_snapshot)
         snapshot, done = engine.step()  # external_actions=None -> Greedy تصمیم می‌گیرد
         if done:
             break
@@ -84,19 +104,30 @@ def collect_greedy_demonstrations(events_df, max_ticks: int | None = None):
         # همان state دوباره SCALE_UP بزند - یعنی از چیزی که معلم *گفت* تقلید
         # می‌کند، نه از چیزی که معلم *واقعاً انجام داد*.
         act_list.append(_encode_action(engine._last_tick_applied_actions))
+        mask_list.append(mask)
+        last_snapshot = snapshot
         n += 1
         if max_ticks and n >= max_ticks:
             break
-    return np.array(obs_list, dtype=np.float32), np.array(act_list, dtype=np.int64)
+    return (np.array(obs_list, dtype=np.float32),
+            np.array(act_list, dtype=np.int64),
+            np.array(mask_list, dtype=bool))
 
 
 def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
+                               mask_arr: np.ndarray,
                                epochs: int = 10, batch_size: int = 64, lr: float = 1e-4,
                                log_path: str | None = None):
     """
     Warm-start سیاست با یادگیری تحت‌نظارت (cross-entropy) روی دموی Greedy،
     قبل از fine-tune با RL. مستقیماً روی model.policy (torch.nn.Module واقعی
     stable-baselines3) کار می‌کند.
+
+    *** رفع باگ ۲: mask_arr (از collect_greedy_demonstrations، هم‌شکل با
+    خروجی action_masks()) اکنون به model.policy.get_distribution پاس داده
+    می‌شود. قبلاً dist بدون ماسک محاسبه می‌شد، یعنی cross-entropy می‌توانست
+    احتمال غیرصفر به اکشن‌های فیزیکاً نامعتبر در آن state بدهد - ناهم‌خوان
+    با fine-tune (MaskablePPO) و inference که همیشه ماسک‌شده‌اند.
 
     *** اگر log_path داده شود، loss هر epoch هم در یک CSV ذخیره می‌شود (بخش
     ۱۱.۵: «لاگ منحنی یادگیری ... برای گزارش‌دهی» - BC loss هم بخشی از همان
@@ -108,6 +139,7 @@ def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
     device = model.policy.device
     obs_t = torch.as_tensor(obs_arr, dtype=torch.float32, device=device)
     act_t = torch.as_tensor(act_arr, dtype=torch.long, device=device)
+    mask_t = torch.as_tensor(mask_arr, dtype=torch.bool, device=device)
     optimizer = torch.optim.Adam(model.policy.parameters(), lr=lr)
     n = obs_t.shape[0]
 
@@ -117,8 +149,8 @@ def behavior_cloning_pretrain(model, obs_arr: np.ndarray, act_arr: np.ndarray,
         total_loss = 0.0
         for i in range(0, n, batch_size):
             idx = perm[i:i + batch_size]
-            batch_obs, batch_act = obs_t[idx], act_t[idx]
-            dist = model.policy.get_distribution(batch_obs)
+            batch_obs, batch_act, batch_mask = obs_t[idx], act_t[idx], mask_t[idx]
+            dist = model.policy.get_distribution(batch_obs, action_masks=batch_mask)
             log_prob = dist.log_prob(batch_act)  # مجموع log-prob هر بعدِ MultiDiscrete
             loss = -log_prob.mean()
             optimizer.zero_grad()
@@ -220,7 +252,7 @@ def main(total_timesteps: int = 3_000_000, bc_epochs: int = 50, window_hours: fl
     train_events = load_train()
 
     print("در حال جمع‌آوری دموی Greedy برای BC warm-start ...")
-    demo_obs, demo_act = collect_greedy_demonstrations(train_events, max_ticks=bc_max_ticks)
+    demo_obs, demo_act, demo_mask = collect_greedy_demonstrations(train_events, max_ticks=bc_max_ticks)
     
     print(f"تعداد نمونه‌ی BC: {len(demo_obs)}")
 
@@ -255,7 +287,7 @@ def main(total_timesteps: int = 3_000_000, bc_epochs: int = 50, window_hours: fl
     )
 
     print("در حال BC warm-start ...")
-    behavior_cloning_pretrain(model, demo_obs, demo_act, epochs=bc_epochs,lr=5e-5,
+    behavior_cloning_pretrain(model, demo_obs, demo_act, demo_mask, epochs=bc_epochs, lr=5e-5,
                                log_path=os.path.join(LOG_DIR, "bc_warmstart_loss.csv")) 
     from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
     checkpoint_cb = CheckpointCallback(

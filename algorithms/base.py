@@ -36,6 +36,19 @@ class MigrationStep:
 class AlgorithmBase(ABC):
     name: str = "base"
 
+    # *** جدید: آیا این الگوریتم مجاز است گیت sustain-tracking پیش‌فرض
+    # (SUSTAIN_HIGH_SEC/SUSTAIN_LOW_SEC در simulator/engine.py و
+    # k8s_adapter/realtime_dispatcher.py:_apply_provisioning) را برای
+    # TURN_ON/TURN_OFF دور بزند؟ پیش‌فرض False برای همه‌ی الگوریتم‌ها
+    # (Greedy/HPA/VOILA) - یعنی رفتار قبلی برایشان دقیقاً حفظ می‌شود.
+    # این فقط اکشن‌های TURN_ON/TURN_OFF را تحت‌تأثیر قرار می‌دهد؛
+    # cooldown و min_active_duration (قیود عملیاتی/سخت‌افزاری، نه بخشی
+    # از این آستانه‌ی reactive) صرف‌نظر از این پرچم همچنان برای همه اعمال
+    # می‌شوند. ممیزی decision_correctness هم صرف‌نظر از این پرچم دقیقاً
+    # طبق همان معیار عینی مستقل ادامه پیدا می‌کند - این پرچم فقط تعیین
+    # می‌کند آیا اکشن *اعمال* می‌شود، نه اینکه در ممیزی «درست» شمرده شود.
+    bypass_sustain_gate: bool = False
+
     def initial_placement(self, servers, active_bts):
         remaining = set(range(len(active_bts)))
         covers = {}
