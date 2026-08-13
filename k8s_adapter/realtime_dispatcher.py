@@ -547,13 +547,14 @@ class RealtimeEngine:
                               or self._any_service_capacity_starved(snapshot))
         turn_off_opportunity = self._any_active_server_sustained_underloaded(now)
 
+        bypass = getattr(self.algorithm, "bypass_sustain_gate", False) 
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
             s = self.servers[action.server_id]
             if s.state != ServerState.OFF:
                 skip_reason = "not_off"
             elif s.in_cooldown(now, CFG.cooldown_sec):
                 skip_reason = "cooldown"
-            elif not turn_on_necessary:
+            elif not turn_on_necessary and not bypass:
                 skip_reason = "overload_not_sustained"
             else:
                 necessary_now = self._was_turn_on_necessary_audit(snapshot, now)
@@ -574,7 +575,7 @@ class RealtimeEngine:
             turn_off_necessary = self._was_turn_off_necessary(action.server_id, now)
             if s.state != ServerState.ACTIVE:
                 skip_reason = "not_active"
-            elif not turn_off_necessary:
+            elif not turn_off_necessary and not bypass: 
                 skip_reason = "low_util_not_sustained"
             elif n_active <= 1:
                 skip_reason = "last_active_server"
@@ -608,6 +609,7 @@ class RealtimeEngine:
         self._log("provision_decision", action=action.action.name, server_id=action.server_id,
                   applied=applied, skip_reason=skip_reason,
                   necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity,
+                  bypassed_sustain_gate=bypass,
                   via_capacity_starved_only=(via_capacity_starved_only if applied and
                       action.action == ProvisionActionType.TURN_ON else None))
 
