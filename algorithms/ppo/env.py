@@ -104,9 +104,24 @@ class EdgeResourceEnv(gym.Env):
         g = snapshot["global"]
 
         active_svcs = [s for s in snapshot["services"].values() if s["recent_arrivals"] > 0]
-        avg_dv_rate = (sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)) if active_svcs else 0.0
-
-
+        #avg_dv_rate = (sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)) if active_svcs else 0.0
+        # *** بازبینی: میانگین ترکیبی به‌جای میانگین ساده - نگاه کنید
+        # common/config.py:PPO_DEADLINE_FAIRNESS_ALPHA برای توضیح کامل باگ/فیکس.
+        # بخش weighted طبق حجم واقعی ترافیک (recent_arrivals) هر سرویس، بخش
+        # unweighted همان میانگین ساده‌ی قبلی برای این‌که SLA سرویس‌های
+        # کم‌ترافیک (batch، ۱۱-۱۵) کاملاً بی‌اثر نشود.
+        if active_svcs:
+            total_arrivals = sum(s["recent_arrivals"] for s in active_svcs)
+            weighted_dv_rate = (sum(s["deadline_violation_rate"] * s["recent_arrivals"]
+                                     for s in active_svcs) / total_arrivals) if total_arrivals else 0.0
+            unweighted_dv_rate = sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)
+            alpha = CFG.ppo_deadline_fairness_alpha
+            avg_dv_rate = alpha * weighted_dv_rate + (1 - alpha) * unweighted_dv_rate
+        else:
+            weighted_dv_rate = 0.0
+            unweighted_dv_rate = 0.0
+            avg_dv_rate = 0.0
+            
         active_utils = [s["utilization"] for s in snapshot["servers"].values()
                          if s["state"] == ServerState.ACTIVE]
         load_cv = 0.0
@@ -133,6 +148,10 @@ class EdgeResourceEnv(gym.Env):
             "load_balance": w["w4_load_balance"] * norm_lb,
             "rejected": w["w5_rejected"] * norm_rejected,
             "action_penalty": CFG.ppo_penalty_per_action * n_actions_applied,
+            # *** خام (بدون ضرب در w2_deadline) - فقط برای دیباگ/مانیتورینگ
+            # نسبت weighted به unweighted طی آموزش در TensorBoard.
+            "deadline_weighted_raw": weighted_dv_rate,
+            "deadline_unweighted_raw": unweighted_dv_rate,
         }
         return -float(penalty) 
 
@@ -150,35 +169,57 @@ class EdgeResourceEnv(gym.Env):
             can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
             masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
 
-        # *** رفع BUG-A: قبلاً can_on/can_off فقط state+cooldown را چک
-        # می‌کردند، در حالی‌که engine._apply_provisioning علاوه‌بر این‌ها
-        # شرط «واقعاً لازم بودن» را هم گیت می‌کند:
-        #   TURN_ON  -> نیاز به sustained_overload (یا capacity-starved) دارد
-        #   TURN_OFF -> نیاز به sustained_underload (_was_turn_off_necessary) دارد
-        # بدون این هم‌راستایی، PPO می‌توانست یک TURN_ON/TURN_OFF را «انتخاب
-        # کند» ولی موتور بی‌صدا آن را رد کند (skip_reason="overload_not_sustained"
-        # یا "low_util_not_sustained")؛ چون reward بر مبنای همان تیک محاسبه
-        # می‌شود، PPO سیگنالی می‌گرفت که انگار اکشنش اعمال شده - نویز مستقیم
-        # روی مهم‌ترین بُعد تصمیم (provisioning). حالا از همان متدهای عمومی
-        # خودِ SimulationEngine استفاده می‌شود تا mask دقیقاً با گیت واقعی
-        # یکی باشد.
-        turn_on_necessary = (self.engine._any_active_server_sustained_overloaded()
-                              or self.engine._any_service_capacity_starved(self._last_snapshot))
-
+        # *** رفع بازبینی (برگرداندن BUG-A): نسخه‌ی قبلی can_on/can_off را
+        # علاوه‌بر state+cooldown، به شرط «واقعاً لازم بودن» هم گیت می‌کرد
+        # (turn_on_necessary/_was_turn_off_necessary - همان چیزی که
+        # engine._apply_provisioning برای تشخیص necessary_now استفاده
+        # می‌کند). نیتش درست بود (هم‌راستایی mask با گیت واقعی موتور) ولی
+        # اثرش برعکس بود: در MaskablePPO یک اکشن ماسک‌شده احتمال دقیقاً
+        # صفر می‌گیرد - یعنی PPO هرگز نمی‌توانست TURN_ON/TURN_OFF را
+        # *زودتر* از آستانه‌ی ثابت sustain_high/low_sec امتحان کند، نه
+        # فقط این‌که یاد بگیرد بد است. چون NO_CHANGE همیشه مجاز می‌ماند،
+        # فضای تصمیم provisioning عملاً به زیرمجموعه‌ای از چیزی که
+        # Greedy/HPA/VOILA (که هر تیک آزادانه پیشنهاد می‌دهند و فقط لحظه‌ی
+        # اعمال توسط موتور گیت می‌شود) هم می‌توانند انجام دهند تنزل پیدا
+        # کرده بود - دقیقاً همان bypass_sustain_gate‌ای که قرار بود PPO یاد
+        # بگیرد، از فضای جستجو حذف شده بود.
+        #
+        # توجیه اصلی آن فیکس («بدون هم‌راستایی، PPO سیگنال reward نویزی
+        # می‌گیرد») هم نادرست بود: n_actions_applied در step() فقط از
+        # تفاضل شمارنده‌های self.engine.metrics.num_turn_on/off قبل و بعد
+        # از engine.step() ساخته می‌شود، و این شمارنده‌ها فقط در شاخه‌ی
+        # applied=True داخل _apply_provisioning افزایش می‌یابند - یعنی یک
+        # TURN_ON که با skip_reason="overload_not_sustained" رد می‌شود از
+        # دید reward/observation دقیقاً معادل NO_CHANGE است (نه mutation
+        # روی سرور، نه اثر روی state بعدی، نه پنالتی اکشن). پس مسیر درست
+        # این است که mask فقط امکان‌پذیری *فیزیکی* را چک کند (state،
+        # cooldown، ظرفیت، min_active_duration، last_active_server) - نه
+        # این‌که آیا Greedy هم همین را تأیید می‌کند - و بگذاریم PPO خودش
+        # از طریق reward واقعی یاد بگیرد کِی TURN_ON/TURN_OFF زودهنگام
+        # ارزش دارد.
         n_active = sum(1 for s in self.engine.servers.values() if s.state == ServerState.ACTIVE)
         for sid in _SERVER_IDS:
             s = self.engine.servers[sid]
             cooldown = s.in_cooldown(now, CFG.cooldown_sec)
-            can_on = (s.state == ServerState.OFF) and (not cooldown) and turn_on_necessary
+            can_on = (s.state == ServerState.OFF) and (not cooldown)
             can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
-                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec
-                       and self.engine._was_turn_off_necessary(sid))
+                       and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
             masks.extend([True, can_on, can_off])
         return np.array(masks, dtype=bool)
 
     def _any_server_can_host(self, service_id: int) -> bool:
-        cpu = CFG.services_info[service_id]["resource_mips"] 
-        return any(s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)
+        # *** رفع باگ (هم‌خانواده‌ی can_host بدون centroid): این متد can_up
+        # را در action_masks تعیین می‌کند؛ قبلاً بدون مختصات can_host صدا
+        # می‌زد، یعنی ماسک می‌توانست SCALE_UP یک سرویس را غیرمجاز اعلام کند
+        # (بدترین‌حالت fail) در حالی که با موقعیت واقعی تقاضا (demand_centroid)
+        # جای‌گذاری واقعاً ممکن بود - PPO حتی فرصت امتحان‌کردنش را نمی‌دید.
+        cpu = CFG.services_info[service_id]["resource_mips"]
+        centroid = None
+        if self._last_snapshot is not None:
+            centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
+        bts_lat, bts_long = centroid if centroid else (None, None)
+        return any(s.state == ServerState.ACTIVE
+                   and s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
                    for s in self.engine.servers.values())
 
 

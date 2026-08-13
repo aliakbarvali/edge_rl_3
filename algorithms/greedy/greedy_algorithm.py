@@ -10,7 +10,22 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 class GreedyAlgorithm(AlgorithmBase):
     name = "greedy"
 
+    def __init__(self):
+        # *** رفع باگ (fairness/SLA feasibility): قبلاً Greedy هیچ snapshot ای
+        # cache نمی‌کرد، پس select_placement_server/migration_decision هیچ
+        # راهی برای گرفتن demand_centroid واقعی سرویس نداشتند و can_host
+        # همیشه بدون bts_lat/bts_long صدا زده می‌شد -> همیشه از مسیر
+        # محافظه‌کارانه‌ی «بدترین فاصله‌ی ممکن از ۴ گوشه‌ی نقشه» رد می‌شد
+        # (نگاه کنید common/config.py:is_sla_feasible). این یعنی مقایسه‌ی
+        # Greedy در برابر VOILA (که همین snapshot را cache می‌کند) منصفانه
+        # نبود: تفاوت observed performance تا حدی از این می‌آمد که فقط VOILA
+        # اطلاعات موقعیت دقیق‌تری در همین چک SLA داشت، نه صرفاً سیاست بهتر.
+        # الان Greedy هم دقیقاً مثل VOILA/PPO یک self._last_snapshot cache
+        # می‌کند تا از همان demand_centroid برای can_host استفاده کند.
+        self._last_snapshot: dict | None = None
+
     def scale_decision(self, service_id, metrics_snapshot):
+        self._last_snapshot = metrics_snapshot
         svc = metrics_snapshot["services"][service_id]
         queue_len = svc["queue_len"]
         occ_ratio = svc["avg_queue_occupancy"] / queue_len if queue_len else 0.0
@@ -21,6 +36,7 @@ class GreedyAlgorithm(AlgorithmBase):
         return ScaleAction.NO_CHANGE
 
     def provision_decision(self, servers, metrics_snapshot, now):
+        self._last_snapshot = metrics_snapshot
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
@@ -49,15 +65,25 @@ class GreedyAlgorithm(AlgorithmBase):
 
         return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
+    def _demand_centroid_or_none(self, service_id):
+        if self._last_snapshot is None:
+            return None
+        return self._last_snapshot["services"].get(service_id, {}).get("demand_centroid")
+
     def select_placement_server(self, service_id, servers):
         cpu = CFG.services_info[service_id]["resource_mips"]
-        candidates = [s for s in servers.values()
-                      if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
-        if not candidates:
-            return None
         active_all = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         clat = sum(s.lat for s in active_all) / len(active_all)
         clon = sum(s.long for s in active_all) / len(active_all)
+        # *** رفع باگ: از demand_centroid واقعی سرویس (اگر موجود باشد) به‌جای
+        # فقط مرکز سرورهای فعال، هم برای can_host (چک SLA) و هم برای مرتب‌سازی
+        # فاصله استفاده می‌شود - همان چیزی که VOILA/PPO از قبل انجام می‌دادند.
+        centroid = self._demand_centroid_or_none(service_id) or (clat, clon)
+        candidates = [s for s in servers.values()
+                      if s.state == ServerState.ACTIVE
+                      and s.can_host(service_id, cpu, bts_lat=centroid[0], bts_long=centroid[1])]
+        if not candidates:
+            return None
         candidates.sort(key=lambda s: haversine_km(clat, clon, s.lat, s.long))
         return candidates[0].id
 
@@ -72,9 +98,11 @@ class GreedyAlgorithm(AlgorithmBase):
             if other_hosts:
                 continue
             cpu = CFG.services_info[service_id]["resource_mips"]
+            centroid = self._demand_centroid_or_none(service_id)
+            ref_lat, ref_lon = centroid if centroid else (draining_server.lat, draining_server.long)
             candidates = [s for s in servers.values()
                           if s.id != draining_server.id and s.state == ServerState.ACTIVE
-                          and s.can_host(service_id, cpu)]
+                          and s.can_host(service_id, cpu, bts_lat=ref_lat, bts_long=ref_lon)]
             if candidates:
                 candidates.sort(key=lambda s: haversine_km(draining_server.lat, draining_server.long,
                                                              s.lat, s.long))

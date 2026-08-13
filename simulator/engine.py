@@ -248,7 +248,9 @@ class SimulationEngine:
     def _place_replica(self, server_id: int, service_id: int) -> Optional[Replica]:
         s = self.servers[server_id]
         cpu = CFG.services_info[service_id]["resource_mips"]
-        if not s.can_host(service_id, cpu):
+        centroid = self._service_demand_centroid.get(service_id)
+        bts_lat, bts_long = centroid if centroid else (None, None)
+        if not s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long):
             return None
         svc = CFG.services_info[service_id]
         
@@ -432,9 +434,9 @@ class SimulationEngine:
  
         self._tick_response_times.append(req.response_time_sec)
         self._log("request_completed", request_id=req.id, service_id=req.service_id,
-                  server_id=server.id, response_time_sec=req.response_time_sec,
-                  distance_km=distance_km, network_delay_ms=delay_ms)
-
+                server_id=server.id, response_time_sec=req.response_time_sec,
+                distance_km=distance_km, network_delay_ms=delay_ms,
+                deadline_violated=req.deadline_violated) 
         self._finalize_request(req)
     def _finalize_request(self, req: Request):
         self.metrics.record_request(req)
@@ -548,7 +550,8 @@ class SimulationEngine:
     def _apply_provisioning(self, action, snapshot: dict):
         self._last_tick_decisions["provision"] = action      
         applied = False
-        skip_reason = None 
+        skip_reason = None
+        via_capacity_starved_only = None
         turn_on_necessary = (self._any_active_server_sustained_overloaded()
                               or self._any_service_capacity_starved(snapshot))
         turn_off_opportunity = self._any_active_server_sustained_underloaded()
@@ -562,7 +565,20 @@ class SimulationEngine:
             elif not turn_on_necessary:
                 skip_reason = "overload_not_sustained"
             else:
-                necessary_now = self._was_turn_on_necessary_audit(snapshot)  
+                necessary_now = self._was_turn_on_necessary_audit(snapshot)
+                # *** یادداشت شفافیت (نه تغییر رفتار متریک): _was_turn_on_necessary_audit
+                # از همان _any_service_capacity_starved(snapshot) استفاده می‌کند که
+                # خودِ turn_on_necessary هم از آن استفاده کرده - یعنی وقتی دلیل
+                # TURN_ON صرفاً capacity_starved بوده (نه sustained-overload)، این
+                # ممیزی دارد همان واقعیت را روی همان snapshot دوباره می‌خواند، نه
+                # یک چک واقعاً مستقل. این فی‌نفسه غلط نیست (starvation یک واقعیت
+                # ساختاری عینی است) اما به این معنی است که این مسیر خاص هرگز
+                # نمی‌تواند "نادرست" ثبت شود - برای شفافیت گزارش، این حالت جدا
+                # لاگ می‌شود تا در تحلیل decision_correctness قابل تفکیک از
+                # TURN_ONهای واقعاً مبتنی‌بر overload لحظه‌ای باشد.
+                via_capacity_starved_only = (
+                    self._any_service_capacity_starved(snapshot)
+                    and not self._any_active_server_sustained_overloaded())
                 self._start_server_boot(action.server_id)
                 self.metrics.record_scale_action("TURN_ON")
                 applied = True
@@ -614,7 +630,9 @@ class SimulationEngine:
 
         self._log("provision_decision", action=action.action.name, server_id=action.server_id,
                   applied=applied, skip_reason=skip_reason,
-                  necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity)
+                  necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity,
+                  via_capacity_starved_only=(via_capacity_starved_only if applied and
+                      action.action == ProvisionActionType.TURN_ON else None))
 
     def _any_active_server_sustained_overloaded(self) -> bool:
         for sid, since in self._high_util_since.items():
@@ -623,12 +641,19 @@ class SimulationEngine:
         return False
 
     def _any_service_capacity_starved(self, snapshot: dict) -> bool:
-   
+
         for svc_id in CFG.active_services:
             if not self._was_scale_up_necessary(svc_id, snapshot):
                 continue
             cpu = CFG.services_info[svc_id]["resource_mips"]
-            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
+            # *** رفع باگ: مرکز ثقل واقعی تقاضای همین سرویس (اگر موجود
+            # باشد) به can_host پاس داده می‌شود تا بررسی SLA به‌جای
+            # بدترین‌حالت همیشگی، از موقعیت واقعی ترافیک استفاده کند
+            # (نگاه کنید common/models.py:Server.can_host).
+            centroid = snapshot["services"][svc_id].get("demand_centroid")
+            bts_lat, bts_long = centroid if centroid else (None, None)
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING)
+                       and s.can_host(svc_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
                        for s in self.servers.values()):
                 return True
         return False
@@ -654,9 +679,17 @@ class SimulationEngine:
     def _was_turn_off_necessary_audit(self, server_id: int, snapshot: dict) -> bool:
         return snapshot["servers"][server_id]["utilization"] < CFG.util_scale_down_threshold
     def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
+        # *** رفع باگ: قبلاً این معیار عیناً همان فرمول/آستانه‌ی داخلی
+        # GreedyAlgorithm.scale_decision (occ_ratio>0.7 or rejection_rate>0)
+        # بود - یعنی یک تاتولوژی که Greedy را ساختاری "همیشه درست" نشان
+        # می‌داد. حالا آستانه مستقل شده (common/config.py) و سیگنال
+        # deadline_violation_rate (پیامد واقعی SLA، نه پروکسی صف داخلی هیچ
+        # الگوریتمی) هم به‌عنوان معیار مستقل اضافه شده.
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
-        return occ_ratio > CFG.decision_audit_scale_up_occ_threshold or sv["rejection_rate"] > 0.0
+        return (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
+                or sv["rejection_rate"] > 0.0
+                or sv["deadline_violation_rate"] > 0.0)
 
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
         sv = snapshot["services"][svc_id]
@@ -709,10 +742,27 @@ class SimulationEngine:
             else:
                 skip_reason = "only_one_replica_left"
  
+        # *** رفع باگ (تکمیل BUG-G برای مسیر scale): همان تفکیکی که
+        # _apply_provisioning بین «الگوریتم اصلاً پیشنهاد نداد» (missed) و
+        # «الگوریتم دقیقاً همین اکشن را پیشنهاد داد ولی یک گیت سیستمی مثل
+        # cooldown/no_target_server/no_mature_replica جلویش را گرفت»
+        # (blocked) قائل می‌شود، اینجا هم اعمال می‌شود - قبلاً هر دو حالت
+        # یکسان missed_opportunity حساب می‌شدند و decision_correctness
+        # نمی‌توانست ضعف واقعی الگوریتم را از یک محدودیت سیستمی موقت تفکیک
+        # کند.
+        proposed_scale_up = decision == ScaleAction.SCALE_UP
+        proposed_scale_down = decision == ScaleAction.SCALE_DOWN
+
         if necessary_up and not (decision == ScaleAction.SCALE_UP and applied):
-            self.metrics.record_missed_opportunity("SCALE_UP")
+            if proposed_scale_up:
+                self.metrics.record_blocked_opportunity("SCALE_UP")
+            else:
+                self.metrics.record_missed_opportunity("SCALE_UP")
         if necessary_down and not (decision == ScaleAction.SCALE_DOWN and applied):
-            self.metrics.record_missed_opportunity("SCALE_DOWN")
+            if proposed_scale_down:
+                self.metrics.record_blocked_opportunity("SCALE_DOWN")
+            else:
+                self.metrics.record_missed_opportunity("SCALE_DOWN")
  
         self._log("scale_decision", service_id=svc_id, decision=decision.name,
                   applied=applied, skip_reason=skip_reason,
@@ -737,10 +787,34 @@ class SimulationEngine:
             else:
                 self._high_util_since[sid] = None
 
+    def _annotate_provisioning_necessity(self, snapshot: dict):
+        """(رفع باگ: هم‌راستایی action mask آموزش/inference برای PPO)
+
+        algorithms/ppo/env.py (مسیر آموزش) مستقیماً به خودِ self.engine
+        دسترسی دارد و می‌تواند _any_active_server_sustained_overloaded /
+        _any_service_capacity_starved / _was_turn_off_necessary را زنده
+        صدا بزند تا mask دقیقاً با گیت واقعی _apply_provisioning یکی باشد.
+        اما algorithms/ppo/ppo_algorithm.py (مسیر inference/k8s واقعی) فقط
+        (servers, snapshot, now) می‌گیرد و اصلاً به نمونه‌ی engine دسترسی
+        ندارد - قبلاً همین باعث می‌شد mask زمان inference از mask زمان
+        آموزش عقب بماند (فقط state+cooldown را چک می‌کرد، نه واقعاً لازم
+        بودن) و مدل رفتاری متفاوت از چیزی که آموزش دیده ببیند.
+
+        راه‌حل: به‌جای تکرار منطق sustain-tracking در ppo_algorithm.py (که
+        خطر واگرایی بعدی دارد)، همان سیگنال‌های تازه‌محاسبه‌شده مستقیماً در
+        خودِ snapshot ذخیره می‌شوند - یک منبع واحد حقیقت، هم برای مسیر
+        آموزش (اگر بخواهد) هم برای هر AlgorithmBase دیگری."""
+        snapshot["global"]["turn_on_necessary"] = (
+            self._any_active_server_sustained_overloaded()
+            or self._any_service_capacity_starved(snapshot))
+        for sid in self.servers:
+            snapshot["servers"][sid]["turn_off_necessary"] = self._was_turn_off_necessary(sid)
+
     def _handle_decision_tick(self, external_actions: dict | None = None) -> dict: 
         self.metrics.record_snapshot(self.now, self.servers)
         snapshot = self._build_metrics_snapshot()
         self._update_sustain_tracking(snapshot)
+        self._annotate_provisioning_necessity(snapshot)
         self._last_tick_decisions = {"provision": None, "scale": {}}
         self._last_tick_applied_actions = {"provision": None, "scale": {}}
 
@@ -818,4 +892,3 @@ class SimulationEngine:
             elif ev.type == EventType.ENERGY_RESYNC:
                 pass   
         return None, True
-    

@@ -174,7 +174,18 @@ SUSTAIN_LOW_SEC = 60.0
 SUSTAIN_HIGH_SEC = 30.0
 COOLDOWN_SEC = 60.0
 
-DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.7
+# *** رفع باگ (ممیزی SCALE هم‌ارز با Greedy): این آستانه قبلاً دقیقاً 0.7
+# بود، یعنی عین آستانه‌ی داخلی GreedyAlgorithm.scale_decision (occ_ratio>0.7).
+# نتیجه: "correctness rate" الگوریتم Greedy ساختاری نزدیک ۱۰۰٪ می‌شد چون
+# معیار سنجش دقیقاً معیار تصمیم خودش بود - نه چون سیاستش واقعاً بهتر است.
+# این ممیزی باید یک معیار *عینی و مستقل از هر چهار الگوریتم* باشد. دو تغییر:
+# ۱) آستانه از 0.7 (Greedy) فاصله گرفت و به یک نقطه‌ی محافظه‌کارتر منتقل شد
+#    که با هیچ‌کدام از آستانه‌های داخلی الگوریتم‌ها یکی نیست
+#    (Greedy=0.7, HPA target=0.70, VOILA OCC_UP=0.65).
+# ۲) سیگنال deadline_violation_rate>0 هم به‌عنوان معیار "لازم بود" اضافه شد
+#    چون این مستقیماً پیامد واقعی (نقض SLA) را می‌سنجد، نه یک پروکسی داخلی
+#    اشغال صف که می‌تواند تصادفاً با آستانه‌ی یکی از الگوریتم‌ها یکی باشد.
+DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.85
 DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD = 0.2
 DECISION_INTERVAL_SEC = 30.0
 
@@ -187,6 +198,23 @@ PPO_REWARD_WEIGHTS = {
     "w5_rejected": 0.25,
 }
 PPO_PENALTY_PER_ACTION = 0.02
+
+# *** میانگین‌گیری deadline_violation_rate بین سرویس‌ها قبلاً بدون وزن بود
+# (هر سرویس، صرف‌نظر از حجم ترافیعش، سهم برابر در جریمه داشت) - این باعث
+# می‌شد سرویس‌های کم‌ترافیک و batch (۱۱-۱۵) با یک نقض تک (که با ~۱ درخواست
+# در هر تیک می‌شود ۱۰۰٪ نرخ نقض همان تیک) به‌اندازه‌ی سرویس‌های پرترافیک در
+# reward اثر بگذارند - نتیجه: PPO یاد گرفت روی این سرویس‌ها replica اضافه
+# نگه دارد (analyze_necessity_by_service.py: SCALE_UPهای svc15 تا ۸.۷ برابر
+# سهم ترافیکش). حالا میانگین یک ترکیب وزن‌دار است:
+#     avg_dv_rate = alpha * (وزن‌دار بر اساس recent_arrivals هر سرویس)
+#                 + (1-alpha) * (میانگین ساده‌ی قبلی، برای fairness)
+# alpha=1.0 یعنی کاملاً وزن‌دار (SLA سرویس‌های کم‌ترافیک عملاً نادیده گرفته
+# می‌شود)، alpha=0.0 یعنی رفتار قبلی. مقدار پیش‌فرض ۰.۷ یک نقطه‌ی میانی است:
+# عمدتاً حجم واقعی ترافیک را منعکس می‌کند ولی SLA سرویس‌های batch را هم به
+# کل بی‌اثر نمی‌کند. اگر بعد از train مجدد هنوز svc11-15 نامتناسب SCALE_UP
+# می‌گیرند، alpha را بالاتر ببرید (مثلاً ۰.۸-۰.۹)؛ اگر برعکس این سرویس‌ها
+# شروع به نقض زیاد کردند، alpha را پایین بیاورید.
+PPO_DEADLINE_FAIRNESS_ALPHA = 0.7
 
 SEED = int(_os.environ.get("EOTCH_SEED", "42"))
 
@@ -231,6 +259,7 @@ class Config:
     decision_interval_sec: float = DECISION_INTERVAL_SEC
     ppo_reward_weights: dict = field(default_factory=lambda: PPO_REWARD_WEIGHTS)
     ppo_penalty_per_action: float = PPO_PENALTY_PER_ACTION
+    ppo_deadline_fairness_alpha: float = PPO_DEADLINE_FAIRNESS_ALPHA
     seed: int = SEED
     min_active_duration_sec: float = MIN_ACTIVE_DURATION_SEC
     min_replica_age_before_scale_down_sec: float = MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC

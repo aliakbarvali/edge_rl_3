@@ -70,6 +70,24 @@ class RealtimeEngine:
         self._low_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
         self._high_util_since: Dict[int, Optional[float]] = {sid: None for sid in self.servers}
 
+        # *** رفع واگرایی sim/real: simulator/engine.py وقتی migration یک
+        # سرویس تک‌رپلیکایی هنگام drain جواب ندهد، _trigger_emergency_boot
+        # را صدا می‌زند (یک سرور خاموش دیگر را بوت می‌کند تا migration بعداً
+        # کامل شود). این نسخه معادلش را نداشت - فقط server_drain_aborted لاگ
+        # می‌شد و درین بی هیچ اقدام جبرانی متوقف می‌شد.
+        self._emergency_boot_for_service: Dict[int, int] = {}
+
+        # *** رفع باگ (avg_distance_km/avg_network_delay_ms همیشه صفر در k8s):
+        # route_request این دو مقدار را دقیق حساب و لاگ می‌کند، اما
+        # record_external_completion که async و بعداً (از طریق صف Redis)
+        # صدا زده می‌شود، یک Request خام با bts_lat=bts_long=0.0 می‌سازد و
+        # هرگز network_delay_ms/_distance_km را نمی‌داند. این map همان دو
+        # مقدار را زیر request_id نگه می‌دارد تا در لحظه‌ی completion به
+        # Request منتقل شوند. هر ورودی timestamp هم دارد تا اگر completion
+        # هرگز نرسید (پاد کرش کرد و هیچ‌وقت گزارش نداد)، sweep دوره‌ای در
+        # _reservation_sweeper_loop آن را پاک کند و اینجا نشتی حافظه رخ ندهد.
+        self._request_geo: Dict[int, Tuple[float, float, float]] = {}
+
 
     def _init_shadow_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -129,9 +147,51 @@ class RealtimeEngine:
         s.state = ServerState.ACTIVE
         s.last_transition_time = time.monotonic()
         s.num_boots += 1
+        # *** رفع باگ: هزینه‌ی انرژی ثابت هر رویداد boot (CFG.e_boot_server_j
+        # = 500J، طبق common/config.py و simulator/engine.py:_start_server_boot)
+        # اینجا هیچ‌وقت اضافه نمی‌شد - فقط توان لحظه‌ای integrate می‌شد
+        # (_utilization_energy_sampler_loop). نتیجه: cumulative_energy_joule
+        # در اجرای واقعی k8s سیستماتیک کمتر از واقع گزارش می‌شد، مخصوصاً
+        # برای الگوریتم‌هایی که سرور زیاد boot می‌کنند - دقیقاً برخلاف
+        # README بخش ۱۰ که این هزینه را جزء انرژی کل تعریف کرده.
+        s.cumulative_energy_joule += CFG.e_boot_server_j
         self.metrics.record_transition("server_boot")
         self._log("server_boot_started", server_id=server_id)
         self._log("server_active", server_id=server_id)
+
+        # معادل RealtimeEngine همان بخش رهایی (rescue) در
+        # simulator/engine.py::_handle_boot_done - اگر این سرور به‌عنوان
+        # boot اضطراری برای یک migration ناتمام روشن شده بود، حالا که ACTIVE
+        # شد آن سرویس دیگر "گیر" نیست؛ تیک تصمیم بعدی می‌تواند دوباره
+        # migration/drain را با این سرور به‌عنوان کاندید امتحان کند.
+        rescued = [svc_id for svc_id, target_id in self._emergency_boot_for_service.items()
+                   if target_id == server_id]
+        for svc_id in rescued:
+            del self._emergency_boot_for_service[svc_id]
+            self._log("emergency_boot_completed", server_id=server_id, service_id=svc_id)
+
+    async def _trigger_emergency_boot(self, unmigrated_services: set, draining_server: Server):
+        """معادل RealtimeEngine همان simulator/engine.py:_trigger_emergency_boot.
+        وقتی migration یک سرویس تک‌رپلیکایی هنگام drain جواب نداد، به‌جای
+        شکست بی‌صدا، نزدیک‌ترین سرور خاموش برای آن سرویس بوت می‌شود تا در
+        تیک بعدی migration/drain دوباره امتحان شود."""
+        off_servers = [x for x in self.servers.values() if x.state == ServerState.OFF]
+        reserved_cpu: Dict[int, int] = defaultdict(int)
+        for svc_id in unmigrated_services:
+            if svc_id in self._emergency_boot_for_service:
+                continue
+            cpu = CFG.services_info[svc_id]["resource_mips"]
+            candidates = [x for x in off_servers if x.capacity - reserved_cpu[x.id] >= cpu]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda x: haversine_km(
+                draining_server.lat, draining_server.long, x.lat, x.long))
+            target = candidates[0]
+            reserved_cpu[target.id] += cpu
+            self._emergency_boot_for_service[svc_id] = target.id
+            await self._activate_server(target.id)
+            self._log("emergency_boot_triggered", server_id=target.id, service_id=svc_id,
+                      source_server_id=draining_server.id, reason="migration_target_unavailable")
 
     async def _wait_specific_ready(self, replicas: Dict[int, "Replica"], timeout: float) -> Dict[int, bool]:
 
@@ -162,7 +222,10 @@ class RealtimeEngine:
                 for other in self.servers.values())
         }
         if not sole_hosted.issubset(migrated_services):
-            self._log("server_drain_aborted", server_id=server_id, reason="migration_incomplete")
+            unmigrated = sole_hosted - migrated_services
+            await self._trigger_emergency_boot(unmigrated, s)
+            self._log("server_drain_aborted", server_id=server_id,
+                      reason="migration_incomplete", unmigrated=list(unmigrated))
             return False
 
         s.state = ServerState.DRAINING
@@ -213,12 +276,13 @@ class RealtimeEngine:
         s.num_shutdowns += 1
         self.metrics.record_transition("server_shutdown")
         self._log("server_off", server_id=server_id)
-        return True
-
+        return True 
     async def _create_replica(self, server_id: int, service_id: int) -> Optional[Replica]:
         s = self.servers[server_id]
         cpu = CFG.services_info[service_id]["resource_mips"]
-        if not s.can_host(service_id, cpu):
+        centroid = self._service_demand_centroid.get(service_id)
+        bts_lat, bts_long = centroid if centroid else (None, None)
+        if not s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long):
             return None
         svc = CFG.services_info[service_id]
 
@@ -411,11 +475,7 @@ class RealtimeEngine:
 
     def _any_service_capacity_starved(self, snapshot: dict) -> bool:
         for svc_id in CFG.active_services:
-            sv = snapshot["services"][svc_id]
-            occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
-            necessary = (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
-                         or sv["rejection_rate"] > 0.0)
-            if not necessary:
+            if not self._was_scale_up_necessary(svc_id, snapshot):
                 continue
             cpu = CFG.services_info[svc_id]["resource_mips"]
             # *** رفع واگرایی sim/real: simulator/engine.py سرورهای BOOTING را
@@ -423,10 +483,196 @@ class RealtimeEngine:
             # نسخه قبلاً فقط ACTIVE را می‌پذیرفت، یعنی وقتی سروری همین الان
             # داشت برای همین سرویس بوت می‌شد، سیستم همچنان "starved" تشخیص
             # می‌داد و می‌توانست TURN_ON اضافه‌ی غیرضروری صادر کند.
-            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
+            # *** رفع باگ can_host: مرکز ثقل واقعی تقاضای همین سرویس (اگر
+            # موجود باشد) به can_host پاس داده می‌شود تا به‌جای بدترین‌حالت
+            # همیشگی، از موقعیت واقعی ترافیک استفاده شود.
+            centroid = snapshot["services"][svc_id].get("demand_centroid")
+            bts_lat, bts_long = centroid if centroid else (None, None)
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING)
+                       and s.can_host(svc_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
                        for s in self.servers.values()):
                 return True
         return False
+
+    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
+        # *** رفع باگ: هم‌راستا با simulator/engine.py - این معیار دیگر عیناً
+        # فرمول/آستانه‌ی داخلی Greedy نیست (نگاه کنید common/config.py برای
+        # توضیح کامل رفع تاتولوژی ممیزی SCALE_UP).
+        sv = snapshot["services"][svc_id]
+        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+        return (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
+                or sv["rejection_rate"] > 0.0
+                or sv["deadline_violation_rate"] > 0.0)
+
+    def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
+        sv = snapshot["services"][svc_id]
+        occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
+        return occ_ratio < CFG.decision_audit_scale_down_occ_threshold and sv["n_ready_replicas"] > 1
+
+    def _was_turn_on_necessary_audit(self, snapshot: dict, now: float) -> bool:
+        overloaded_now = any(
+            snapshot["servers"][sid]["utilization"] > CFG.util_scale_up_threshold
+            for sid, s in self.servers.items() if s.state == ServerState.ACTIVE
+        )
+        return overloaded_now or self._any_service_capacity_starved(snapshot)
+
+    def _was_turn_off_necessary_audit(self, server_id: int, snapshot: dict) -> bool:
+        return snapshot["servers"][server_id]["utilization"] < CFG.util_scale_down_threshold
+
+    def _annotate_provisioning_necessity(self, snapshot: dict, now: float):
+        """معادل RealtimeEngine همان annotate در simulator/engine.py - نگاه
+        کنید توضیح کامل آنجا. لازم است این‌جا هم تکرار شود چون RealtimeEngine
+        و SimulationEngine دو حلقه‌ی رویداد جدا (async در برابر sync/heap)
+        دارند و snapshot هرکدام مستقل ساخته می‌شود."""
+        snapshot["global"]["turn_on_necessary"] = (
+            self._any_active_server_sustained_overloaded(now)
+            or self._any_service_capacity_starved(snapshot))
+        for sid in self.servers:
+            snapshot["servers"][sid]["turn_off_necessary"] = self._was_turn_off_necessary(sid, now)
+
+    async def _apply_provisioning(self, action, snapshot: dict, now: float):
+        """معادل RealtimeEngine همان _apply_provisioning در simulator/engine.py.
+        رفع باگ: قبلاً این متد فقط اکشن را اعمال می‌کرد و مستقیم
+        metrics.record_scale_action را صدا می‌زد، بدون این‌که
+        self._log("provision_decision", ...) یا هیچ‌کدام از
+        record_decision_correctness/record_missed_opportunity/
+        record_blocked_opportunity صدا زده شوند - یعنی در حالت k8s واقعی
+        decision_correctness همیشه {} می‌ماند و analyze_decision_quality.py
+        روی لاگ اجرای واقعی چیزی برای تحلیل نداشت (هیچ رویداد
+        scale_decision/provision_decision ثبت نمی‌شد)."""
+        applied = False
+        skip_reason = None
+        via_capacity_starved_only = None
+        turn_on_necessary = (self._any_active_server_sustained_overloaded(now)
+                              or self._any_service_capacity_starved(snapshot))
+        turn_off_opportunity = self._any_active_server_sustained_underloaded(now)
+
+        if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
+            s = self.servers[action.server_id]
+            if s.state != ServerState.OFF:
+                skip_reason = "not_off"
+            elif s.in_cooldown(now, CFG.cooldown_sec):
+                skip_reason = "cooldown"
+            elif not turn_on_necessary:
+                skip_reason = "overload_not_sustained"
+            else:
+                necessary_now = self._was_turn_on_necessary_audit(snapshot, now)
+                # *** یادداشت شفافیت (هم‌راستا با simulator/engine.py): وقتی
+                # دلیل TURN_ON صرفاً capacity_starved بوده، ممیزی دارد از
+                # همان تابع/همان snapshot دوباره می‌خواند - تاتولوژیک برای
+                # این مسیر خاص. جدا لاگ می‌شود تا در تحلیل قابل تفکیک باشد.
+                via_capacity_starved_only = (
+                    self._any_service_capacity_starved(snapshot)
+                    and not self._any_active_server_sustained_overloaded(now))
+                await self._activate_server(action.server_id)
+                self.metrics.record_scale_action("TURN_ON")
+                applied = True
+                self.metrics.record_decision_correctness("TURN_ON", necessary_now)
+        elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
+            s = self.servers[action.server_id]
+            n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
+            turn_off_necessary = self._was_turn_off_necessary(action.server_id, now)
+            if s.state != ServerState.ACTIVE:
+                skip_reason = "not_active"
+            elif not turn_off_necessary:
+                skip_reason = "low_util_not_sustained"
+            elif n_active <= 1:
+                skip_reason = "last_active_server"
+            elif s.in_cooldown(now, CFG.cooldown_sec):
+                skip_reason = "cooldown"
+            elif (now - s.last_transition_time) < CFG.min_active_duration_sec:
+                skip_reason = "min_active_duration"
+            else:
+                if await self._drain_server(action.server_id):
+                    self.metrics.record_scale_action("TURN_OFF")
+                    applied = True
+                    self.metrics.record_decision_correctness(
+                        "TURN_OFF", self._was_turn_off_necessary_audit(action.server_id, snapshot))
+                else:
+                    skip_reason = "migration_incomplete"
+
+        proposed_turn_on = action.action == ProvisionActionType.TURN_ON and action.server_id is not None
+        proposed_turn_off = action.action == ProvisionActionType.TURN_OFF and action.server_id is not None
+
+        if turn_on_necessary and not applied:
+            if proposed_turn_on:
+                self.metrics.record_blocked_opportunity("TURN_ON")
+            else:
+                self.metrics.record_missed_opportunity("TURN_ON")
+        if turn_off_opportunity and not (action.action == ProvisionActionType.TURN_OFF and applied):
+            if proposed_turn_off:
+                self.metrics.record_blocked_opportunity("TURN_OFF")
+            else:
+                self.metrics.record_missed_opportunity("TURN_OFF")
+
+        self._log("provision_decision", action=action.action.name, server_id=action.server_id,
+                  applied=applied, skip_reason=skip_reason,
+                  necessary_turn_on=turn_on_necessary, turn_off_opportunity=turn_off_opportunity,
+                  via_capacity_starved_only=(via_capacity_starved_only if applied and
+                      action.action == ProvisionActionType.TURN_ON else None))
+
+    async def _apply_scale_decision(self, svc_id: int, decision: ScaleAction, snapshot: dict, now: float):
+        """معادل RealtimeEngine همان _apply_scale_decision در simulator/engine.py
+        (نگاه کنید توضیح در _apply_provisioning بالا)."""
+        applied = False
+        skip_reason = None
+        necessary_up = self._was_scale_up_necessary(svc_id, snapshot)
+        necessary_down = self._was_scale_down_necessary(svc_id, snapshot)
+
+        if decision == ScaleAction.NO_CHANGE:
+            pass
+        elif (now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec:
+            skip_reason = "cooldown"
+        elif decision == ScaleAction.SCALE_UP:
+            target = self.algorithm.select_placement_server(svc_id, self.servers)
+            if target is not None:
+                new_r = await self._create_replica(target, svc_id)
+                if new_r is not None:
+                    self.metrics.record_scale_action("SCALE_UP")
+                    self._service_last_scale_time[svc_id] = now
+                    applied = True
+                    self.metrics.record_decision_correctness("SCALE_UP", necessary_up)
+                else:
+                    skip_reason = "placement_failed"
+            else:
+                skip_reason = "no_target_server"
+        elif decision == ScaleAction.SCALE_DOWN:
+            ready = [r for r in self.replicas_by_service.get(svc_id, [])
+                     if r.state == ReplicaState.READY]
+            if len(ready) > 1:
+                mature = [r for r in ready
+                          if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
+                if not mature:
+                    skip_reason = "no_mature_replica"
+                else:
+                    victim = self.algorithm.select_scale_down_victim(
+                        svc_id, mature, self.servers, now,
+                        occupancy_fn=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
+                    asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
+                    self.metrics.record_scale_action("SCALE_DOWN")
+                    self._service_last_scale_time[svc_id] = now
+                    applied = True
+                    self.metrics.record_decision_correctness("SCALE_DOWN", necessary_down)
+            else:
+                skip_reason = "only_one_replica_left"
+
+        proposed_scale_up = decision == ScaleAction.SCALE_UP
+        proposed_scale_down = decision == ScaleAction.SCALE_DOWN
+
+        if necessary_up and not (decision == ScaleAction.SCALE_UP and applied):
+            if proposed_scale_up:
+                self.metrics.record_blocked_opportunity("SCALE_UP")
+            else:
+                self.metrics.record_missed_opportunity("SCALE_UP")
+        if necessary_down and not (decision == ScaleAction.SCALE_DOWN and applied):
+            if proposed_scale_down:
+                self.metrics.record_blocked_opportunity("SCALE_DOWN")
+            else:
+                self.metrics.record_missed_opportunity("SCALE_DOWN")
+
+        self._log("scale_decision", service_id=svc_id, decision=decision.name,
+                  applied=applied, skip_reason=skip_reason,
+                  necessary_scale_up=necessary_up, necessary_scale_down=necessary_down)
 
     async def decision_loop(self):
         while self._running:
@@ -434,53 +680,14 @@ class RealtimeEngine:
             snapshot = self._build_metrics_snapshot()
             now = time.monotonic()
             self._update_sustain_tracking(snapshot, now)
+            self._annotate_provisioning_necessity(snapshot, now)
 
             action = self.algorithm.provision_decision(self.servers, snapshot, now)
-            if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:
-                s = self.servers[action.server_id]
-                turn_on_necessary = (self._any_active_server_sustained_overloaded(now)
-                                      or self._any_service_capacity_starved(snapshot))
-                if (s.state == ServerState.OFF and not s.in_cooldown(now, CFG.cooldown_sec)
-                        and turn_on_necessary):
-                    await self._activate_server(action.server_id)
-                    self.metrics.record_scale_action("TURN_ON")
-            elif action.action == ProvisionActionType.TURN_OFF and action.server_id is not None:
-                s = self.servers[action.server_id]
-                n_active = sum(1 for x in self.servers.values() if x.state == ServerState.ACTIVE)
-                turn_off_necessary = self._was_turn_off_necessary(action.server_id, now)
-                min_age_ok = (now - s.last_transition_time) >= CFG.min_active_duration_sec
-                if (s.state == ServerState.ACTIVE and n_active > 1
-                        and not s.in_cooldown(now, CFG.cooldown_sec)
-                        and turn_off_necessary and min_age_ok):
-                    if await self._drain_server(action.server_id):
-                        self.metrics.record_scale_action("TURN_OFF")
+            await self._apply_provisioning(action, snapshot, now)
 
             for svc_id in CFG.active_services:
                 decision = self.algorithm.scale_decision(svc_id, snapshot)
-
-                if decision == ScaleAction.NO_CHANGE:
-                    continue
-                if (now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec:
-                    continue
-
-                if decision == ScaleAction.SCALE_UP:
-                    target = self.algorithm.select_placement_server(svc_id, self.servers)
-                    if target is not None:
-                        await self._create_replica(target, svc_id)
-                        self.metrics.record_scale_action("SCALE_UP")
-                        self._service_last_scale_time[svc_id] = now
-                elif decision == ScaleAction.SCALE_DOWN:
-                    ready = [r for r in self.replicas_by_service.get(svc_id, [])
-                             if r.state == ReplicaState.READY]
-                    mature = [r for r in ready
-                              if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
-                    if len(ready) > 1 and mature:
-                        victim = self.algorithm.select_scale_down_victim(
-                            svc_id, mature, self.servers, now,
-                            occupancy_fn=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
-                        asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
-                        self.metrics.record_scale_action("SCALE_DOWN")
-                        self._service_last_scale_time[svc_id] = now
+                await self._apply_scale_decision(svc_id, decision, snapshot, now)
 
             for sid, s in self.servers.items():
                 self._util_at_window_start[sid] = s.cumulative_busy_cpu_seconds
@@ -579,6 +786,11 @@ class RealtimeEngine:
         self._log("request_routed", request_id=request_id, server_id=server.id, 
                   distance_km=distance_km, network_delay_ms=delay_ms)
 
+        # *** رفع باگ: ذخیره‌ی distance_km/delay_ms برای همین request_id تا
+        # وقتی completion (async، از طریق drain_completion_queue) رسید،
+        # record_external_completion بتواند آن‌ها را روی Request ست کند.
+        self._request_geo[request_id] = (distance_km, delay_ms, time.monotonic())
+
         ip = redis_state.get_pod_ip(service_id, chosen.server_id)
         port = k8s_client.worker_port(service_id)
 
@@ -602,6 +814,15 @@ class RealtimeEngine:
         req = Request(id=request_id, bts_lat=0.0, bts_long=0.0, service_id=service_id,
                        arrival_time=time.time())
         req.response_time_sec = response_time_sec
+        # *** رفع باگ: distance_km/network_delay_ms واقعی همین درخواست (که
+        # در route_request حساب شده بود) اینجا روی Request ست می‌شود، وگرنه
+        # metrics.record_request همیشه مقدار پیش‌فرض 0.0 را می‌بیند و
+        # avg_distance_km/avg_network_delay_ms در نتیجه‌ی نهایی k8s همیشه
+        # صفر می‌ماند (نگاه کنید common/metrics.py:_distance_of).
+        geo = self._request_geo.pop(request_id, None)
+        if geo is not None:
+            req._distance_km = geo[0]
+            req.network_delay_ms = geo[1]
         deadline = CFG.services_info[service_id]["deadline"]
         req.deadline_violated = (not success) or (response_time_sec > deadline)
         req.status = RequestStatus.COMPLETED if success else RequestStatus.REJECTED_NO_REPLICA
@@ -694,6 +915,21 @@ class RealtimeEngine:
             released = redis_state.sweep_expired_reservations(CFG.n_servers, CFG.n_services)
             if released:
                 self._log("reservation_sweep", released_count=released)
+            self._prune_stale_request_geo()
+
+    def _prune_stale_request_geo(self):
+        """اگر یک درخواست هرگز completion نفرستاد (پاد کرش کرد/گیر کرد)،
+        ورودی متناظرش در self._request_geo تا ابد می‌ماند. هر ورودی که از
+        بیشینه‌ی deadline سرویس‌ها + یک حاشیه‌ی امن قدیمی‌تر شده باشد قطعاً
+        دیگر completion نخواهد گرفت (رزرو صفش هم توسط sweep بالا آزاد شده)،
+        پس امن است حذف شود."""
+        if not self._request_geo:
+            return
+        max_age = max(s["deadline"] for s in CFG.services_info.values()) + RESERVATION_SWEEP_INTERVAL_SEC + 5.0
+        now = time.monotonic()
+        stale = [rid for rid, (_, _, ts) in self._request_geo.items() if (now - ts) > max_age]
+        for rid in stale:
+            self._request_geo.pop(rid, None)
 
 
 async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger=None,

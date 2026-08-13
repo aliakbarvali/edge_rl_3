@@ -151,9 +151,13 @@ class AlgorithmBase(ABC):
             if not (occ_ratio > occ_threshold or sv["rejection_rate"] > 0.0):
                 continue
             
+            
             cpu = CFG.services_info[svc_id]["resource_mips"]
-            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING) and s.can_host(svc_id, cpu)
-                       for s in servers.values()):
+            centroid = sv.get("demand_centroid")
+            bts_lat, bts_long = centroid if centroid else (None, None)
+            if not any(s.state in (ServerState.ACTIVE, ServerState.BOOTING)
+                    and s.can_host(svc_id, cpu, bts_lat=bts_lat, bts_long=bts_long)
+                    for s in servers.values()):
                 starved.append(svc_id)
         return starved
 

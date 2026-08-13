@@ -110,7 +110,20 @@ class Server:
     def free_capacity(self) -> int:
         return self.capacity - self.used_cpu()
 
-    def can_host(self, service_id: int, cpu_demand: int) -> bool:
+    def can_host(self, service_id: int, cpu_demand: int,
+                 bts_lat: float = None, bts_long: float = None) -> bool:
+        # *** رفع باگ: قبلاً can_host هیچ‌وقت bts_lat/bts_long را به
+        # is_sla_feasible پاس نمی‌داد، پس همیشه از مسیر محافظه‌کارانه‌ی
+        # «بدترین فاصله‌ی ممکن از بین ۴ گوشه‌ی محدوده‌ی جغرافیایی» رد می‌شد -
+        # با این‌که is_sla_feasible طراحی شده بود موقعیت واقعی را هم بپذیرد.
+        # چون بیشتر جاهایی که can_host صدا زده می‌شود (initial placement،
+        # انتخاب سرور برای SCALE_UP، migration، ماسک PPO) تصمیمی برای *یک*
+        # BTS خاص نیستند بلکه برای کل تقاضای یک سرویس‌اند، پاس‌دادن یک BTS
+        # واحد معنی ندارد مگر این‌که caller مرکز ثقل واقعی تقاضای همان
+        # سرویس (demand_centroid) را به‌عنوان نماینده‌ی موقعیت واقعی پاس
+        # بدهد؛ در آن صورت این‌جا از آن به‌جای بدترین‌حالت استفاده می‌شود.
+        # وقتی caller چیزی پاس ندهد (پیش‌فرض None)، رفتار قبلی (محافظه‌کارانه)
+        # دقیقاً حفظ می‌شود - این تغییر backward-compatible است.
         from common.config import CFG, is_sla_feasible
         if service_id in self.hosted_replicas:
             return False
@@ -118,7 +131,8 @@ class Server:
         if self.free_capacity() < effective_demand:
             return False
         return is_sla_feasible(service_id, self.lat, self.long,
-                                CFG.server_profiles[self.profile]["mips_per_core"])
+                                CFG.server_profiles[self.profile]["mips_per_core"],
+                                bts_lat=bts_lat, bts_long=bts_long)
 
 
     def in_cooldown(self, now: float, cooldown_sec: float) -> bool:

@@ -101,13 +101,14 @@ class VoilaAlgorithm(AlgorithmBase):
     # ------------------------------------------------------------------
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
         cpu = CFG.services_info[service_id]["resource_mips"]
-        candidates = [s for s in servers.values()
-                      if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
-        if not candidates:
-            return None
 
+        # *** رفع باگ: centroid باید *قبل* از فیلتر can_host محاسبه شود تا
+        # بتوان آن را به‌عنوان نماینده‌ی موقعیت واقعی BTS به can_host پاس
+        # داد (نگاه کنید common/models.py:Server.can_host) - قبلاً can_host
+        # بدون هیچ مختصاتی صدا زده می‌شد و همیشه از مسیر محافظه‌کارانه‌ی
+        # بدترین‌حالت SLA رد می‌شد، حتی وقتی مرکز ثقل واقعی تقاضای همین
+        # سرویس در دسترس بود.
         centroid = None
-            
         if self._last_snapshot is not None:
             centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
         if centroid is None:
@@ -115,7 +116,13 @@ class VoilaAlgorithm(AlgorithmBase):
             clat = sum(s.lat for s in active) / len(active)
             clon = sum(s.long for s in active) / len(active)
             centroid = (clat, clon)
- 
+
+        candidates = [s for s in servers.values()
+                      if s.state == ServerState.ACTIVE
+                      and s.can_host(service_id, cpu, bts_lat=centroid[0], bts_long=centroid[1])]
+        if not candidates:
+            return None
+
         distances = {s.id: haversine_km(centroid[0], centroid[1], s.lat, s.long) for s in candidates}
         min_dist = min(distances.values()) 
         near_pool = [s for s in candidates if distances[s.id] <= min_dist + 5.0]
@@ -173,15 +180,15 @@ class VoilaAlgorithm(AlgorithmBase):
             if other_hosts:
                 continue
             cpu = CFG.services_info[service_id]["resource_mips"]
-            candidates = [s for s in servers.values()
-                          if s.id != draining_server.id and s.state == ServerState.ACTIVE
-                          and s.can_host(service_id, cpu)]
-            if not candidates:
-                continue
             centroid = None
             if self._last_snapshot is not None:
                 centroid = self._last_snapshot["services"][service_id].get("demand_centroid")
             ref_lat, ref_lon = centroid if centroid else (draining_server.lat, draining_server.long)
+            candidates = [s for s in servers.values()
+                          if s.id != draining_server.id and s.state == ServerState.ACTIVE
+                          and s.can_host(service_id, cpu, bts_lat=ref_lat, bts_long=ref_lon)]
+            if not candidates:
+                continue
             candidates.sort(key=lambda s: haversine_km(ref_lat, ref_lon, s.lat, s.long))
             steps.append(MigrationStep(service_id=service_id, target_server_id=candidates[0].id))
         return steps

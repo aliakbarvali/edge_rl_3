@@ -103,8 +103,16 @@ def main():
 
     df = pd.DataFrame(rows)
     #print("\n" + df.T.to_string())
-    df.to_csv(os.path.join(args.output_dir, "comparison_summary.csv"), index=False)
+    # *** رفع باگ جزئی: decision_correctness یک dict تودرتوست؛ قبلاً مستقیم
+    # به CSV می‌رفت و pandas آن را به‌صورت repr رشته‌ای (غیرقابل‌خواندن) در
+    # یک سلول می‌نوشت. چون همان داده‌ی کامل و قابل‌پارس در
+    # <name>_result.json هم ذخیره می‌شود، این‌جا فقط از CSV خلاصه (که برای
+    # مقایسه‌ی سریع/خواندن انسانی است) کنار گذاشته می‌شود؛ هیچ داده‌ای گم
+    # نمی‌شود.
+    csv_df = df.drop(columns=["decision_correctness"], errors="ignore")
+    csv_df.to_csv(os.path.join(args.output_dir, "comparison_summary.csv"), index=False)
     print(f"\nجدول مقایسه ذخیره شد: {args.output_dir}/comparison_summary.csv")
+    print("(فیلد decision_correctness کامل در <name>_result.json هر الگوریتم موجود است)")
 
 
 if __name__ == "__main__":

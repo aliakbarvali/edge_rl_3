@@ -121,16 +121,46 @@ class PPOAlgorithm(AlgorithmBase):
             sv = snapshot["services"][sid]
             cpu = CFG.services_info[sid]["resource_mips"] 
             in_svc_cooldown = snapshot["services"][sid].get("scale_cooldown_active", False)
+            # *** رفع باگ: can_host بدون demand_centroid صدا زده می‌شد، یعنی
+            # mask می‌توانست SCALE_UP یک سرویس را غیرمجاز اعلام کند (بدترین‌
+            # حالت fail) حتی وقتی select_placement_server (چند خط پایین‌تر
+            # در همین فایل) با همان centroid واقعاً یک سرور پیدا می‌کرد.
+            _centroid = sv.get("demand_centroid")
+            _bts_lat, _bts_long = _centroid if _centroid else (None, None)
             can_up = (not in_svc_cooldown) and any(
-                s.state == ServerState.ACTIVE and s.can_host(sid, cpu) for s in servers.values()) 
+                s.state == ServerState.ACTIVE
+                and s.can_host(sid, cpu, bts_lat=_bts_lat, bts_long=_bts_long)
+                for s in servers.values())
             n_mature = sv.get("n_mature_ready_replicas", sv["n_ready_replicas"])
             can_down = (not in_svc_cooldown) and sv["n_ready_replicas"] > 1 and n_mature > 0
             masks.extend([True, can_up, can_down])
+        # *** رفع بازبینی (برگرداندن BUG-A، هم‌راستا با algorithms/ppo/env.py):
+        # نسخه‌ی قبلی can_on/can_off را با turn_on_necessary/turn_off_necessary
+        # (تولیدشده در simulator/engine.py:_annotate_provisioning_necessity و
+        # k8s_adapter/realtime_dispatcher.py:_annotate_provisioning_necessity)
+        # هم گیت می‌کرد. نیت آن («mask دقیقاً با گیت واقعی موتور یکی باشد»)
+        # درست بود، ولی چون در inference هم مدل از قبل با ماسکِ necessity-gated
+        # آموزش دیده، این گیت را همینجا هم نگه داشتن فقط یک محدودیت اضافه‌ی
+        # بی‌فایده روی مدلی است که دیگر اصلاً یاد نگرفته زودتر از sustain
+        # عمل کند. توجیه اصلی («بدون آن PPO سیگنال reward نویزی می‌گیرد») هم
+        # نادرست بود: n_actions_applied (نگاه کنید algorithms/ppo/env.py:step)
+        # فقط از شمارنده‌های num_turn_on/off *پس از* اعمال واقعی ساخته
+        # می‌شود، یعنی یک TURN_ON ردشده با skip_reason="overload_not_sustained"
+        # از دید reward/observation دقیقاً معادل NO_CHANGE است. پس mask اینجا
+        # هم باید فقط امکان‌پذیری *فیزیکی* را چک کند - نه توافق با Greedy -
+        # تا فضای تصمیم inference دقیقاً با فضای تصمیمی که مدل با آن آموزش
+        # دیده (بعد از رفع همین باگ در env.py) یکی بماند.
+        # توابع _annotate_provisioning_necessity و فیلدهای
+        # turn_on_necessary/turn_off_necessary در snapshot حذف نشده‌اند -
+        # همچنان برای گزارش/ممیزی decision_correctness در
+        # simulator/engine.py:_apply_provisioning استفاده می‌شوند؛ فقط دیگر
+        # در این mask اعمال نمی‌شوند.
         for sid in _SERVER_IDS:
             st = snapshot["servers"][sid]["state"]
             s = servers[sid] 
-             
-            can_on = (st == ServerState.OFF) and (not snapshot["servers"][sid]["provision_cooldown_active"])
+
+            can_on = (st == ServerState.OFF
+                    and not snapshot["servers"][sid]["provision_cooldown_active"])
             can_off = (st == ServerState.ACTIVE
                     and not snapshot["servers"][sid]["provision_cooldown_active"]
                     and not snapshot["servers"][sid]["is_last_active_server"]
@@ -149,10 +179,6 @@ class PPOAlgorithm(AlgorithmBase):
 
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]: 
         cpu = CFG.services_info[service_id]["resource_mips"]
-        candidates = [s for s in servers.values()
-                      if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
-        if not candidates:
-            return None
 
         centroid = None
         if self._last_snapshot is not None:
@@ -162,6 +188,18 @@ class PPOAlgorithm(AlgorithmBase):
             clat = sum(s.lat for s in active) / len(active)
             clon = sum(s.long for s in active) / len(active)
             centroid = (clat, clon)
+
+        # *** رفع باگ (fairness/SLA feasibility): centroid از قبل محاسبه
+        # می‌شد ولی فقط برای مرتب‌سازی فاصله استفاده می‌شد، نه برای خودِ چک
+        # can_host - یعنی فیلتر SLA feasibility همیشه بدون مختصات (بدترین
+        # حالت ۴ گوشه‌ی نقشه) اجرا می‌شد، درست مثل Greedy/HPA و برخلاف
+        # VOILA. الان centroid همان‌جا که محاسبه شده به can_host هم پاس
+        # داده می‌شود.
+        candidates = [s for s in servers.values()
+                      if s.state == ServerState.ACTIVE
+                      and s.can_host(service_id, cpu, bts_lat=centroid[0], bts_long=centroid[1])]
+        if not candidates:
+            return None
 
         distances = {s.id: haversine_km(centroid[0], centroid[1], s.lat, s.long) for s in candidates}
         min_dist = min(distances.values())

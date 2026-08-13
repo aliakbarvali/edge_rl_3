@@ -7,10 +7,17 @@ from common.models import Server, ServerState, ReplicaState
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
 
 TARGET_UTILIZATION = 0.70
- 
+
 
 class HPAAlgorithm(AlgorithmBase):
     name = "hpa"
+
+    # *** تصمیم عمدی (نه باگ): برخلاف Greedy/Voila/PPO، اینجا can_host بدون
+    # bts_lat/bts_long صدا زده می‌شود. HPA واقعی به موقعیت جغرافیایی BTSها
+    # آگاه نیست (فقط از متریک‌های utilization/occupancy کار می‌کند)، پس
+    # همیشه باید از مسیر محافظه‌کارانه‌ی is_sla_feasible (بدترین فاصله‌ی
+    # ممکن) عبور کند - این خودِ تفاوت واقعی HPA با بقیه‌ی الگوریتم‌هاست،
+    # نه یک نبود fairness.
 
     def scale_decision(self, service_id, metrics_snapshot):
         sv = metrics_snapshot["services"][service_id] 
