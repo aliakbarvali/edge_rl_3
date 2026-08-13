@@ -87,7 +87,20 @@ class RealtimeEngine:
         # هرگز نرسید (پاد کرش کرد و هیچ‌وقت گزارش نداد)، sweep دوره‌ای در
         # _reservation_sweeper_loop آن را پاک کند و اینجا نشتی حافظه رخ ندهد.
         self._request_geo: Dict[int, Tuple[float, float, float]] = {}
+        # *** رفع باگ ۶: تسک‌های پس‌زمینه‌ی fire-and-forget (پاک‌سازی رپلیکای
+        # SCALE_DOWN در _apply_scale_decision، poll-until-ready رپلیکای جدید در
+        # _create_replica) قبلاً هیچ‌جا track نمی‌شدند. وقتی _lifetime_watcher
+        # باعث پایان asyncio.gather اصلی در run() می‌شد، این تسک‌ها می‌توانستند
+        # ناتمام بمانند (پاد واقعاً حذف نشده یا poll هنوز منتظر IP بود) - دقیقاً
+        # همان لحظه که metrics.finalize() گزارش نهایی را می‌ساخت. حالا هر تسک
+        # پس‌زمینه در این مجموعه ثبت و در پایان run() صبر می‌شود.
+        self._background_tasks: set = set()
 
+    def _spawn_background_task(self, coro):
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
 
     def _init_shadow_servers(self) -> Dict[int, Server]:
         servers = {}
@@ -213,6 +226,29 @@ class RealtimeEngine:
             return False
 
         steps = self.algorithm.migration_decision(s, self.servers)
+
+        # *** رفع باگ ۳: pre-validation ظرفیت مقصد migration، هم‌راستا با
+        # simulator/engine.py:_start_server_drain. قبلاً این‌جا نبود - یعنی اگر
+        # چند migration step هم‌زمان یک مقصد مشترک را با ظرفیت ناکافی هدف
+        # می‌گرفتند، هیچ‌کدام این‌جا فیلتر نمی‌شدند (sole_hosted.issubset چک
+        # می‌کرد که همه‌ی سرویس‌های sole-hosted "پیشنهاد" migration دارند، نه
+        # این‌که آن پیشنهاد واقعاً قابل‌اجراست) - شکست واقعی فقط دیرتر در
+        # _create_replica رخ می‌داد (migration_ready_failed)، یعنی مسیر خرابی
+        # sim↔real یکی نبود.
+        reserved_cpu: Dict[int, int] = defaultdict(int)
+        valid_steps = []
+        for step in steps:
+            target = self.servers[step.target_server_id]
+            cpu = CFG.services_info[step.service_id]["resource_mips"]
+            if target.free_capacity() - reserved_cpu[target.id] >= cpu:
+                reserved_cpu[target.id] += cpu
+                valid_steps.append(step)
+            else:
+                self._log("migration_step_dropped", service_id=step.service_id,
+                          from_server_id=server_id, to_server_id=step.target_server_id,
+                          reason="target_capacity_overcommitted")
+        steps = valid_steps
+
         migrated_services = {step.service_id for step in steps}
         sole_hosted = {
             svc_id for svc_id, r in s.hosted_replicas.items()
@@ -276,7 +312,9 @@ class RealtimeEngine:
         s.num_shutdowns += 1
         self.metrics.record_transition("server_shutdown")
         self._log("server_off", server_id=server_id)
-        return True 
+        return True
+    
+    
     async def _create_replica(self, server_id: int, service_id: int) -> Optional[Replica]:
         s = self.servers[server_id]
         cpu = CFG.services_info[service_id]["resource_mips"]
@@ -296,8 +334,8 @@ class RealtimeEngine:
                     created_at=time.monotonic())
         s.hosted_replicas[service_id] = r
         self.replicas_by_service[service_id].append(r)
-
-        asyncio.create_task(self._poll_until_ready(service_id, server_id, r))
+ 
+        self._spawn_background_task(self._poll_until_ready(service_id, server_id, r))
         return r
 
     async def _poll_until_ready(self, service_id: int, server_id: int, replica: Replica,
@@ -650,7 +688,7 @@ class RealtimeEngine:
                     victim = self.algorithm.select_scale_down_victim(
                         svc_id, mature, self.servers, now,
                         occupancy_fn=lambda r: redis_state.get_queue_occupancy(svc_id, r.server_id))
-                    asyncio.create_task(self._delete_replica(svc_id, victim.server_id))
+                    self._spawn_background_task(self._delete_replica(svc_id, victim.server_id))
                     self.metrics.record_scale_action("SCALE_DOWN")
                     self._service_last_scale_time[svc_id] = now
                     applied = True
@@ -850,7 +888,7 @@ class RealtimeEngine:
     
     
     async def run(self, extra_tasks: list | None = None) -> dict:
-        redis_state.reset_all(CFG.n_servers, CFG.n_services)
+        redis_state.reset_all(CFG.n_servers, CFG.n_servers)
         await self.initial_placement()
         self._util_window_start_time = time.monotonic()
 
@@ -865,8 +903,12 @@ class RealtimeEngine:
         tasks.append(self._lifetime_watcher())
 
         await asyncio.gather(*tasks)
+        # *** رفع باگ ۶: قبل از نهایی‌سازی متریک‌ها، صبر می‌کنیم تا هر تسک
+        # پس‌زمینه‌ی باقی‌مانده (حذف رپلیکا/poll-ready) واقعاً کامل شود - نگاه
+        # کنید __init__ برای توضیح کامل مشکل قبلی.
+        if self._background_tasks:
+            await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
         return self.metrics.finalize(self.servers)
-
     async def _lifetime_watcher(self):
         span_sec = (float(self.events_df.global_start_sec.max())
                     - float(self.events_df.global_start_sec.min())) if len(self.events_df) else 0.0

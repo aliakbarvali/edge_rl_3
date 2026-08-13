@@ -47,7 +47,7 @@ class AlgorithmBase(ABC):
     # می‌شوند. ممیزی decision_correctness هم صرف‌نظر از این پرچم دقیقاً
     # طبق همان معیار عینی مستقل ادامه پیدا می‌کند - این پرچم فقط تعیین
     # می‌کند آیا اکشن *اعمال* می‌شود، نه اینکه در ممیزی «درست» شمرده شود.
-    bypass_sustain_gate: bool = False
+    bypass_sustain_gate: bool = True
 
     def initial_placement(self, servers, active_bts):
         remaining = set(range(len(active_bts)))

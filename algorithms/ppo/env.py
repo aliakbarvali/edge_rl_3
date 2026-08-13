@@ -1,6 +1,5 @@
 """
 algorithms/ppo/env.py
- 
 """
 
 from __future__ import annotations
@@ -19,42 +18,17 @@ N_SERVICES = CFG.n_services
 N_SERVERS = CFG.n_servers
 _SERVICE_IDS = sorted(CFG.services_info.keys())
 _SERVER_IDS = sorted(CFG.server_info.keys())
- 
+
 _SCALE_MAP = {0: ScaleAction.NO_CHANGE, 1: ScaleAction.SCALE_UP, 2: ScaleAction.SCALE_DOWN}
 _PROVISION_MAP = {0: ProvisionActionType.NO_CHANGE, 1: ProvisionActionType.TURN_ON,
                    2: ProvisionActionType.TURN_OFF}
 
-# *** رفع BUG-C: مقدار قبلی (1.0) خیلی کوچک بود - با ۱۵ سرویس و میانگین
-# چند درخواست در تیک به‌ازای هر سرویس، num_rejected_recent به‌راحتی از ۱
-# رد می‌شود، یعنی norm_rejected = min(rejected/1.0, 2.0) تقریباً همیشه در
-# سقف ۲.۰ قفل می‌ماند و PPO نمی‌تواند رد‌کردن ۵ درخواست را از ۵۰ درخواست
-# تشخیص دهد (سیگنال reward برای w5_rejected عملاً باینری می‌شود، نه پیوسته).
-# مقدار پیش‌فرض جدید یک تخمین معقول‌تر است؛ برای کالیبراسیون دقیق،
-# calibrate_constants.py را اجرا کنید (ستون num_rejected_recent) و p90/p95
-# واقعی را در EOTCH_NORM_REJECTED_PER_TICK بگذارید.
 import os as _os
-_NORM_REJECTED_PER_TICK = float(_os.environ.get("EOTCH_NORM_REJECTED_PER_TICK", "6.0"))
+_NORM_REJECTED_PER_TICK = float(_os.environ.get("EOTCH_NORM_REJECTED_PER_TICK", "2.0"))
 
-
-# ----------------------------------------------------------------------
-# *** رفع باگ ۲ (BC warm-start بدون action mask): منطق ماسک قبلاً فقط
-# داخل متد EdgeResourceEnv.action_masks بود و به self.engine/self._last_snapshot
-# (attributeهای نمونه) وابسته بود - یعنی هیچ‌جای دیگری (از جمله
-# algorithms/ppo/train.py:collect_greedy_demonstrations، که مستقیماً یک
-# SimulationEngine می‌سازد، نه EdgeResourceEnv) نمی‌توانست بدون کپی‌کردن
-# کامل این منطق از آن استفاده کند. طبق فلسفه‌ی صریح خودِ پروژه (README:
-# «هیچ منطق تصمیم‌گیری‌ای دو بار نوشته نمی‌شود»)، این منطق به دو تابع
-# ماژول‌سطح مستقل (بدون وابستگی به EdgeResourceEnv) استخراج شده تا هم
-# EdgeResourceEnv.action_masks و هم collect_greedy_demonstrations در
-# train.py از همان یک منبع واحد استفاده کنند. رفتار محاسباتی نسبت به
-# نسخه‌ی قبلی هیچ تغییری نکرده - فقط محل تعریف عوض شده.
-# ----------------------------------------------------------------------
 
 def _any_server_can_host(engine: SimulationEngine, last_snapshot: dict | None,
                           service_id: int) -> bool:
-    # *** رفع باگ (هم‌خانواده‌ی can_host بدون centroid): can_host بدون
-    # مختصات همیشه از مسیر محافظه‌کارانه‌ی بدترین‌حالت SLA رد می‌شود، حتی
-    # وقتی موقعیت واقعی تقاضا (demand_centroid) در دسترس است.
     cpu = CFG.services_info[service_id]["resource_mips"]
     centroid = None
     if last_snapshot is not None:
@@ -66,18 +40,6 @@ def _any_server_can_host(engine: SimulationEngine, last_snapshot: dict | None,
 
 
 def compute_action_masks(engine: SimulationEngine, last_snapshot: dict | None) -> np.ndarray:
-    """ماسک اکشن معتبر برای وضعیت *فعلی* موتور (engine.now)، مستقل از
-    EdgeResourceEnv. last_snapshot همان snapshotِ تیک قبلی است (برای
-    demand_centroid هر سرویس) - دقیقاً همان چیزی که EdgeResourceEnv در
-    self._last_snapshot نگه می‌داشت.
-
-    *** یادداشت طراحی (بدون تغییر نسبت به نسخه‌ی قبلی): این تابع فقط
-    امکان‌پذیری *فیزیکی* هر اکشن را چک می‌کند (state سرور/رپلیکا، cooldown،
-    ظرفیت، min_active_duration) - نه اینکه آیا آن اکشن "لازم" است یا نه
-    (turn_on_necessary/turn_off_necessary). آن گیت‌های necessity به‌صورت
-    عمدی اینجا اعمال نمی‌شوند (نگاه کنید کامنت «رفع بازبینی BUG-A» پایین‌تر
-    در action_masks قبلی/simulator/engine.py) چون آن‌ها بخشی از قید
-    مشترکِ ضد-فلپینگ زیرساخت‌اند، نه بخشی از فضای انتخاب سیاست."""
     masks = []
     now = engine.now
     for sid in _SERVICE_IDS:
@@ -88,7 +50,7 @@ def compute_action_masks(engine: SimulationEngine, last_snapshot: dict | None) -
         mature = [r for r in ready
                   if (now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
         can_down = (not cooldown) and len(ready) > 1 and len(mature) > 0
-        masks.extend([True, can_up, can_down])  # NO_CHANGE همیشه مجاز است
+        masks.extend([True, can_up, can_down])
 
     n_active = sum(1 for s in engine.servers.values() if s.state == ServerState.ACTIVE)
     for sid in _SERVER_IDS:
@@ -101,19 +63,19 @@ def compute_action_masks(engine: SimulationEngine, last_snapshot: dict | None) -
     return np.array(masks, dtype=bool)
 
 
-class EdgeResourceEnv(gym.Env): 
+class EdgeResourceEnv(gym.Env):
     metadata = {"render_modes": []}
 
     def __init__(self, events_df_provider, teacher_algorithm=None):
         super().__init__()
-        self.events_df_provider = events_df_provider 
+        self.events_df_provider = events_df_provider
         self._shared_algo = teacher_algorithm or _MinimalSharedAlgorithm()
 
         self.action_space = spaces.MultiDiscrete([3] * N_SERVICES + [3] * N_SERVERS)
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(STATE_DIM,), dtype=np.float32)
 
         self.engine: SimulationEngine | None = None
-        self._last_snapshot = None 
+        self._last_snapshot = None
         self._last_reward_components: dict | None = None
 
     # ------------------------------------------------------------------
@@ -121,8 +83,24 @@ class EdgeResourceEnv(gym.Env):
         super().reset(seed=seed)
         events_df = self.events_df_provider()
         self.engine = SimulationEngine(events_df, self._shared_algo, "ppo_train")
+        # *** رفع باگ ۱ (train/inference mismatch در select_placement_server):
+        # وقتی self._shared_algo نمونه‌ای از _MinimalSharedAlgorithm است (حالت
+        # پیش‌فرض چون algorithms/ppo/train.py:make_env هیچ teacher_algorithm پاس
+        # نمی‌دهد)، engine تازه‌ساخته‌شده‌ی همین اپیزود به آن bind می‌شود تا
+        # select_placement_server/migration_decision بتوانند از demand_centroid
+        # واقعی (engine._service_demand_centroid، هر تیک در
+        # simulator/engine.py:_build_metrics_snapshot به‌روزرسانی می‌شود) استفاده
+        # کنند - دقیقاً همان تک‌منبع حقیقتی که algorithms/ppo/ppo_algorithm.py
+        # (مسیر inference/k8s واقعی) از self._last_snapshot می‌خواند. بدون این،
+        # فاز RL fine-tune (بعد از BC warm-start) با یک سیاست placement کاملاً
+        # متفاوت (بدون آگاهی جغرافیایی، فقط بیشترین ظرفیت آزاد) آموزش می‌دید،
+        # درحالی‌که خودِ compute_action_masks (پایین‌تر) با _any_server_can_host
+        # کاملاً centroid-aware است - یعنی حتی خودِ فاز training هم بین «اکشن
+        # مجاز طبق mask» و «قابل‌اجرا بودن واقعی» ناسازگار بود.
+        if hasattr(self._shared_algo, "bind_engine"):
+            self._shared_algo.bind_engine(self.engine)
         self.engine.prime()
-        snapshot = self.engine.peek_snapshot()  
+        snapshot = self.engine.peek_snapshot()
         self._last_snapshot = snapshot
         obs = build_state_vector(snapshot, self.engine.servers)
         return obs, {}
@@ -143,7 +121,7 @@ class EdgeResourceEnv(gym.Env):
             provision_action = ProvisionAction(server_actions[chosen_sid], chosen_sid)
 
         external = {"provision": provision_action, "scale": service_actions}
- 
+
         m = self.engine.metrics
         before_counts = (m.num_scale_up, m.num_scale_down, m.num_turn_on, m.num_turn_off)
 
@@ -169,12 +147,6 @@ class EdgeResourceEnv(gym.Env):
         g = snapshot["global"]
 
         active_svcs = [s for s in snapshot["services"].values() if s["recent_arrivals"] > 0]
-        #avg_dv_rate = (sum(s["deadline_violation_rate"] for s in active_svcs) / len(active_svcs)) if active_svcs else 0.0
-        # *** بازبینی: میانگین ترکیبی به‌جای میانگین ساده - نگاه کنید
-        # common/config.py:PPO_DEADLINE_FAIRNESS_ALPHA برای توضیح کامل باگ/فیکس.
-        # بخش weighted طبق حجم واقعی ترافیک (recent_arrivals) هر سرویس، بخش
-        # unweighted همان میانگین ساده‌ی قبلی برای این‌که SLA سرویس‌های
-        # کم‌ترافیک (batch، ۱۱-۱۵) کاملاً بی‌اثر نشود.
         if active_svcs:
             total_arrivals = sum(s["recent_arrivals"] for s in active_svcs)
             weighted_dv_rate = (sum(s["deadline_violation_rate"] * s["recent_arrivals"]
@@ -186,26 +158,25 @@ class EdgeResourceEnv(gym.Env):
             weighted_dv_rate = 0.0
             unweighted_dv_rate = 0.0
             avg_dv_rate = 0.0
-            
+
         active_utils = [s["utilization"] for s in snapshot["servers"].values()
                          if s["state"] == ServerState.ACTIVE]
         load_cv = 0.0
         if len(active_utils) >= 2 and np.mean(active_utils) > 0:
             load_cv = float(np.std(active_utils) / np.mean(active_utils))
- 
+
         norm_rt = min(g["avg_response_time_recent"] / NORM_RESPONSE_TIME_SEC, 2.0)
         norm_energy = min(g["energy_recent_joule"] / NORM_ENERGY_JOULE, 2.0)
-        norm_lb = min(load_cv, 2.0) 
+        norm_lb = min(load_cv, 2.0)
         norm_rejected = min(g["num_rejected_recent"] / _NORM_REJECTED_PER_TICK, 2.0)
-  
-        
+
         penalty = (w["w1_response_time"] * norm_rt +
                    w["w2_deadline"] * avg_dv_rate +
                    w["w3_energy"] * norm_energy +
                    w["w4_load_balance"] * norm_lb +
                    w["w5_rejected"] * norm_rejected)
         penalty += CFG.ppo_penalty_per_action * n_actions_applied
- 
+
         self._last_reward_components = {
             "response_time": w["w1_response_time"] * norm_rt,
             "deadline": w["w2_deadline"] * avg_dv_rate,
@@ -213,28 +184,27 @@ class EdgeResourceEnv(gym.Env):
             "load_balance": w["w4_load_balance"] * norm_lb,
             "rejected": w["w5_rejected"] * norm_rejected,
             "action_penalty": CFG.ppo_penalty_per_action * n_actions_applied,
-            # *** خام (بدون ضرب در w2_deadline) - فقط برای دیباگ/مانیتورینگ
-            # نسبت weighted به unweighted طی آموزش در TensorBoard.
             "deadline_weighted_raw": weighted_dv_rate,
             "deadline_unweighted_raw": unweighted_dv_rate,
         }
-        return -float(penalty) 
+        return -float(penalty)
 
     # ------------------------------------------------------------------
     def action_masks(self) -> np.ndarray:
-        # *** رفع باگ ۲: بدنه‌ی این متد به تابع ماژول‌سطح compute_action_masks
-        # منتقل شد تا algorithms/ppo/train.py:collect_greedy_demonstrations هم
-        # بتواند دقیقاً همین منطق را (بدون کپی) روی یک SimulationEngine خام
-        # (بدون EdgeResourceEnv) صدا بزند - نگاه کنید تعریف تابع بالای فایل.
         return compute_action_masks(self.engine, self._last_snapshot)
 
 
-class _MinimalSharedAlgorithm: 
+class _MinimalSharedAlgorithm:
     def __init__(self):
         from algorithms.base import AlgorithmBase
 
         class _Impl(AlgorithmBase):
             name = "ppo_shared"
+
+            def __init__(self):
+                # *** رفع باگ ۱: ارجاع به engine جاری، توسط EdgeResourceEnv.reset
+                # (از طریق bind_engine روی کلاس بیرونی) ست می‌شود.
+                self.engine = None
 
             def scale_decision(self, *a, **k):
                 raise NotImplementedError
@@ -242,22 +212,47 @@ class _MinimalSharedAlgorithm:
             def provision_decision(self, *a, **k):
                 raise NotImplementedError
 
-            def select_placement_server(self, service_id, servers): 
+            def _demand_centroid_or_none(self, service_id):
+                if self.engine is None:
+                    return None
+                return self.engine._service_demand_centroid.get(service_id)
+
+            def select_placement_server(self, service_id, servers):
                 from common.models import ServerState
                 from common.config import CFG as _CFG
+                from common.geo import haversine_km
                 cpu = _CFG.services_info[service_id]["resource_mips"]
+                centroid = self._demand_centroid_or_none(service_id)
+                bts_lat, bts_long = centroid if centroid else (None, None)
                 candidates = [s for s in servers.values()
-                              if s.state == ServerState.ACTIVE and s.can_host(service_id, cpu)]
+                              if s.state == ServerState.ACTIVE
+                              and s.can_host(service_id, cpu, bts_lat=bts_lat, bts_long=bts_long)]
                 if not candidates:
                     return None
+                if centroid is not None:
+                    distances = {s.id: haversine_km(centroid[0], centroid[1], s.lat, s.long)
+                                 for s in candidates}
+                    min_dist = min(distances.values())
+                    near_pool = [s for s in candidates if distances[s.id] <= min_dist + 5.0]
+                    return max(near_pool, key=lambda s: s.free_capacity()).id
                 return max(candidates, key=lambda s: s.free_capacity()).id
 
-            def migration_decision(self, draining_server, servers): 
+            def migration_decision(self, draining_server, servers):
                 from algorithms.greedy.greedy_algorithm import GreedyAlgorithm
-                return GreedyAlgorithm().migration_decision(draining_server, servers)
+                helper = GreedyAlgorithm()
+                if self.engine is not None:
+                    helper._last_snapshot = {
+                        "services": {
+                            sid: {"demand_centroid": centroid}
+                            for sid, centroid in self.engine._service_demand_centroid.items()
+                        }
+                    }
+                return helper.migration_decision(draining_server, servers)
 
         self._impl = _Impl()
 
+    def bind_engine(self, engine):
+        self._impl.engine = engine
 
     def __getattr__(self, item):
         return getattr(self._impl, item)

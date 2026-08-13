@@ -5,23 +5,14 @@ from common.config import CFG
 from common.geo import haversine_km
 from common.models import Server, ServerState, ReplicaState
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, ProvisionActionType, MigrationStep
- 
+
 
 class GreedyAlgorithm(AlgorithmBase):
     name = "greedy"
 
     def __init__(self):
-        # *** رفع باگ (fairness/SLA feasibility): قبلاً Greedy هیچ snapshot ای
-        # cache نمی‌کرد، پس select_placement_server/migration_decision هیچ
-        # راهی برای گرفتن demand_centroid واقعی سرویس نداشتند و can_host
-        # همیشه بدون bts_lat/bts_long صدا زده می‌شد -> همیشه از مسیر
-        # محافظه‌کارانه‌ی «بدترین فاصله‌ی ممکن از ۴ گوشه‌ی نقشه» رد می‌شد
-        # (نگاه کنید common/config.py:is_sla_feasible). این یعنی مقایسه‌ی
-        # Greedy در برابر VOILA (که همین snapshot را cache می‌کند) منصفانه
-        # نبود: تفاوت observed performance تا حدی از این می‌آمد که فقط VOILA
-        # اطلاعات موقعیت دقیق‌تری در همین چک SLA داشت، نه صرفاً سیاست بهتر.
-        # الان Greedy هم دقیقاً مثل VOILA/PPO یک self._last_snapshot cache
-        # می‌کند تا از همان demand_centroid برای can_host استفاده کند.
+        # cache برای demand_centroid واقعی هر سرویس (fairness/SLA feasibility
+        # با VOILA/PPO) - نگاه کنید select_placement_server/migration_decision
         self._last_snapshot: dict | None = None
 
     def scale_decision(self, service_id, metrics_snapshot):
@@ -46,17 +37,33 @@ class GreedyAlgorithm(AlgorithmBase):
             if off_servers:
                 if overloaded:
                     ref = overloaded[0]
-                elif active: 
+                elif active:
                     ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
-                else: 
+                else:
                     ref = None
                 if ref is not None:
-                    desired_profile = self._pick_profile_for_overload(overloaded or active, ref.capacity)
+                    # *** رفع باگ ۴: قبلاً "overloaded or active" پاس داده می‌شد؛ وقتی
+                    # overloaded خالی بود (فقط starved_services)، کل لیست active (تا
+                    # ۱۰ سرور) به‌عنوان مجموعه‌ی "overload‌شده" به _pick_profile_for_overload
+                    # می‌رفت. چون آن تابع مجموع capacity ورودی را با آستانه‌ی large/medium
+                    # مقایسه می‌کند، مجموع کل فلیت تقریباً همیشه از آستانه‌ی large می‌گذرد -
+                    # یعنی تابع صرف‌نظر از شدت واقعی کمبود، تقریباً همیشه "large" برمی‌گرداند
+                    # (اثر مستقیم روی cumulative_energy_joule). حالا فقط overloadهای واقعی
+                    # پاس داده می‌شود؛ وقتی خالی است، خودِ تابع (طبق طراحی اصلی‌اش) به
+                    # fallback_capacity=ref.capacity برمی‌گردد که نماینده‌ی معنادارتری از
+                    # شدت starvation (شلوغ‌ترین سرور فعال) است.
+                    desired_profile = self._pick_profile_for_overload(overloaded, ref.capacity)
                     pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
                     pool.sort(key=lambda s: haversine_km(ref.lat, ref.long, s.lat, s.long))
                 else:
                     pool = off_servers
                 return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
+            # *** رفع باگ ۲ (fallthrough): وقتی overload/starvation تشخیص داده شده
+            # ولی هیچ سرور خاموشی برای روشن‌کردن نمانده (off_servers خالی)، قبلاً کد
+            # بدون return به بلوک بررسی TURN_OFF زیر سقوط می‌کرد و ممکن بود دقیقاً در
+            # همان تیکی که سیستم گرسنه/اضافه‌بار است، یک سرور idle دیگر را هم خاموش
+            # کند - تناقض مستقیم با جهت درست تصمیم. حالا صریحاً NO_CHANGE برمی‌گردد.
+            return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
         if active:
             idle = min(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
@@ -75,9 +82,6 @@ class GreedyAlgorithm(AlgorithmBase):
         active_all = [s for s in servers.values() if s.state == ServerState.ACTIVE]
         clat = sum(s.lat for s in active_all) / len(active_all)
         clon = sum(s.long for s in active_all) / len(active_all)
-        # *** رفع باگ: از demand_centroid واقعی سرویس (اگر موجود باشد) به‌جای
-        # فقط مرکز سرورهای فعال، هم برای can_host (چک SLA) و هم برای مرتب‌سازی
-        # فاصله استفاده می‌شود - همان چیزی که VOILA/PPO از قبل انجام می‌دادند.
         centroid = self._demand_centroid_or_none(service_id) or (clat, clon)
         candidates = [s for s in servers.values()
                       if s.state == ServerState.ACTIVE

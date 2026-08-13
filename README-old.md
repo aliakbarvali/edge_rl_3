@@ -2,7 +2,7 @@
 
 ## Greedy / VOILA / Kubernetes-HPA / PPO-DRL — شبیه‌سازی + اجرای واقعی روی Kubernetes
 
-این سند، مرجع کامل و یکپارچه‌ی پروژه در وضعیت فعلی‌اش است: از تعریف منابع و مدل داده تا چرخه‌ی کامل یک درخواست، الگوریتم‌های تصمیم‌گیری، عامل PPO، و اجرای زنده روی یک خوشه‌ی Kubernetes واقعی. سند فقط رفتار نهایی و فعلی کد را توضیح می‌دهد، نه تاریخچه‌ی تغییراتی که برای رسیدن به این نقطه انجام شده.
+این سند، مرجع کامل و یکپارچه‌ی پروژه است: از تعریف منابع و مدل داده تا چرخه‌ی کامل یک درخواست، الگوریتم‌های تصمیم‌گیری، عامل PPO، و اجرای زنده روی یک خوشه‌ی Kubernetes واقعی. هرکس بخواهد این پروژه را از صفر بسازد، باید دقیقاً همین ترتیب و همین مقادیر را پیاده کند.
 
 ---
 
@@ -37,12 +37,12 @@
 
 | الگوریتم | فلسفه |
 |---|---|
-| **Greedy** | آستانه‌ساده و مکان‌آگاه: بر اساس اشغال صف و نرخ رد شدن تصمیم می‌گیرد؛ برای placement/migration از مرکز ثقل واقعی تقاضای همان سرویس (اگر موجود باشد) استفاده می‌کند، دقیقاً مثل VOILA و PPO. baseline پروژه است. |
-| **VOILA** | مبتنی بر مقاله‌ی VOILA؛ placement، migration، و انتخاب قربانی هنگام scale-down را بر اساس **مرکز ثقل تقاضای واقعی** هر سرویس (medoid موقعیت درخواست‌های اخیر) انجام می‌دهد. علاوه بر نقض ظرفیت، نقض نزدیکی جغرافیایی (proximity violation) را هم به‌عنوان سیگنال دوم scale-up در نظر می‌گیرد. **نکته‌ی مهم:** متد اختصاصی مسیریابی VOILA (`select_replica` بر پایه‌ی مختصات Vivaldi) در کد فعلی فعال نیست — نگاه کنید بخش ۷. |
-| **HPA** | معادل الگوریتم Kubernetes Horizontal Pod Autoscaler: عمداً location-unaware، فقط بر اساس نسبت اشغال صف نسبت به یک هدف ثابت (۷۰٪) تعداد replica مطلوب را محاسبه می‌کند و placement را فقط از روی ظرفیت آزاد انتخاب می‌کند (بدون مختصات جغرافیایی) — این دقیقاً رفتار واقعی HPA است، نه یک محدودیت ناخواسته. |
-| **PPO-DRL** | یک عامل یادگیری تقویتی (Proximal Policy Optimization، با `MaskablePPO` از `sb3-contrib`) که هر سه نوع تصمیم را هم‌زمان از یک بردار حالت یاد می‌گیرد. آموزش با **warm-start از دموی Greedy** (Behavior Cloning) شروع می‌شود و سپس با RL روی پاداشی وزن‌دار از زمان پاسخ، نقض سررسید، انرژی، توازن بار و نرخ رد شدن fine-tune می‌شود. برخلاف سه الگوریتم دیگر، تصمیمات provisioning آن نیازی ندارد منتظر «تداوم» overload/underload بماند (بخش ۸.۲). |
+| **Greedy** | آستانه‌ساده و مکان‌آگاه: بر اساس اشغال صف و نرخ رد شدن تصمیم می‌گیرد؛ placement/migration بر مبنای نزدیک‌ترین سرور به مرکز سرورهای فعال. baseline پروژه است. |
+| **VOILA** | مبتنی بر مقاله‌ی VOILA؛ placement و migration را بر اساس **مرکز ثقل تقاضای واقعی** هر سرویس (medoid موقعیت درخواست‌های اخیر) انتخاب می‌کند، نه صرفاً نزدیک‌ترین به مرکز سرورهای فعال. علاوه بر نقض ظرفیت، نقض نزدیکی جغرافیایی (proximity violation) را هم به‌عنوان سیگنال scale-up در نظر می‌گیرد؛ برای این سیگنال proximity، هم فعال‌شدنش و هم محافظت از scale-down بعدش به یک «streak» چند-تیکی نیاز دارد (ضد نوسان) — جزئیات در بخش ۹. |
+| **HPA** | معادل الگوریتم Kubernetes Horizontal Pod Autoscaler: کاملاً location-unaware، فقط بر اساس نسبت اشغال صف نسبت به یک هدف ثابت (۷۰٪) تعداد replica مطلوب را محاسبه می‌کند. |
+| **PPO-DRL** | یک عامل یادگیری تقویتی (Proximal Policy Optimization، با `MaskablePPO` از `sb3-contrib`) که هر سه نوع تصمیم را هم‌زمان از یک بردار حالت یاد می‌گیرد. آموزش با **warm-start از دموی Greedy** (Behavior Cloning) شروع می‌شود و سپس با RL روی پاداشی وزن‌دار از زمان پاسخ، نقض سررسید، انرژی، توازن بار و نرخ رد شدن fine-tune می‌شود. |
 
-هر چهار الگوریتم از همان منطق مشترک برای **مسیریابی درخواست** (بخش ۷) استفاده می‌کنند تا مقایسه منصفانه بماند؛ فقط تصمیم‌های scale/provision/placement/migration فرق دارند.
+هر چهار الگوریتم از همان منطق مشترک برای **جای‌گذاری اولیه** و **مسیریابی درخواست** استفاده می‌کنند تا مقایسه منصفانه بماند؛ فقط تصمیم‌های scale/provision/placement/migration فرق دارند.
 
 ---
 
@@ -134,7 +134,7 @@ def compute_exec_time_sec(service_id, host_mips_per_core):
 
 قید صحت‌سنجی هنگام بارگذاری config: بزرگ‌ترین `resource_mips` بین سرویس‌ها باید از کوچک‌ترین `capacity_mips` بین پروفایل‌ها کمتر باشد (وگرنه هیچ‌وقت روی هیچ سروری جا نمی‌شود).
 
-**Deadline** بر حسب ثانیه است، از ۰.۰۳۰ ثانیه برای سبک‌ترین سرویس (سرویس ۱) تا ۴۰ ثانیه برای سنگین‌ترین (سرویس ۱۵) — این باعث می‌شود `deadline_violation` یک سیگنال معنادار و حساس باشد.
+**Deadline** بر حسب ثانیه است، از ۰.۰۱ ثانیه برای سرویس‌های سبک تا ۴۰ ثانیه برای سنگین‌ترین — این باعث می‌شود `deadline_violation` یک سیگنال معنادار و حساس باشد.
 
 قواعد ثابت:
 
@@ -195,14 +195,12 @@ class Server:
 
 متدهای کلیدی:
 - `used_cpu()` / `free_capacity()` — مجموع **effective_mips واقعیِ همین میزبان مشخص** رپلیکاهای مستقرشده، نه `resource_mips` خام. چون `resource_mips` در `SERVICES_INFO` نسبت به یک سرور مرجع (`medium`) تعریف شده، برای هر رپلیکا با `_speed_factor() = host_mips_per_core / REFERENCE_MIPS_PER_CORE` به توان واقعی همین سرور تبدیل می‌شود (`_cpu_of(replica) = round(resource_mips * speed_factor)`) — یعنی همان سرویس روی سرور `edge_small` سهم بیشتری از ظرفیت آن سرور می‌گیرد تا روی `large`.
-- `can_host(service_id, cpu_demand, bts_lat=None, bts_long=None)` — دو شرط دارد: (۱) ظرفیت آزاد کافی — `cpu_demand` (همان `resource_mips` خام) قبل از مقایسه با `free_capacity()` با همان `_speed_factor()` به `effective_demand` تبدیل می‌شود، دقیقاً هم‌واحد با `used_cpu()`؛ (۲) **`is_sla_feasible(...)`** (بخش ۴.۲ زیر) — یعنی جای‌گذاری فقط وقتی مجاز است که حداقل زمان پاسخ ممکن (بدون احتساب صف) هم از deadline آن سرویس کمتر باشد. اگر `bts_lat`/`bts_long` پاس داده نشود، این چک از مسیر محافظه‌کارانه (بدترین فاصله‌ی ممکن در کل محدوده‌ی جغرافیایی) عبور می‌کند.
+- `can_host(service_id, cpu_demand)` — دو شرط دارد: (۱) ظرفیت آزاد کافی (`free_capacity() >= cpu_demand`، اینجا `cpu_demand` همان `resource_mips` خامِ پاس‌داده‌شده توسط الگوریتم‌هاست، بدون تبدیل به effective — یک ناهم‌خوانی واحد شناخته‌شده بین این متد و `used_cpu()`؛ در عمل چون `resource_mips` سرویس‌ها به هم نزدیک‌اند و `speed_factor` هر سه پروفایل نزدیک ۱ است، اثر عملی این ناهم‌خوانی کوچک است، اما در بازسازی دقیق باید یکی از دو مسیر با دیگری هم‌راستا شود)، و (۲) **`is_sla_feasible(...)`** (بخش ۲.۳ زیر) — یعنی جای‌گذاری فقط وقتی مجاز است که حداقل زمان پاسخ ممکن (بدون احتساب صف) هم از deadline آن سرویس کمتر باشد.
 - `in_cooldown(now, cooldown_sec)` — برای anti-flapping.
 - `instantaneous_utilization(now)` — مجموع effective_mips رپلیکاهایی که **در همین لحظه واقعاً busy هستند** (`state in (READY, DRAINING)` و `not r.is_idle(now)`) تقسیم بر ظرفیت. فقط رپلیکاهای در حال پردازش شمرده می‌شوند، نه صرفاً deploy‌شده.
 - `instantaneous_power_w(now)` — `power(t) = p_idle + (p_max - p_idle) * utilization(t)` برای ACTIVE/DRAINING؛ `p_idle` ثابت برای BOOTING؛ صفر برای OFF.
 
-هر چهار الگوریتم موقعیت واقعی تقاضای هر سرویس (`demand_centroid`، بخش ۹) را — اگر موجود باشد — به `can_host` پاس می‌دهند، نه فقط Greedy/VOILA/PPO؛ فقط HPA عمداً این را انجام نمی‌دهد چون خودِ HPA واقعی location-unaware است (بخش ۹).
-
-### ۴.۲ بررسی شدنی‌بودن SLA پیش از جای‌گذاری (`is_sla_feasible`)
+### ۴.۳ بررسی شدنی‌بودن SLA پیش از جای‌گذاری (`is_sla_feasible`، اضافه‌شده)
 
 قبل از این‌که یک سرویس اجازه‌ی جای‌گذاری روی یک سرور را بگیرد (`can_host`)، تابع `common/config.py:is_sla_feasible` بررسی می‌کند که حتی در **بهترین حالت ممکن** (صف خالی، بدون انتظار) هم آن سرویس روی آن سرور deadline خودش را برآورده می‌کند یا نه:
 
@@ -211,9 +209,9 @@ min_response_sec = dispatcher_rtt_sec + server_rtt_sec + exec_time(service, host
 return min_response_sec <= deadline[service_id]
 ```
 
-`dispatcher_rtt_sec` و `server_rtt_sec` با همان فرمول بخش ۶ (رفت‌وبرگشت BTS↔دیسپچر و BTS↔سرور) محاسبه می‌شوند؛ موقعیت خودِ دیسپچر (`DISPATCHER_LAT`/`DISPATCHER_LON`) یک‌بار در `common/config.py` از میانگین موقعیت هر ۱۰ سرور محاسبه می‌شود — همان مرجع مختصاتی که موتور شبیه‌سازی هم موقع محاسبه‌ی `routing_delay_sec` استفاده می‌کند، تا هیچ اختلاف مختصاتی بین این دو مسیر پیش نیاید. اگر مختصات BTS مشخص نباشد، محافظه‌کارانه بدترین فاصله‌ی ممکن از میان چهار گوشه‌ی محدوده‌ی جغرافیایی معتبر داده در نظر گرفته می‌شود. این یعنی برای سرویس‌های با deadline بسیار سفت (مثلاً سرویس ۱ با `deadline=0.030` ثانیه)، جای‌گذاری روی سرورهای دورتر از دیسپچر یا با `mips_per_core` پایین‌تر ممکن است از همان ابتدا رد شود — حتی اگر ظرفیت CPU آزاد کافی باشد.
+`dispatcher_rtt_sec` و `server_rtt_sec` با همان فرمول بخش ۶ (رفت‌وبرگشت BTS↔دیسپچر و BTS↔سرور) محاسبه می‌شوند. اگر مختصات BTS مشخص نباشد (مثلاً هنگام یک بررسی عمومی/آفلاین)، محافظه‌کارانه بدترین فاصله‌ی ممکن از میان چهار گوشه‌ی محدوده‌ی جغرافیایی معتبر داده در نظر گرفته می‌شود. این یعنی برای سرویس‌های با deadline بسیار سفت (مثلاً سرویس ۱ با `deadline=0.030` ثانیه)، جای‌گذاری روی سرورهای دورتر از دیسپچر یا با `mips_per_core` پایین‌تر ممکن است از همان ابتدا رد شود — حتی اگر ظرفیت CPU آزاد کافی باشد.
 
-### ۴.۳ Replica
+### ۴.۲ Replica
 
 ```python
 @dataclass
@@ -247,7 +245,7 @@ def try_admit(arrival_time, cold_start_extra=0.0):
 
 این معادل دقیق یک صف FIFO تک‌سرور (M/D/1/K با K=queue_len) است، بدون نیاز به شبیه‌ساز event-driven جداگانه برای هر رپلیکا.
 
-### ۴.۴ Request
+### ۴.۳ Request
 
 ```python
 @dataclass
@@ -263,7 +261,7 @@ class Request:
     status: PENDING | COMPLETED | REJECTED_QUEUE_FULL | REJECTED_NO_REPLICA
 ```
 
-### ۴.۵ ماشین حالت سرور و رپلیکا
+### ۴.۴ ماشین حالت سرور و رپلیکا
 
 ```
 OFF --(provision trigger)--> BOOTING --(boot_delay_sec)--> ACTIVE
@@ -293,7 +291,7 @@ def compute_cold_start_window_sec(service_id, host_mips_per_core):
     return min(et * COLD_START_WINDOW_RATIO, COLD_START_WINDOW_CAP_SEC)
 ```
 
-یعنی جریمه‌ی cold-start متناسب با «حساسیت» سرویس (نسبت به deadline خودش و نصف زمان اجرای خودش) است، و پنجره‌ای که این جریمه در آن اعمال می‌شود هم به همان نسبت کوچک/بزرگ می‌شود: برای سرویس‌های سبک با `exec_time` کوتاه (مثلاً چند میلی‌ثانیه)، پنجره‌ی چند-میلی‌ثانیه‌ای دارد؛ برای سرویس‌های سنگین به سقف ۱۰ ثانیه محدود می‌ماند. مسیر تصمیم واقعی (`simulator/engine.py:_handle_routed`) همیشه از `compute_cold_start_window_sec` استفاده می‌کند، نه از یک عدد ثابت.
+یعنی جریمه‌ی cold-start متناسب با «حساسیت» سرویس (نسبت به deadline خودش و نصف زمان اجرای خودش) است. **پنجره‌ای که این جریمه در آن اعمال می‌شود هم دیگر یک عدد ثابت (`CFG.cold_start_window_sec=10.0`) نیست**؛ برای سرویس‌های سبک با `exec_time` کوتاه (مثلاً چند میلی‌ثانیه)، پنجره‌ی ۱۰ ثانیه‌ای عملاً غیرمنطقی بزرگ بود (یعنی ده‌ها درخواست بعدی هم جریمه می‌خوردند، نه فقط چند تای اول)؛ الان پنجره = `min(۳ برابر exec_time همان سرویس روی همان سرور, 10.0)` — برای سرویس‌های سنگین همچنان به سقف ۱۰ ثانیه محدود می‌ماند، برای سرویس‌های سبک متناسب با مقیاس واقعی زمانی‌شان کوچک می‌شود. `CFG.cold_start_window_sec` (مقدار ثابت قدیمی) هنوز در `Config` هست اما در مسیر تصمیم عملاً توسط `compute_cold_start_window_sec` جایگزین شده (`simulator/engine.py:_handle_routed` مستقیم از تابع پویا استفاده می‌کند، نه از فیلد ثابت `CFG.cold_start_window_sec`).
 
 ---
 
@@ -306,8 +304,6 @@ def compute_cold_start_window_sec(service_id, host_mips_per_core):
 الگوریتم پوشش حریصانه (Set-Cover-Style، مشابه Procedure 3 مقاله‌ی VOILA): در هر تکرار، سروری انتخاب می‌شود که بیشترین BTS فعال بدون‌پوشش را (طبق آستانه‌ی `L0_MS` روی `network_delay_ms` یک‌طرفه) پوشش دهد، تا پوشش کامل یا اتمام سرورها. اگر پوشش اولیه کافی نبود (کل ظرفیت انتخاب‌شده کمتر از مجموع `resource_mips` هر ۱۵ سرویس)، سرورهای باقی‌مانده به ترتیب نزدیکی به مجموعه‌ی انتخاب‌شده اضافه می‌شوند تا ظرفیت کافی شود.
 
 سپس برای هر ۱۵ سرویس، دقیقاً ۱ رپلیکا روی نزدیک‌ترین سرور فعال با ظرفیت کافی (که هنوز آن سرویس را ندارد) مستقر می‌شود.
-
-**نکته‌ی مقیاس:** با توجه به محدوده‌ی جغرافیایی داده (بیشینه‌ی فاصله‌ی ممکن BTS↔سرور ≈ ۱۸۲ کیلومتر → بیشینه‌ی `network_delay_ms` یک‌طرفه ≈ ۵.۶ میلی‌ثانیه، طبق بخش ۶.۲)، آستانه‌ی `L0_MS=20.0` عملاً هیچ‌وقت نقض نمی‌شود: هر سروری همیشه هر BTS معتبری را «پوشش می‌دهد». نتیجه‌ی عملی: در حلقه‌ی حریصانه‌ی بالا، انتخاب سرور اول بین سرورهای هم‌امتیاز (همه با پوشش کامل) عملاً دلبخواهی است، و انتخاب سرورهای بعدی صرفاً با معیار **ظرفیت باقی‌مانده** پیش می‌رود، نه پوشش واقعی باقی‌مانده. اگر رفتار «پوشش حریصانه‌ی چندسرور واقعی» مدنظر باشد، `L0_MS` باید متناسب با مقیاس این دیتاست (چند میلی‌ثانیه) کالیبره شود؛ در وضعیت فعلی، این بخش از منطق را باید «انتخاب مبتنی بر ظرفیت/نزدیکی» در نظر گرفت.
 
 ### ۵.۲ استراتژی PPO: حل چندهدفه با ILP (اختیاری)
 
@@ -326,7 +322,7 @@ minimize:  w_count   * (تعداد سرور روشن / کل سرورها)
 
 نقاط تقاضا از تایم‌لاین سه‌روزه‌ی train (`aggregate_training_demand`) استخراج می‌شوند — یعنی این solver از **آمار واقعی تقاضای BTSها روی داده‌ی آموزش** استفاده می‌کند، نه فقط یک پنجره‌ی زمانی کوچک ابتدای اجرا. وزن‌های `w_count/w_energy/w_distance` قابل تنظیم از خط فرمان هستند. اگر solver جواب پیدا نکند یا `pulp` نصب نباشد، به همان پوشش حریصانه‌ی مشترک سقوط می‌کند (fallback امن).
 
-همانند بخش ۵.۱، چون آستانه‌ی `L0_MS=20.0` عملاً هیچ‌وقت نقض نمی‌شود، قید پوشش این solver هم با هر انتخاب سرورهایی که ظرفیت کافی داشته باشد برآورده می‌شود؛ فقط جزء هدف (`w_distance`) واقعاً بین گزینه‌ها تمایز ایجاد می‌کند.
+> **نکته‌ی حیاتی (مشابه بخش ۶.۲):** با توجه به محدوده‌ی جغرافیایی داده (بیشینه‌ی فاصله‌ی ممکن BTS↔سرور ≈ ۱۸۲ کیلومتر → بیشینه‌ی `network_delay_ms` یک‌طرفه ≈ ۵.۶ میلی‌ثانیه، طبق بخش ۶.۲)، آستانه‌ی `L0_MS=20.0` عملاً **هیچ‌وقت نقض نمی‌شود**: هر سروری همیشه هر BTS معتبری را «پوشش می‌دهد» (`delay <= L0_MS` همیشه برقرار است). نتیجه‌ی عملی: در حلقه‌ی حریصانه‌ی بخش ۵.۱، انتخاب سرور اول بین سرورهای هم‌امتیاز (همه با پوشش کامل) عملاً دلبخواهی است، و انتخاب سرورهای بعدی صرفاً با معیار **ظرفیت باقی‌مانده** (نه پوشش واقعی باقی‌مانده، چون چیزی بدون‌پوشش نمی‌ماند) پیش می‌رود. به‌همین ترتیب، قید پوشش solver ILP بخش ۵.۲ (هر نقطه‌ی تقاضا به یک سرور فعال منصوب شود) با هر انتخاب سرورهایی که ظرفیت کافی داشته باشد برآورده می‌شود — یعنی این قید عملاً غیرفعال است و فقط جزء هدف (`w_distance`) واقعاً بین گزینه‌ها تمایز ایجاد می‌کند. اگر رفتار «پوشش حریصانه‌ی چندسرور واقعی» مدنظر است، `L0_MS` باید متناسب با مقیاس این دیتاست (مثلاً چند میلی‌ثانیه) کالیبره شود؛ در غیر این‌صورت این بخش از منطق را باید صرفاً «انتخاب مبتنی بر ظرفیت/نزدیکی» در نظر گرفت، نه یک واقعی set-cover.
 
 ---
 
@@ -386,7 +382,7 @@ L0_MS = 20.0                 # آستانه‌ی پوشش اولیه (initial pl
 PROXIMITY_L0_MS = 7.0        # آستانه‌ی RTT برای «نقض مجاورت» (VOILA proximity signal)
 ```
 
-**نکته‌ی مهم:** آستانه‌ی `proximity_violation` روی **RTT** (یعنی `2 * network_delay_ms`) سنجیده می‌شود، نه `network_delay_ms` یک‌طرفه؛ چون با محدوده‌ی جغرافیایی دیتاست (حداکثر فاصله‌ی ممکن BTS↔سرور ≈ ۱۸۲ کیلومتر) بیشینه‌ی `network_delay_ms` یک‌طرفه فقط ~۵.۶ میلی‌ثانیه است — همیشه کمتر از `PROXIMITY_L0_MS=7.0`. اگر آستانه روی مقدار یک‌طرفه سنجیده می‌شد، این شرط هیچ‌وقت True نمی‌شد و سیگنال اصلی رفتار geo-aware الگوریتم VOILA کاملاً خاموش می‌ماند:
+**نکته‌ی حیاتی:** آستانه‌ی `proximity_violation` باید روی **RTT** (یعنی `2 * network_delay_ms`) سنجیده شود، نه `network_delay_ms` یک‌طرفه؛ چون با محدوده‌ی جغرافیایی دیتاست (حداکثر فاصله‌ی ممکن BTS↔سرور ≈ ۱۸۲ کیلومتر) بیشینه‌ی `network_delay_ms` یک‌طرفه فقط ~۵.۶ میلی‌ثانیه است که همیشه کمتر از `PROXIMITY_L0_MS=7.0` می‌ماند و این شرط هیچ‌وقت True نمی‌شود. این سیگنال مبنای اصلی رفتار geo-aware الگوریتم VOILA است، پس باید حتماً روی RTT سنجیده شود:
 
 ```python
 if 2 * network_delay_ms >= PROXIMITY_L0_MS:
@@ -397,7 +393,7 @@ if 2 * network_delay_ms >= PROXIMITY_L0_MS:
 
 ## ۷. مسیریابی/انتخاب نمونه (Instance Selection)
 
-معیار پیش‌فرض (هر چهار الگوریتم): فاصله‌ی جغرافیایی + وضعیت صف.
+معیار پیش‌فرض (همه‌ی الگوریتم‌ها): فاصله‌ی جغرافیایی + وضعیت صف.
 
 - الف) لیست رپلیکاهای READY آن سرویس گرفته می‌شود.
 - ب) فاصله‌ی جغرافیایی BTS مبدأ تا سرور میزبان هر رپلیکا (haversine) محاسبه می‌شود.
@@ -406,25 +402,21 @@ if 2 * network_delay_ms >= PROXIMITY_L0_MS:
 - ه) اگر همه‌ی رپلیکاهای READY آن سرویس صف پر دارند → `REJECTED_QUEUE_FULL`.
 - و) اگر اصلاً رپلیکای READY برای آن سرویس وجود ندارد → `REJECTED_NO_REPLICA`.
 
-این منطق در `AlgorithmBase.select_replica` پیاده شده و پیش‌فرض هر چهار الگوریتم است.
+**رفع نشتی صف در `select_replica` (مهم برای اجرای واقعی k8s):** `admit_fn` (تابعی که واقعاً یک اسلات صف رزرو می‌کند — در حالت شبیه‌سازی بی‌اثر، در حالت k8s واقعی یک `INCR` واقعی روی Redis) دیگر برای *رتبه‌بندی* چند کاندید مختلف صدا زده نمی‌شود؛ اگر این کار انجام می‌شد، هر رپلیکای هم‌فاصله‌ای که فقط برای مقایسه چک می‌شد هم واقعاً یک اسلات رزرو می‌کرد و رزروهای استفاده‌نشده تا انقضای TTL به‌صورت phantom در صف باقی می‌ماندند (نشتی صف مشابه بخش ۱۴.۲، این‌بار در مسیر انتخاب نه مسیر گزارش تکمیل). راه‌حل: یک `occupancy_fn` جدا و فقط-خواندنی (بدون side-effect) برای ساختن و رتبه‌بندی استخر نزدیک استفاده می‌شود؛ `admit_fn` (رزرو واقعی) فقط **دقیقاً یک‌بار**، روی کاندیدای نهایی رتبه‌بندی‌شده، و فقط تا وقتی یکی موفق شود صدا زده می‌شود (`select_replica(request, candidate_replicas, servers, now, admit_fn=None, occupancy_fn=None)`).
 
-**نکته‌ی مهم درباره‌ی VOILA:** در فایل `algorithms/voila/voila_algorithm.py` یک متد `select_replica` اختصاصی (بر پایه‌ی تخمین RTT با مختصات شبکه‌ی Vivaldi، از `common/network_coordinates.py`) نوشته شده، اما در نسخه‌ی فعلی کد به‌صورت یک رشته‌ی غیرفعال (docstring، نه یک متد واقعی) نگه داشته شده و هرگز override نمی‌شود. نتیجه: **VOILA هم دقیقاً همان منطق پایه‌ی بالا (فاصله‌ی جغرافیایی + اشغال صف) را برای مسیریابی هر درخواست استفاده می‌کند، نه تخمین Vivaldi.** تفاوت واقعی VOILA با بقیه‌ی الگوریتم‌ها فقط در تصمیمات placement/migration/scale (بخش‌های ۸ و ۹) است، نه در مسیریابی لحظه‌ای هر درخواست. کلاس `VivaldiNetwork` در کد باقی مانده اما به هیچ الگوریتمی متصل نیست.
-
-**رزرو صف بدون نشتی:** `admit_fn` (تابعی که واقعاً یک اسلات صف رزرو می‌کند — در حالت شبیه‌سازی بی‌اثر، در حالت k8s واقعی یک `INCR` واقعی روی Redis) هرگز برای *رتبه‌بندی* چند کاندید مختلف صدا زده نمی‌شود؛ یک `occupancy_fn` جدا و فقط-خواندنی (بدون side-effect) برای ساختن و رتبه‌بندی استخر نزدیک استفاده می‌شود، و `admit_fn` (رزرو واقعی) فقط **دقیقاً یک‌بار**، روی کاندیدای نهایی رتبه‌بندی‌شده، و فقط تا وقتی یکی موفق شود صدا زده می‌شود:
+**قابلیت اختیاری برای PPO** (`latency_aware_routing=True`، پرچم CLI `--latency-aware-routing`): به‌جای فاصله‌ی خام، رپلیکایی انتخاب می‌شود که **کمترین تخمین کل تأخیر** (RTT شبکه + انتظار تخمینی صف + exec_time خودِ رپلیکا) را دارد. تخمین انتظار صف از روی `occupancy_fn` واقعی محاسبه می‌شود، نه از `replica.available_at`:
 
 ```python
-select_replica(request, candidate_replicas, servers, now, admit_fn=None, occupancy_fn=None)
-```
-
-**قابلیت اختیاری برای PPO** (`latency_aware_routing=True`، پرچم CLI `--latency-aware-routing`): به‌جای فاصله‌ی خام، رپلیکایی انتخاب می‌شود که **کمترین تخمین کل تأخیر** (RTT شبکه + انتظار تخمینی صف + exec_time خودِ رپلیکا) را دارد. تخمین انتظار صف همیشه از روی `occupancy_fn` واقعی محاسبه می‌شود (که در حالت k8s از Redis می‌آید و در حالت شبیه‌سازی از خودِ `Replica`)، نه از `replica.available_at` (که فقط در مسیر شبیه‌سازی به‌روزرسانی می‌شود):
-
-```python
-occ = occupancy_fn(r)
-est_wait_sec = occ * r.exec_time
+occ = occupancy_fn(r)                                    # در حالت شبیه‌سازی: deque محلی؛ در حالت k8s: از Redis
+est_wait_sec = occ * r.exec_time                          # تخمین انتظار صف از اشغال واقعی، نه available_at
 est_total_latency = (2 * network_delay_ms / 1000) + est_wait_sec + r.exec_time
 ```
 
-این حالت پیش‌فرض نیست (معیار رسمی routing فاصله‌ی جغرافیایی است)، اما به‌عنوان یک گزینه‌ی قابل‌مقایسه در ارزیابی نگه داشته شده است.
+> **چرا نه `replica.available_at`؟** این فیلد فقط توسط `try_admit` (بخش ۴.۲) به‌روزرسانی می‌شود که فقط در مسیر شبیه‌سازی صدا زده می‌شود؛ در مسیر اجرای واقعی روی k8s (`RealtimeEngine`)، `try_admit` هرگز فراخوانی نمی‌شود، پس `available_at` همیشه ۰ می‌ماند و تخمین latency-aware routing عملاً «ترافیک» را نادیده می‌گرفت. تخمین جدید بر پایه‌ی `occupancy_fn(r)` (که در حالت k8s واقعی از `redis_state.get_queue_occupancy` می‌آید) در هر دو مسیر درست کار می‌کند — همان رفع در `k8s_adapter/realtime_dispatcher.py:route_request` هم اعمال شده (`occupancy_fn=lambda r: redis_state.get_queue_occupancy(service_id, r.server_id)`).
+
+این حالت پیش‌فرض نیست (معیار رسمی routing فاصله‌ی جغرافیایی است، نه latency واقعی اندازه‌گیری‌شده مثل مقاله‌ی اصلی VOILA که Vivaldi/Serf دارد)، اما به‌عنوان یک گزینه‌ی قابل‌مقایسه در ارزیابی نگه داشته شده است.
+
+**یادداشت — `common/network_coordinates.py` (Vivaldi، غیرفعال):** یک پیاده‌سازی کامل مختصات شبکه‌ی Vivaldi برای تخمین RTT بدون اندازه‌گیری مستقیم وجود دارد (برای شبیه‌سازی سناریویی که VOILA واقعاً روی RTT اندازه‌گیری‌شده کار می‌کند)، اما چون معیار رسمی routing «فاصله‌ی جغرافیایی» تعریف شده، این مسیر در کد VOILA کامنت است و **استفاده نمی‌شود** — فقط برای مرجع/توسعه‌ی آینده نگه داشته شده.
 
 ---
 
@@ -456,30 +448,13 @@ MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC = 120.0   # حداقل عمر رپلیکا
 
 (`MONITOR_WINDOW_SEC` عمداً در این گروه نیست — نگاه کنید بخش ۵.۱؛ فقط برای مقداردهی اولیه استفاده می‌شود، نه برای این آستانه‌ها.)
 
-برای هر سرور، دو ردیاب جداگانه‌ی «از چه زمانی زیر/بالای آستانه‌ام» نگه‌داری می‌شود (`_low_util_since`, `_high_util_since`)؛ فقط وقتی تداوم به `SUSTAIN_HIGH_SEC`/`SUSTAIN_LOW_SEC` برسد، سیگنال «نیاز واقعی» فعال می‌شود — این از نوسان لحظه‌ای (flapping ناشی از یک spike کوتاه) جلوگیری می‌کند. **این گیت sustain-tracking برای Greedy، HPA و VOILA اجباری است؛ استثنای این قاعده PPO است، نگاه کنید ۸.۲.۱.**
+برای هر سرور، دو ردیاب جداگانه‌ی «از چه زمانی زیر/بالای آستانه‌ام» نگه‌داری می‌شود (`_low_util_since`, `_high_util_since`)؛ فقط وقتی تداوم به `SUSTAIN_HIGH_SEC`/`SUSTAIN_LOW_SEC` برسد، سیگنال «نیاز واقعی» فعال می‌شود — این از نوسان لحظه‌ای (flapping ناشی از یک spike کوتاه) جلوگیری می‌کند.
 
 انتخاب پروفایل سرور خاموش برای روشن‌کردن (heterogeneity-aware): مجموع ظرفیت سرورهای overload شده (یا سرور با بیشترین utilization) تعیین می‌کند پروفایل مطلوب چیست (`large` اگر مجموع ≥ ظرفیت large، `medium` اگر ≥ ظرفیت medium، وگرنه `edge_small`)؛ بین سرورهای آن پروفایل، نزدیک‌ترین از نظر جغرافیایی انتخاب می‌شود؛ اگر هیچ سروری از پروفایل مطلوب موجود نبود، fallback به کل سرورهای خاموش.
 
-Cooldown: بعد از هر boot/drain روی یک سرور خاص، حداقل `COOLDOWN_SEC` قبل از رویداد معکوس روی همان سرور اعمال نمی‌شود. این قید صرف‌نظر از هر چیز دیگری (از جمله بخش ۸.۲.۱ زیر) همیشه برقرار است.
+Cooldown: بعد از هر boot/drain روی یک سرور خاص، حداقل `COOLDOWN_SEC` قبل از رویداد معکوس روی همان سرور اعمال نمی‌شود.
 
 **رفع اضطراری:** اگر هنگام drain یک سرور، migration رپلیکای تک‌نسخه‌ای به هیچ سرور ACTIVE مناسبی ممکن نبود، به‌جای شکست بی‌صدا، یک boot اضطراری روی نزدیک‌ترین سرور خاموش صدا زده می‌شود (provisioning اضطراری) و drain تا تکمیل موفق migration به تعویق می‌افتد (لاگ می‌شود و بعداً دوباره تلاش می‌شود).
-
-### ۸.۲.۱ استثنای PPO: `bypass_sustain_gate`
-
-`AlgorithmBase` یک پرچم کلاسی دارد:
-
-```python
-class AlgorithmBase:
-    bypass_sustain_gate: bool = False   # پیش‌فرض همه‌ی الگوریتم‌ها
-```
-
-Greedy، HPA و VOILA این پرچم را دست‌نخورده (`False`) می‌گذارند — یعنی TURN_ON/TURN_OFF پیشنهادی‌شان فقط زمانی واقعاً اعمال می‌شود که سیگنال overload/underload به اندازه‌ی `SUSTAIN_HIGH_SEC`/`SUSTAIN_LOW_SEC` تداوم داشته باشد (بخش ۸.۲).
-
-`PPOAlgorithm.bypass_sustain_gate = True`. دلیل: action mask محیط PPO (بخش ۱۳.۴) از قبل فقط امکان‌پذیری *فیزیکی* هر اکشن provisioning را چک می‌کند (state سرور، cooldown، `min_active_duration`، تنها-سرور-فعال‌نبودن) — نه این‌که آیا آن اکشن الان «لازم» است طبق معیار sustain-tracking. اگر این پرچم `False` بود، هر TURN_ON/TURN_OFFای که مدل «انتخاب» می‌کرد ولی سیگنال sustain هنوز فعال نشده بود، بی‌صدا به `NO_CHANGE` تنزل پیدا می‌کرد و PPO هیچ‌وقت فرصت واقعی نمی‌گرفت رفتار پیش‌بینانه (anticipatory) را امتحان کند و از طریق reward واقعی یاد بگیرد. با `bypass_sustain_gate=True`، اگر مدل TURN_ON/TURN_OFF را انتخاب کند، همان لحظه (با رعایت cooldown و `min_active_duration`) اعمال می‌شود.
-
-نکات مهم:
-- **cooldown و `min_active_duration_sec` صرف‌نظر از این پرچم برای همه اعمال می‌شوند** — این‌ها قیود عملیاتی سخت‌افزاری‌اند، نه بخشی از آستانه‌ی reactive.
-- **ممیزی `decision_correctness` (بخش ۱۰) برای هر چهار الگوریتم دقیقاً با همان معیار عینی مستقل سنجیده می‌شود**، صرف‌نظر از این‌که آن الگوریتم اجازه‌ی bypass دارد یا نه. این پرچم فقط تعیین می‌کند اکشن *اعمال* می‌شود یا نه، نه این‌که در ممیزی «درست» شمرده شود.
 
 ### ۸.۳ Service Migration هنگام DRAIN
 
@@ -504,10 +479,10 @@ scale_decision(service_id, current_metrics) -> {SCALE_UP, SCALE_DOWN, NO_CHANGE}
 
 ### تفاوت سیاست هر الگوریتم
 
-- **Greedy:** `occ_ratio > 0.7` یا `rejection_rate > 0` → `SCALE_UP`؛ `occ_ratio < 0.1` و بیش از ۱ رپلیکا آماده → `SCALE_DOWN`. Placement: نزدیک‌ترین سرور به `demand_centroid` واقعی همان سرویس (اگر موجود باشد، وگرنه مرکز سرورهای فعال) با ظرفیت کافی — همان چیزی که VOILA و PPO هم استفاده می‌کنند؛ `can_host` هم با همین مختصات صدا زده می‌شود تا چک SLA (بخش ۴.۲) روی موقعیت واقعی باشد، نه بدترین‌حالت.
-- **K8s-HPA:** فرمول استاندارد HPA: `desired_replicas = ceil(current_replicas * (current_utilization / TARGET_UTILIZATION))` با `TARGET_UTILIZATION=0.70`؛ اگر رد شدن داشتیم، حداقل یک رپلیکا بیشتر از فعلی. Placement: سروری با بیشترین ظرفیت آزاد (`max free_capacity`). **HPA عمداً هیچ مختصات BTS/centroid به `can_host` پاس نمی‌دهد** — چون HPA واقعی به موقعیت جغرافیایی هیچ آگاهی ندارد و فقط از متریک utilization/occupancy کار می‌کند؛ این طراحی عمدی است تا HPA همان location-unaware واقعی بماند، نه یک نقص fairness.
-- **VOILA:** علاوه‌بر آستانه‌ی اشغال صف (`OCC_UP_THRESHOLD=0.65`, `OCC_DOWN_THRESHOLD=0.20`)، سیگنال دوم **proximity_violation_rate** دارد: اگر ظرفیت مشکلی ندارد ولی RTT بیش از حد است (نقض مجاورت)، بعد از `PROXIMITY_SUSTAIN_TICKS=2` تیک متوالی نقض، `SCALE_UP` جغرافیایی صادر می‌شود و بعد از آن `PROXIMITY_PROTECTION_TICKS=5` تیک، سرویس از SCALE_DOWN محافظت می‌شود (تا اثر رپلیکای جدید سنجیده شود). Placement/migration/scale-down-victim همگی بر پایه‌ی **مدوید (medoid)** موقعیت اخیر درخواست‌های همان سرویس هستند (`demand_centroid` — نقطه‌ی واقعی از میان نقاط اخیر که مجموع فاصله‌اش تا بقیه کمینه است، نه صرفاً میانگین حسابی lat/long). مسیریابی لحظه‌ای هر درخواست (`select_replica`) از این قاعده مستثناست — نگاه کنید بخش ۷.
-- **PPO:** تصمیم از مدل آموزش‌دیده می‌آید (بخش ۱۳)؛ Placement مشابه VOILA/Greedy بر پایه‌ی `demand_centroid`.
+- **Greedy:** `occ_ratio > 0.7` یا `rejection_rate > 0` → `SCALE_UP`؛ `occ_ratio < 0.1` و بیش از ۱ رپلیکا آماده → `SCALE_DOWN`. Placement: نزدیک‌ترین سرور به مرکز‌ثقل سرورهای فعال با ظرفیت کافی.
+- **K8s-HPA:** فرمول استاندارد HPA: `desired_replicas = ceil(current_replicas * (current_utilization / TARGET_UTILIZATION))` با `TARGET_UTILIZATION=0.70`؛ اگر رد شدن داشتیم، حداقل یک رپلیکا بیشتر از فعلی. Placement: سروری با بیشترین ظرفیت آزاد (`max free_capacity`)، بدون در نظر گرفتن جغرافیا — دقیقاً رفتار HPA واقعی که geo-aware نیست.
+- **VOILA:** علاوه‌بر آستانه‌ی اشغال صف (`OCC_UP_THRESHOLD=0.65`, `OCC_DOWN_THRESHOLD=0.20`)، سیگنال دوم **proximity_violation_rate** دارد: اگر ظرفیت مشکلی ندارد ولی RTT بیش از حد است (نقض مجاورت)، بعد از `PROXIMITY_SUSTAIN_TICKS=2` تیک متوالی نقض، `SCALE_UP` جغرافیایی صادر می‌شود و بعد از آن `PROXIMITY_PROTECTION_TICKS=5` تیک، سرویس از SCALE_DOWN محافظت می‌شود (تا اثر رپلیکای جدید سنجیده شود). Placement/migration/scale-down-victim همگی بر پایه‌ی **مدوید (medoid)** موقعیت اخیر درخواست‌های همان سرویس هستند (`demand_centroid` — نقطه‌ی واقعی از میان نقاط اخیر که مجموع فاصله‌اش تا بقیه کمینه است، نه صرفاً میانگین حسابی lat/long).
+- **PPO:** تصمیم از مدل آموزش‌دیده می‌آید (بخش ۱۳).
 
 ---
 
@@ -534,36 +509,22 @@ total_requests, completed_requests
 
 ### ممیزی درستی تصمیم‌ها (`decision_correctness`)
 
-هر الگوریتم باید گزارش بدهد چند بار SCALE_UP/DOWN/TURN_ON/OFF زده و چند تا واقعاً لازم بود. این به‌صورت یک لایه‌ی ممیزی مستقل در موتور پیاده شده: هر بار که موتور یک تصمیم (SCALE_UP/DOWN/TURN_ON/TURN_OFF) را از الگوریتم می‌گیرد، **بی‌ربط به این‌که خودِ الگوریتم چه فکری می‌کند**، با یک معیار عینی و مستقل از آستانه‌ی داخلی هر چهار الگوریتم چک می‌کند که آیا آن اکشن واقعاً لازم بود:
+هر الگوریتم باید گزارش بدهد چند بار SCALE_UP/DOWN/TURN_ON/OFF زده و چند تا واقعاً لازم بود. این به‌صورت یک لایه‌ی ممیزی مستقل در موتور پیاده شده: هر بار که موتور یک تصمیم (SCALE_UP/DOWN/TURN_ON/TURN_OFF) را از الگوریتم می‌گیرد، **بی‌ربط به این‌که خودِ الگوریتم چه فکری می‌کند**، با یک معیار عینی جداگانه چک می‌کند که آیا آن اکشن واقعاً لازم بود:
 
-- `necessary_up`: `occ_ratio > 0.85` یا `rejection_rate > 0` یا `deadline_violation_rate > 0`.
+- `necessary_up`: `occ_ratio > 0.7` یا `rejection_rate > 0` (آستانه‌ی ممیزی، مستقل از آستانه‌ی داخلی الگوریتم).
 - `necessary_down`: `occ_ratio < 0.2` و بیش از ۱ رپلیکای آماده.
-- `necessary_turn_on`: overload پایدار (تداوم‌یافته طبق `SUSTAIN_HIGH_SEC`) *یا* سرویسی «capacity-starved» (نیاز واقعی به ظرفیت طبق `necessary_up` بالا، ولی هیچ سرور فعال/در حال بوت‌شدنی جا ندارد).
-- `necessary_turn_off`: utilization سرور زیر `UTIL_SCALE_DOWN_THRESHOLD`.
-
-آستانه‌ی `necessary_up` (۰.۸۵) عمداً از آستانه‌ی داخلی هر چهار الگوریتم فاصله دارد (Greedy=۰.۷، HPA target=۰.۷۰، VOILA OCC_UP=۰.۶۵) تا این معیار ممیزی صرفاً معیار تصمیم یکی از خودِ الگوریتم‌ها نباشد.
+- `necessary_turn_on`: overload پایدار *یا* سرویسی «capacity-starved» (نیاز واقعی به ظرفیت ولی هیچ سرور فعال/در حال بوت‌شدنی جا ندارد).
+- `necessary_turn_off`: utilization سرور زیر آستانه‌ی پایین.
 
 خروجی برای هر نوع تصمیم:
 
 ```json
 {
-  "SCALE_UP": {
-    "correct": N,
-    "incorrect": N,
-    "missed_opportunities": N,
-    "blocked_opportunities": N,
-    "correctness_rate_pct": X
-  }
+  "SCALE_UP": {"correct": N, "incorrect": N, "missed_opportunities": N, "correctness_rate_pct": X}
 }
 ```
 
-دو حالت «تصمیم لازم بود ولی اعمال نشد» از هم تفکیک می‌شوند:
-- **`missed_opportunities`**: الگوریتم اصلاً همان اکشن لازم را پیشنهاد نداد.
-- **`blocked_opportunities`**: الگوریتم دقیقاً همان اکشن لازم را پیشنهاد داد، ولی یک گیت سیستمی (cooldown، migration ناقص، نبود سرور مقصد، نبود رپلیکای بالغ، ...) مانع اعمالش شد.
-
-این تفکیک برای این لازم است که «ضعف واقعی الگوریتم» را از «محدودیت سیستمی موقت» جدا کند — بدون آن، هر دو حالت یکسان به‌عنوان شکست الگوریتم به حساب می‌آمد.
-
-**شفافیت درباره‌ی مسیر `capacity_starved`:** وقتی تنها دلیل لازم‌بودن یک TURN_ON، «capacity-starved بودن یک سرویس» باشد (نه overload پایدار)، تابع ممیزی از همان سیگنال capacity-starved استفاده می‌کند که خودِ شرط لازم‌بودن (`turn_on_necessary`) هم از آن استفاده کرده — یعنی این مسیر خاص طبیعتاً همیشه «درست» ارزیابی می‌شود. برای شفافیت گزارش، این حالت جدا در لاگ `provision_decision` با فیلد `via_capacity_starved_only=true` علامت‌گذاری می‌شود تا در تحلیل، از TURN_ONهای واقعاً مبتنی‌بر overload لحظه‌ای قابل تفکیک باشد.
+`missed_opportunities` یعنی چند بار یک تصمیم *لازم بود* ولی الگوریتم آن را نگرفت (یا cooldown/محدودیت جلوی اجرایش را گرفت). این معیار امکان مقایسه‌ی کیفیت تصمیم‌گیری هر الگوریتم را (نه فقط تعداد خام اکشن‌ها) فراهم می‌کند.
 
 **ابزار مکمل — `analyze_decision_quality.py`:** روی فایل لاگ JSONL هر الگوریتم دو نوع تحلیل انجام می‌دهد:
 1. طبقه‌بندی SCALE_UP/SCALE_DOWN «غیرضروری طبق ممیزی لحظه‌ای» به «پیش‌بینانه/موجّه» در برابر «نویز واقعی» (با نگاه به چند تیک بعدی، آیا نیاز واقعی رخ داد یا نه).
@@ -575,7 +536,7 @@ total_requests, completed_requests
 
 ## ۱۱. پارامترهای پیکربندی (`common/config.py`)
 
-همه‌ی پارامترهای عددی مسیر شبیه‌سازی/الگوریتم‌ها در یک فایل مرکزی قرار دارند:
+همه‌ی پارامترهای عددی در یک فایل مرکزی قرار دارند و هیچ‌کجای دیگر کد hardcode نمی‌شوند:
 
 ```python
 # Server Lifecycle
@@ -589,6 +550,7 @@ MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC = 120.0
 # Cold start
 COLD_START_PENALTY_FRACTION = 0.20
 COLD_START_PENALTY_CAP_SEC  = 0.500
+COLD_START_WINDOW_SEC       = 10.0     # فیلد قدیمی Config؛ در مسیر تصمیم با تابع پویای زیر جایگزین شده
 COLD_START_WINDOW_RATIO     = 3.0      # پنجره‌ی واقعی = min(3 × exec_time همان سرویس/سرور, CAP)
 COLD_START_WINDOW_CAP_SEC   = 10.0
 
@@ -605,7 +567,7 @@ UTIL_SCALE_DOWN_THRESHOLD = 0.45
 SUSTAIN_LOW_SEC = 60.0
 SUSTAIN_HIGH_SEC = 30.0
 COOLDOWN_SEC = 60.0
-DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.85
+DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.7
 DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD = 0.2
 DECISION_INTERVAL_SEC = 30.0
 
@@ -629,28 +591,16 @@ PPO_REWARD_WEIGHTS = {
     "w5_rejected": 0.25,
 }
 PPO_PENALTY_PER_ACTION = 0.02
-PPO_DEADLINE_FAIRNESS_ALPHA = 0.7   # وزن میانگین وزن‌دار در برابر میانگین ساده‌ی deadline_violation_rate — بخش ۱۳.۵
+
+# k8s_adapter — بازه‌های عملیاتی (اجرای واقعی روی کلاستر، بخش ۱۴)
+RESERVATION_SWEEP_INTERVAL_SEC = 10.0        # تسک دوره‌ای پاک‌سازی رزروهای منقضی‌شده (بخش ۱۴.۲)
+RESERVATION_TTL_BUFFER_SEC = 5.0             # ttl رزرو صف = deadline_sec + این عدد (بخش ۱۴.۲)
+COMPLETION_QUEUE_POLL_INTERVAL_SEC = 0.2     # فاصله‌ی خواندن edge:metrics:completions (بخش ۱۴.۳)
 ```
 
-سه ثابت زیر هم بخشی از رفتار مسیر PPO هستند اما در `common/config.py` نیستند؛ در `common/state_builder.py` و `algorithms/ppo/env.py` تعریف شده‌اند (نگاه کنید بخش ۱۳.۲ و ۱۳.۵):
+پارامترهای قابل‌کالیبراسیون (تخمین معقول اولیه، در طول توسعه با آزمایش دقیق‌تر می‌شوند؛ تغییرشان معماری را نمی‌شکند، فقط رفتار عددی سیستم را تنظیم می‌کند): مقدار دقیق `K_MS_PER_KM`, `BASE_LATENCY_MS`, `DISPATCH_OVERHEAD_MS`, `L0_MS` (نگاه کنید هشدار بخش ۵.۱ درباره‌ی کالیبراسیون این مورد با مقیاس داده)؛ طول `MONITOR_WINDOW_SEC`, `SUSTAIN_LOW_SEC`, `SUSTAIN_HIGH_SEC`, `COOLDOWN_SEC`, `MIN_ACTIVE_DURATION_SEC`, `MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC`؛ وزن‌های reward PPO (`w1..w5`) و `PPO_PENALTY_PER_ACTION`؛ `DECISION_INTERVAL_SEC`؛ وزن‌های solver ILP (`w_count`, `w_energy`, `w_distance`)؛ انتخاب بین `select_replica` مبتنی بر فاصله‌ی خام در برابر `latency_aware_routing`؛ بازه‌های عملیاتی k8s_adapter (`RESERVATION_SWEEP_INTERVAL_SEC`, `RESERVATION_TTL_BUFFER_SEC`, `COMPLETION_QUEUE_POLL_INTERVAL_SEC`).
 
-```python
-NORM_RESPONSE_TIME_SEC = 1.232      # common/state_builder.py
-NORM_ENERGY_JOULE      = 4431.91    # common/state_builder.py
-NORM_ARRIVAL_RATE      = 3.0        # common/state_builder.py
-NORM_REJECTED_PER_TICK = 6.0        # algorithms/ppo/env.py — با env var EOTCH_NORM_REJECTED_PER_TICK قابل بازنویسی
-```
-
-پارامترهای قابل‌کالیبراسیون (تخمین معقول، تغییرشان معماری را نمی‌شکند، فقط رفتار عددی سیستم را تنظیم می‌کند): مقدار دقیق `K_MS_PER_KM`, `BASE_LATENCY_MS`, `DISPATCH_OVERHEAD_MS`, `L0_MS` (نگاه کنید یادداشت بخش ۵.۱ درباره‌ی کالیبراسیون این مورد با مقیاس داده)؛ طول `MONITOR_WINDOW_SEC`, `SUSTAIN_LOW_SEC`, `SUSTAIN_HIGH_SEC`, `COOLDOWN_SEC`, `MIN_ACTIVE_DURATION_SEC`, `MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC`؛ وزن‌های reward PPO (`w1..w5`, `PPO_DEADLINE_FAIRNESS_ALPHA`) و `PPO_PENALTY_PER_ACTION`؛ `DECISION_INTERVAL_SEC`؛ وزن‌های solver ILP (`w_count`, `w_energy`, `w_distance`)؛ انتخاب بین `select_replica` مبتنی بر فاصله‌ی خام در برابر `latency_aware_routing`.
-
-**یادداشت درباره‌ی مسیر k8s_adapter:** ادعای «همه‌ی پارامترها در یک فایل مرکزی‌اند» فقط برای مسیر شبیه‌سازی (`simulator/`, `algorithms/`) کاملاً برقرار است. در `k8s_adapter/realtime_dispatcher.py`، دو بازه‌ی عملیاتی به‌صورت ثابت‌های ماژول تعریف شده‌اند (نه در `common/config.py`):
-
-```python
-UTIL_SAMPLE_INTERVAL_SEC = 5.0        # فاصله‌ی نمونه‌برداری utilization/انرژی
-RESERVATION_SWEEP_INTERVAL_SEC = 10.0 # فاصله‌ی جاروب رزروهای منقضی‌شده‌ی صف
-```
-
-و دو مقدار دیگر (buffer زمانی TTL رزرو صف = `deadline_sec + 5` ثانیه، و فاصله‌ی خواندن صف تکمیل‌شده‌ها = ۰.۲ ثانیه) به‌صورت عدد خام مستقیم در محل استفاده نوشته شده‌اند، نه ثابت نام‌گذاری‌شده در `config.py`.
+**یادداشت صداقت:** فوق ادعای «همه‌ی پارامترهای عددی در یک فایل مرکزی‌اند و هیچ‌کجای دیگر hardcode نمی‌شوند» برای مسیر شبیه‌سازی (`simulator/`, `algorithms/`) کاملاً برقرار است. برای مسیر اجرای زنده (`k8s_adapter/`)، سه ثابت بالا (بازه‌های sweep/poll/ttl-buffer) در نسخه‌ی فعلی کد به‌صورت عدد خام در محل استفاده نوشته شده‌اند، نه در `common/config.py`؛ این‌جا به‌عنوان مستندسازی مقادیر فعلی آورده شده‌اند تا سند با رفتار واقعی سیستم یکی باشد — انتقال واقعی‌شان به فایل مرکزی هنوز یک TODO باز است.
 
 ---
 
@@ -665,7 +615,7 @@ edge_rl/
     geo.py                # haversine, network_delay
     logger.py             # لاگ ساخت‌یافته‌ی JSON
     state_builder.py      # ساخت بردار state مشترک برای PPO
-    network_coordinates.py # Vivaldi (تعریف‌شده، به هیچ الگوریتمی متصل نیست)
+    network_coordinates.py # Vivaldi (فعلاً غیرفعال/مرجع)
 
   data/
     loader.py             # خواندن CSV، فیلتر جغرافیایی، آفست روزانه
@@ -693,23 +643,17 @@ edge_rl/
     realtime_dispatcher.py     # معادل real-time موتور شبیه‌سازی
     dispatcher_api.py          # سرویس FastAPI کنترل‌پلین (پورت ۹۰۰۰)
     smoke_test.py               # تست اتصال Redis/K8s قبل از اجرای کامل
-    worker_service/
-      Dockerfile                  # ایمیج مشترک هر ۱۵ سرویس
-      app.py                      # سرویس FastAPI واقعی روی هر پاد
-      requirements.txt
-      bts_simulator.py            # replay دیتاست با زمان‌بندی واقعی، جای BTS واقعی
+    worker_service/              # ایمیج Worker واقعی + BTS Simulator
 
   evaluation/
     compare_runs.py       # اجرای هر ۴ الگوریتم روی داده‌ی یکسان
     aggregate_seeds.py     # میانگین/انحراف‌معیار نتایج PPO روی چند seed
 
-  analyze_decision_quality.py         # تحلیل flapping و کیفیت تصمیمات
-  analyze_scaleup_by_service.py       # تفکیک SCALE_UP اعمال‌شده به‌ازای هر سرویس
-  analyze_necessity_by_service.py     # نرخ لازم‌بودن سیگنال در برابر نرخ اعمال بدون‌نیاز، به‌ازای هر سرویس
-  diagnose_violations_by_service.py   # تشخیص این‌که نقض deadline از کدام سرویس‌ها می‌آید (ساختاری در برابر رفتار الگوریتم)
-  calibrate_constants.py              # کالیبراسیون ثابت‌های نرمال‌سازی state/reward
-  build_push_pull_worker.py           # build/push/pull ایمیج Docker Worker
-  run.py                               # نقطه‌ی ورود اصلی CLI
+  analyze_decision_quality.py  # تحلیل flapping و کیفیت تصمیمات
+  diagnose_violations_by_service.py  # تشخیص این‌که نقض deadline از کدام سرویس‌ها می‌آید (ساختاری در برابر رفتار الگوریتم)
+  calibrate_constants.py        # کالیبراسیون ثابت‌های نرمال‌سازی state/reward
+  build_push_pull_worker.py      # build/push/pull ایمیج Docker Worker
+  run.py                          # نقطه‌ی ورود اصلی CLI
   requirements.txt
 ```
 
@@ -717,20 +661,16 @@ edge_rl/
 
 ```python
 class AlgorithmBase(ABC):
-    bypass_sustain_gate: bool = False   # نگاه کنید بخش ۸.۲.۱ — فقط PPO آن را True می‌کند
-
     def initial_placement(self, servers, active_bts) -> List[int]: ...
-    def select_replica(self, request, candidate_replicas, servers, now,
-                        admit_fn=None, occupancy_fn=None) -> Replica | None: ...
+    def select_replica(self, request, candidate_replicas, servers, now) -> Replica | None: ...
     def scale_decision(self, service_id, metrics_snapshot) -> ScaleAction: ...
     def provision_decision(self, servers, metrics_snapshot, now) -> ProvisionAction: ...
     def select_placement_server(self, service_id, servers) -> Optional[int]: ...
     def migration_decision(self, draining_server, servers) -> List[MigrationStep]: ...
-    def select_scale_down_victim(self, service_id, ready_replicas, servers, now,
-                                  occupancy_fn=None) -> Replica: ...
+    def select_scale_down_victim(self, service_id, ready_replicas, servers, now) -> Replica: ...
 ```
 
-`initial_placement`، `select_replica` و `select_scale_down_victim` به‌طور پیش‌فرض در `AlgorithmBase` پیاده‌سازی شده‌اند و بین همه‌ی الگوریتم‌ها مشترک‌اند (قابل override در صورت نیاز — VOILA فقط `select_scale_down_victim` را عملاً override می‌کند، نه `select_replica`؛ نگاه کنید بخش ۷). برای افزودن یک الگوریتم جدید کافی است کلاسی از `AlgorithmBase` ساخته شود و متدهای انتزاعی پیاده‌سازی شوند؛ سپس فقط الگوریتم در `run.py` و `evaluation/compare_runs.py` به تابع سازنده اضافه می‌شود — موتور شبیه‌سازی و adapter کلاستر هیچ تغییری نیاز ندارند.
+`initial_placement` و `select_replica` و `select_scale_down_victim` به‌طور پیش‌فرض در `AlgorithmBase` پیاده‌سازی شده‌اند و بین همه‌ی الگوریتم‌ها مشترک‌اند (قابل override در صورت نیاز، مثل VOILA). برای افزودن یک الگوریتم جدید کافی است کلاسی از `AlgorithmBase` ساخته شود و متدهای انتزاعی پیاده‌سازی شوند؛ سپس فقط الگوریتم در `run.py` و `evaluation/compare_runs.py` به تابع سازنده اضافه می‌شود — موتور شبیه‌سازی و adapter کلاستر هیچ تغییری نیاز ندارند.
 
 ### نکته‌ی طراحی مهم درباره‌ی موتور شبیه‌سازی و اجرای زنده
 
@@ -769,7 +709,7 @@ STATE_DIM = n_servers * 6 + n_services * 6 + 2 = 10*6 + 15*6 + 2 = 152
 - برای هر سرویس (۶ بعد): نسبت رپلیکای فعال به کل سرورها + نسبت اشغال صف (کلمپ‌شده روی ۲.۰ و نرمال‌شده) + نرخ نقض deadline + نرخ ورود اخیر (نرمال‌شده) + `rejection_rate` + `proximity_violation_rate`.
 - +۲ بعد سراسری: `avg_response_time_recent` نرمال‌شده، `energy_recent_joule` نرمال‌شده.
 
-ثابت‌های نرمال‌سازی حدس دستی نیستند — با اجرای `calibrate_constants.py` روی داده‌ی train واقعی (اجرای Greedy، برداشتن آمار p90/p95 هر کمیت از تیک‌های واقعی تصمیم) به‌دست آمده‌اند (`NORM_RESPONSE_TIME_SEC=1.232`, `NORM_ENERGY_JOULE=4431.91`, `NORM_ARRIVAL_RATE=3.0` — نگاه کنید بخش ۱۱)؛ روش انتخاب: p90 یا p95 به‌عنوان «حداکثر معمول» (norm=1.0)، نه بیشینه‌ی مطلق (چون یک outlier کل مقیاس را خراب می‌کند).
+ثابت‌های نرمال‌سازی حدس دستی نیستند — با اجرای `calibrate_constants.py` روی داده‌ی train واقعی (اجرای Greedy، برداشتن آمار p90/p95 هر کمیت از تیک‌های واقعی تصمیم) به‌دست می‌آیند؛ روش انتخاب: از p90 یا p95 به‌عنوان «حداکثر معمول» (norm=1.0) استفاده شود، نه بیشینه‌ی مطلق (چون یک outlier کل مقیاس را خراب می‌کند).
 
 `build_state_vector()` در یک ماژول مستقل نوشته شده و هم توسط `simulator/engine.py` (از طریق `EdgeResourceEnv`/`PPOAlgorithm`)، هم توسط `k8s_adapter` فراخوانی می‌شود؛ منطق ساخت state هیچ‌جای دیگری تکرار نمی‌شود.
 
@@ -781,11 +721,11 @@ action_space = MultiDiscrete([3]*15 + [3]*10)   # 15 سرویس × {NO_CHANGE, S
 
 برای بعد سرور: از میان همه‌ی TURN_ON/TURN_OFFهای غیر-NO_CHANGE در همان تیک، فقط **یکی** واقعاً اعمال می‌شود — موتور در هر تیک تصمیم فقط یک اقدام provisioning می‌پذیرد (`ProvisionAction` تکی)، این محدودیت طراحی عمدی است تا از تغییرات هم‌زمان انبوه جلوگیری شود.
 
-Placement رپلیکای جدید (وقتی SCALE_UP انتخاب شد): بین سرورهای قابل‌میزبانی، ابتدا نزدیک‌ترین‌ها به `demand_centroid` آن سرویس (در بازه‌ی ۵ کیلومتری نزدیک‌ترین) فیلتر می‌شوند، سپس در این خوشه سروری با بیشترین ظرفیت آزاد انتخاب می‌شود — همان منطق VOILA/Greedy برای placement.
+Placement رپلیکای جدید (وقتی SCALE_UP انتخاب شد): سروری با بیشترین ظرفیت آزاد در نزدیک‌ترین خوشه به `demand_centroid` آن سرویس (یا مرکز سرورهای فعال اگر centroid نداریم) — همان منطق VOILA برای placement.
 
 ### ۱۳.۴ Action Masking — `MaskablePPO`
 
-قبل از هر sample، اکشن‌های نامعتبر ماسک می‌شوند — این ماسک فقط امکان‌پذیری **فیزیکی** هر اکشن را چک می‌کند، نه این‌که آیا آن اکشن طبق معیار sustain-tracking «لازم» است یا نه (بخش ۸.۲.۱ دلیلش را توضیح می‌دهد):
+قبل از هر sample، اکشن‌های نامعتبر ماسک می‌شوند:
 
 - `SCALE_UP` سرویس فقط اگر: سرویس در cooldown نیست **و** حداقل یک سرور ACTIVE با ظرفیت کافی برای این سرویس وجود دارد.
 - `SCALE_DOWN` سرویس فقط اگر: در cooldown نیست، بیش از ۱ رپلیکای READY دارد، و حداقل یکی «بالغ» (`mature`) است.
@@ -793,44 +733,29 @@ Placement رپلیکای جدید (وقتی SCALE_UP انتخاب شد): بین 
 - `TURN_OFF` سرور فقط اگر: ACTIVE است، در cooldown نیست، تنها سرور فعال نیست، و `MIN_ACTIVE_DURATION_SEC` گذشته.
 - `NO_CHANGE` همیشه مجاز (برای هر بعد).
 
-دقیقاً همین معیار هم در مسیر آموزش (`algorithms/ppo/env.py:compute_action_masks`، که هم `EdgeResourceEnv` و هم دموی BC از آن استفاده می‌کنند) و هم در مسیر inference/اجرای واقعی (`algorithms/ppo/ppo_algorithm.py:PPOAlgorithm._build_action_masks`) پیاده شده — یک منبع منطقی واحد، تا فضای تصمیمی که مدل در inference می‌بیند دقیقاً همان فضایی باشد که با آن آموزش دیده.
-
 ### ۱۳.۵ Reward
 
 ```python
-active_svcs = سرویس‌هایی که در همین تیک حداقل یک درخواست دریافت کرده‌اند (recent_arrivals > 0)
-
-weighted_dv_rate   = میانگین وزن‌دار deadline_violation_rate بین active_svcs، وزن هر سرویس = سهم واقعی‌اش از ترافیک تیک (recent_arrivals)
-unweighted_dv_rate = میانگین ساده‌ی deadline_violation_rate بین همان active_svcs (بدون وزن)
-avg_dv_rate = PPO_DEADLINE_FAIRNESS_ALPHA * weighted_dv_rate + (1 - PPO_DEADLINE_FAIRNESS_ALPHA) * unweighted_dv_rate   # آلفا=۰.۷
-
-norm_rt       = min(avg_response_time_recent / NORM_RESPONSE_TIME_SEC, 2.0)
-norm_energy   = min(energy_recent_joule / NORM_ENERGY_JOULE, 2.0)
-norm_lb       = min(load_balance_cv, 2.0)          # انحراف‌معیار/میانگین utilization سرورهای ACTIVE
-norm_rejected = min(num_rejected_recent / NORM_REJECTED_PER_TICK, 2.0)
-
-penalty = (w1_response_time * norm_rt
-         + w2_deadline * avg_dv_rate
-         + w3_energy * norm_energy
-         + w4_load_balance * norm_lb
-         + w5_rejected * norm_rejected)
-penalty += PPO_PENALTY_PER_ACTION * n_actions_applied_this_tick     # جریمه‌ی ثابت هر اکشن غیر-NO_CHANGE واقعاً اعمال‌شده
+penalty = (w1_response_time * norm(avg_response_time_recent)
+         + w2_deadline * avg_deadline_violation_rate
+         + w3_energy * norm(energy_recent_joule)
+         + w4_load_balance * norm(load_balance_cv)
+         + w5_rejected * norm(num_rejected_recent))
+penalty += PPO_PENALTY_PER_ACTION * n_actions_applied_this_tick     # جریمه‌ی ثابت هر اکشن غیر-NO_CHANGE اعمال‌شده
 reward = -penalty
 ```
 
-میانگین `deadline_violation_rate` بین سرویس‌ها به‌صورت ترکیبی (وزن‌دار + ساده) گرفته می‌شود، نه صرفاً یکی از این دو: میانگین کاملاً وزن‌دار باعث می‌شود SLA سرویس‌های کم‌ترافیک/batch (۱۱ تا ۱۵) عملاً بی‌اثر شود (چون سهم‌شان از ترافیک کل کوچک است)، در حالی که میانگین کاملاً ساده باعث می‌شود یک نقض تکی روی یک سرویس کم‌ترافیک (که با ~۱ درخواست در تیک، ۱۰۰٪ نرخ نقض همان تیک می‌شود) به‌اندازه‌ی سرویس‌های پرترافیک در reward اثر بگذارد. `PPO_DEADLINE_FAIRNESS_ALPHA=0.7` نقطه‌ی میانی است: عمدتاً حجم واقعی ترافیک را منعکس می‌کند ولی SLA سرویس‌های batch را هم کاملاً بی‌اثر نمی‌کند.
-
-وزن‌ها و `PPO_DEADLINE_FAIRNESS_ALPHA` در بخش ۱۱ آمده‌اند. هر جزء reward جدا هم لاگ می‌شود (`response_time`, `deadline`, `energy`, `load_balance`, `rejected`, `action_penalty`, و نسخه‌ی خام وزن‌دار/ساده‌ی deadline برای دیباگ) و در TensorBoard زیر `reward_components/*` قابل مشاهده است — این برای تشخیص این‌که کدام جزء دارد بر بقیه غالب می‌شود، حیاتی است (نمونه‌ی خطرناک: وزن نامتعادل می‌تواند باعث شود عامل provisioning را کاملاً متوقف کند، یا برعکس سیاست‌ای یاد بگیرد که فقط یک جزء ارزان را بهینه می‌کند بدون بهبود واقعی هدف اصلی).
+وزن‌ها در بخش ۱۱ آمده‌اند. هر جزء reward جدا هم لاگ می‌شود و در TensorBoard زیر `reward_components/*` قابل مشاهده است — این برای تشخیص این‌که کدام جزء دارد بر بقیه غالب می‌شود، حیاتی است (نمونه‌ی خطرناک: وزن نامتعادل می‌تواند باعث شود عامل provisioning را کاملاً متوقف کند).
 
 ### ۱۳.۶ آموزش (`algorithms/ppo/train.py`)
 
-- **BC Warm-Start از Greedy:** ابتدا Greedy روی داده‌ی train اجرا می‌شود و در هر تیک `(state, action_mask, action)` ثبت می‌شود (حداکثر `bc_max_ticks=10000` تیک به‌طور پیش‌فرض). اکشن ثبت‌شده همان چیزی است که Greedy واقعاً *اعمال کرده* (نه چیزی که فقط پیشنهاد داده و مثلاً به‌خاطر cooldown رد شده) — این هم‌خوانی با رفتار واقعی معلم برای BC مهم است. سپس `behavior_cloning_pretrain` مستقیم روی `model.policy` (شبکه‌ی PyTorch واقعی sb3) با cross-entropy روی توزیع MultiDiscrete آموزش می‌دهد (`Adam`, `lr=5e-5`، پیش‌فرض ۵۰ epoch، batch=64)، با همان action mask محاسبه‌شده در هر تیک برای این‌که cross-entropy احتمال غیرصفر به اکشن‌های فیزیکاً نامعتبر ندهد؛ loss هر epoch در `logs/bc_warmstart_loss.csv` ذخیره می‌شود.
-- **Fine-tune با RL:** بعد از warm-start، `MaskablePPO` با `n_steps=2048, batch_size=256, gamma=0.99, lr=3e-4, ent_coef=0.01` و شبکه‌ی `net_arch=dict(pi=[256,256], vf=[256,256])` آموزش می‌بیند؛ پیش‌فرض `total_timesteps=3_000_000`.
+- **BC Warm-Start از Greedy:** ابتدا Greedy روی داده‌ی train اجرا و در هر تیک `(state, action)` ثبت می‌شود (حداکثر `bc_max_ticks=10000` تیک به‌طور پیش‌فرض). سپس `behavior_cloning_pretrain` مستقیم روی `model.policy` (شبکه‌ی PyTorch واقعی sb3) با cross-entropy روی توزیع MultiDiscrete آموزش می‌دهد (`Adam`, `lr=5e-5`، پیش‌فرض ۵۰ epoch، batch=64)؛ loss هر epoch در `logs/bc_warmstart_loss.csv` ذخیره می‌شود.
+- **Fine-tune با RL:** بعد از warm-start، `MaskablePPO` با `n_steps=2048, batch_size=256, gamma=0.99, lr=3e-4, ent_coef=0.01` و شبکه‌ی `net_arch=dict(pi=[256,256], vf=[256,256])` آموزش می‌بیند؛ پیش‌فرض `total_timesteps=3_000_000` (افزایش‌یافته نسبت به تنظیم اولیه‌ی ۲ میلیون، چون با ۲ میلیون منحنی reward هنوز کاملاً هم‌گرا نشده بود).
 - **موازی‌سازی:** `n_envs=8` محیط موازی (`DummyVecEnv`). هر env یک provider تصادفی مستقل با seed جدا دارد — برای هر اپیزود، یک پنجره‌ی زمانی تصادفی ۲۴ساعته (`window_hours=24.0`، قابل تنظیم) از تایم‌لاین سه‌روزه‌ی train انتخاب می‌شود.
-- **نرمال‌سازی reward:** `VecNormalize(norm_obs=False, norm_reward=True, gamma=0.99)` — آمار running mean/std خودکار محاسبه می‌شود. فایل `..._vecnormalize.pkl` فقط برای resume آموزش کاربرد دارد و در مسیر inference لود نمی‌شود، چون inference مستقیم روی observation خام با `deterministic=True` عمل می‌کند و reward اصلاً در مسیر forward pass نیست.
+- **نرمال‌سازی reward:** `VecNormalize(norm_obs=False, norm_reward=True, gamma=0.99)` — آمار running mean/std خودکار محاسبه می‌شود.
 - **لاگ منحنی یادگیری:** هر env جدا `logs/monitor/env_{i}.monitor.csv` می‌نویسد (reward per episode)؛ `tensorboard_log=logs/tensorboard` هم فعال است.
 - **چک‌پوینت:** `CheckpointCallback` هر `200_000/n_envs` گام یک چک‌پوینت در `logs/checkpoints/` ذخیره می‌کند.
-- مدل نهایی: `algorithms/ppo/ppo_model_seed{SEED}.zip`.
+- مدل نهایی: `algorithms/ppo/ppo_model_seed{SEED}.zip` (و `..._vecnormalize.pkl` برای resume آموزش — **در inference لود نمی‌شود** چون مسیر inference مستقیم روی observation خام با `deterministic=True` عمل می‌کند).
 
 اجرا:
 ```bash
@@ -874,28 +799,26 @@ service:{svc}:server:{srv}:busy_seconds_acc  -> شمارنده‌ی دقیق ث�
 edge:metrics:*                       -> شمارنده‌های زنده برای مانیتورینگ حین اجرا
 ```
 
-**رزرو صف بدون نشتی:** یک شمارنده‌ی ساده‌ی INCR/DECR به‌تنهایی کافی نیست؛ اگر پاد worker بین رزرو صف (در دیسپچر) و پردازش واقعی کرش کند یا در دسترس نباشد، شمارنده‌ی صف *برای همیشه* یک واحد بالاتر از واقعیت می‌ماند. راه‌حل: هر رزرو موفق هم در شمارنده‌ی سریع (hot path) و هم در یک `ZSET` جدا با score=زمان انقضا (`ttl = deadline_sec + 5` ثانیه) ثبت می‌شود؛ پردازش موفق در worker خودش رزرو را از ZSET پاک می‌کند؛ یک تسک دوره‌ای (هر `RESERVATION_SWEEP_INTERVAL_SEC=10` ثانیه) رزروهای منقضی‌شده‌ی جامانده را پیدا و شمارنده را برایشان آزاد می‌کند.
-
-**فاصله/تأخیر شبکه‌ی هر درخواست برای completion های async:** `route_request` مقدار `distance_km`/`network_delay_ms` هر درخواست را دقیق حساب می‌کند، اما تکمیل شدن نهایی درخواست (`record_external_completion`) به‌صورت async و از طریق صف Redis (`edge:metrics:completions`) و بدون دسترسی مستقیم به مختصات BTS اتفاق می‌افتد. برای این‌که `avg_distance_km`/`avg_network_delay_ms` نهایی صفر نمانند، این دو مقدار زیر `request_id` در یک دیکشنری موقت (`_request_geo`) نگه داشته می‌شوند تا لحظه‌ی completion؛ اگر completion هرگز نرسد (پاد کرش کند)، همان تسک دوره‌ای sweep بالا این ورودی‌های قدیمی را هم پاک می‌کند تا نشتی حافظه رخ ندهد.
+**رفع نشتی صف:** یک شمارنده‌ی ساده‌ی INCR/DECR به‌تنهایی کافی نیست؛ اگر پاد worker بین رزرو صف (در دیسپچر) و پردازش واقعی کرش کند یا در دسترس نباشد، شمارنده‌ی صف *برای همیشه* یک واحد بالاتر از واقعیت می‌ماند — این نشتی به‌تدریج صف را «پر» نشان می‌دهد، درخواست‌های بعدی را غلط رد می‌کند، و تصمیمات scale/provision (که دقیقاً روی `avg_queue_occupancy` لحظه‌ای حساب می‌شوند) را گمراه می‌کند. راه‌حل: هر رزرو موفق هم در شمارنده‌ی سریع (hot path) و هم در یک `ZSET` جدا با score=زمان انقضا (`ttl = deadline_sec + RESERVATION_TTL_BUFFER_SEC`) ثبت می‌شود؛ پردازش موفق در worker خودش رزرو را از ZSET پاک می‌کند؛ یک تسک دوره‌ای (هر `RESERVATION_SWEEP_INTERVAL_SEC` ثانیه) رزروهای منقضی‌شده‌ی جامانده را پیدا و شمارنده را برایشان آزاد می‌کند.
 
 ### ۱۴.۳ Worker Service واقعی (`k8s_adapter/worker_service/`)
 
 - یک ایمیج Docker یکسان برای هر ۱۵ سرویس؛ تفاوت هر سرویس فقط از طریق متغیرهای محیطی (`EXEC_TIME_SEC`, `SERVICE_ID`, `SERVER_ID`, `SERVICE_PORT`) در Deployment مشخص می‌شود.
 - محدودیت «هر رپلیکا هم‌زمان فقط ۱ درخواست» با `asyncio.Semaphore(1)` دور endpoint `/process` پیاده شده (نه با `--limit-concurrency` سطح uvicorn، چون آن فلگ `/healthz` را هم می‌گیرد و پاد هیچ‌وقت Ready نمی‌شود).
 - پردازش با `await asyncio.sleep(EXEC_TIME_SEC)` شبیه‌سازی می‌شود (`EXEC_TIME_SEC` از `compute_exec_time_sec` بر اساس پروفایل واقعی سروری که Deployment رویش scheduleشده محاسبه و به‌عنوان env var پاس داده می‌شود).
-- بعد از پردازش، پاد خودش (نه دیسپچر): (۱) شمارنده‌ی صف Redis را آزاد می‌کند، (۲) رزرو متناظر را از ZSET پاک می‌کند، (۳) یک رکورد سبک متریک (`edge:metrics:completions`) push می‌کند، (۴) `busy_seconds_acc` را برای محاسبه‌ی energy افزایش می‌دهد. دیسپچر مرکزی هرگز منتظر پاسخ این پردازش نمی‌ماند — فقط دوره‌ای (هر ۰.۲ ثانیه) این صف را می‌خواند. این جداسازی صریح باعث می‌شود دیسپچر هرگز bottleneck ترافیک داده نشود.
+- بعد از پردازش، پاد خودش (نه دیسپچر): (۱) شمارنده‌ی صف Redis را آزاد می‌کند، (۲) رزرو متناظر را از ZSET پاک می‌کند، (۳) یک رکورد سبک متریک (`edge:metrics:completions`) push می‌کند، (۴) `busy_seconds_acc` را برای محاسبه‌ی energy افزایش می‌دهد. **دیسپچر مرکزی هرگز منتظر پاسخ این پردازش نمی‌ماند** — فقط دوره‌ای (هر `COMPLETION_QUEUE_POLL_INTERVAL_SEC` ثانیه) این صف را می‌خواند. این جداسازی صریح باعث می‌شود دیسپچر هرگز bottleneck ترافیک داده نشود.
 
 ### ۱۴.۴ K8s Client (`k8s_adapter/k8s_client.py`)
 
 - `create_deployment`/`delete_deployment`: معادل واقعی `_place_replica`/`_handle_replica_terminated` شبیه‌سازی؛ با `_call_with_retry` (backoff نمایی، ۳ تلاش، فقط برای خطاهای ۵۰۰/۵۰۳/۴۲۹ که transient هستند).
-- تبدیل `resource_mips` به `millicpu` واقعی Kubernetes: `millicpu = round(resource_mips / REFERENCE_MIPS_PER_CORE * 1000)`. این تبدیل همیشه نسبت به `REFERENCE_MIPS_PER_CORE` (پروفایل `medium`) محاسبه می‌شود، نه `mips_per_core` خودِ سرور میزبان — چون سهم CPU درخواستی در Kubernetes (`resources.requests.cpu`) مفهومی **سهم‌محور** است، نه فرکانس‌محور؛ توان واقعی تحویل‌داده‌شده به هر پاد روی هر میزبان طبیعتاً بر اساس `speed_factor` همان میزبان فرق می‌کند، دقیقاً هم‌راستا با این‌که `exec_time` هم به همین شکل بین پروفایل‌ها فرق دارد.
+- تبدیل `resource_mips` به `millicpu` واقعی Kubernetes: `millicpu = round(resource_mips / REFERENCE_MIPS_PER_CORE * 1000)`. **توجه:** این تبدیل دیگر بر پایه‌ی `mips_per_core` خودِ سرور میزبان نیست، بلکه همیشه نسبت به همان `REFERENCE_MIPS_PER_CORE` (پروفایل `medium`) محاسبه می‌شود — چون سهم CPU درخواستی در Kubernetes (`resources.requests.cpu`) مفهومی **سهم‌محور** است (چند سهم از منابع نود)، نه فرکانس‌محور؛ توان واقعی تحویل‌داده‌شده به هر پاد روی هر میزبان طبیعتاً بر اساس `speed_factor` همان میزبان فرق می‌کند (دقیقاً همان چیزی که `common/models.py:Server._speed_factor` و `common/config.py:compute_exec_time_sec` هم فرض می‌کنند) — یعنی یک millicpu درخواستی روی سرور `edge_small` واقعاً کار کمتری نسبت به همان millicpu روی `large` انجام می‌دهد، دقیقاً هم‌راستا با این‌که `exec_time` هم به همین شکل بین پروفایل‌ها فرق دارد.
 - `node_selector={"edge-server-id": str(server_id)}` + `host_network=True` — هر Deployment دقیقاً روی نود متناظر با همان `server_id` پین می‌شود (پیش‌نیاز: نودهای واقعی خوشه باید از قبل با لیبل `edge-server-id=<id>` برچسب بخورند).
 - `cordon_node`/`uncordon_node`: معادل OFF/ACTIVE سرور — با `unschedulable=true/false` روی خودِ نود Kubernetes (نه حذف/ایجاد نود؛ نودها همیشه در خوشه هستند، فقط قابل‌زمان‌بندی بودنشان تغییر می‌کند).
 - readiness probe روی `/healthz` هر پاد — قبل از این‌که رپلیکا READY اعلام شود چک می‌شود.
 
 ### ۱۴.۵ لاگ ساخت‌یافته
 
-هر رکورد JSON خط‌به‌خط شامل: `event_type`, `algorithm`, `sim_time_sec` (یا زمان واقعی wall-clock در حالت k8s)، `wall_time` (ISO)، و فیلدهای مرتبط (`server_id`/`service_id`/`request_id`/متریک لحظه‌ای). رکوردهای `provision_decision` علاوه بر `applied`/`skip_reason`، فیلدهای `necessary_turn_on`/`turn_off_opportunity`/`via_capacity_starved_only` را هم برای ممیزی بخش ۱۰ حمل می‌کنند. انواع رویداد پوشش داده‌شده: `request_arrived, request_routed, request_queued, request_completed, request_rejected, server_boot_started, server_active, server_drain_started, server_off, pod_create_started, pod_ready, pod_drain_started, pod_terminated, scale_decision, provision_decision, migration_started, migration_completed` + رویدادهای تشخیصی اضافه (`emergency_boot_triggered`, `migration_step_dropped`, `server_drain_aborted`, `reservation_sweep`, `pod_ready_timeout`, ...).
+هر رکورد JSON خط‌به‌خط شامل: `event_type`, `algorithm`, `sim_time_sec` (یا زمان واقعی wall-clock در حالت k8s)، `wall_time` (ISO)، و فیلدهای مرتبط (`server_id`/`service_id`/`request_id`/متریک لحظه‌ای). انواع رویداد پوشش داده‌شده: `request_arrived, request_routed, request_queued, request_completed, request_rejected, server_boot_started, server_active, server_drain_started, server_off, pod_create_started, pod_ready, pod_drain_started, pod_terminated, scale_decision, provision_decision, migration_started, migration_completed` + رویدادهای تشخیصی اضافه (`emergency_boot_triggered`, `migration_step_dropped`, `server_drain_aborted`, `reservation_sweep`, `pod_ready_timeout`, ...).
 
 خروجی نهایی هر اجرا (چه شبیه‌سازی چه واقعی): یک فایل `<algorithm>_events.jsonl` کامل + `<algorithm>_result.json` با همان قالب بخش ۱۰، تا مقایسه‌ی sim-vs-real و algorithm-vs-algorithm یکسان باشد.
 
@@ -919,12 +842,12 @@ python -m k8s_adapter.smoke_test
 python run.py --algorithm greedy --mode k8s --data test
 ```
 
-در این حالت، `decision_loop` هر ۳۰ ثانیه‌ی واقعی تصمیمات scale/provision را اعمال می‌کند و `bts_simulator` به‌طور موازی، رویدادهای CSV را با زمان‌بندی واقعی (نه فشرده) به سرویس‌های واقعی مستقر روی worker nodeها ارسال می‌کند؛ هماهنگی وضعیت لحظه‌ای بین این دو حلقه از طریق Redis انجام می‌شود.
+در این حالت، `decision_loop` هر ۳۰ ثانیه‌ی واقعی تصمیمات scale/provision را اعمال می‌کند و `dispatch_loop`/`bts_simulator` به‌طور موازی، رویدادهای CSV را با زمان‌بندی واقعی (نه فشرده) به سرویس‌های واقعی مستقر روی worker nodeها ارسال می‌کند؛ هماهنگی وضعیت لحظه‌ای بین این دو حلقه از طریق Redis انجام می‌شود.
 
 راه‌اندازی دو‌ترمینالی برای اجرای زنده:
 
 ```bash
-# ترمینال ۱: control-plane + engine.run() (همان کاری که run.py --mode k8s داخلی صدا می‌زند)
+# ترمینال ۱: control-plane + engine.run()
 uvicorn k8s_adapter.dispatcher_api:app --port 9000
 
 # ترمینال ۲: مولد ترافیک (جای BTS واقعی)
@@ -938,12 +861,10 @@ python3 -m k8s_adapter.bts_simulator
 - **`evaluation/compare_runs.py`**: هر ۴ الگوریتم را روی همان داده (train یا test) پشت‌سرهم اجرا می‌کند، هرکدام لاگ/نتیجه‌ی جدا می‌نویسد، و یک `comparison_summary.csv` (جدول کنار‌هم همه‌ی معیارهای بخش ۱۰) تولید می‌کند. اگر مدل PPO برای یک seed پیدا نشود یا کتابخانه‌ای نصب نباشد، آن الگوریتم را رد می‌کند و ادامه می‌دهد (بدون کرش کل مقایسه).
 - **`evaluation/aggregate_seeds.py`**: چون یک اجرای PPO تک‌seed کافی برای نتیجه‌گیری آماری معتبر نیست، این اسکریپت نتایج چند seed مختلف (هرکدام باید از قبل با `algorithms/ppo/train.py` جدا آموزش دیده و با `compare_runs.py --seed N` ارزیابی شده باشد) را می‌خواند و میانگین±انحراف‌معیار/min/max هر معیار کلیدی را گزارش می‌دهد.
 - **`calibrate_constants.py`**: یک اجرای کامل Greedy روی داده‌ی train را دنبال می‌کند و توزیع خام (`recent_arrivals`, `avg_response_time_recent`, `energy_recent_joule`, `num_rejected_recent`) هر تیک را جمع می‌کند، سپس mean/median/p90/p95/p99/max هرکدام را چاپ می‌کند — مبنای انتخاب ثابت‌های نرمال‌سازی state/reward.
-- **`build_push_pull_worker.py`**: اسکریپت کمکی برای build و push ایمیج Docker پاد Worker به رجیستری خصوصی (`192.168.1.30:5000/edge-worker:latest`) و pull آن روی هر ۱۰ worker node قبل از استقرار روی خوشه‌ی واقعی.
+- **`build_push_pull_worker.py`**: اسکریپت کمکی برای build و push ایمیج Docker پاد Worker به رجیستری خصوصی (`192.168.1.30:5000/edge-worker:latest`) قبل از استقرار روی خوشه‌ی واقعی.
 - **`k8s_adapter/smoke_test.py`**: تست دودی سریع (health-check اتصال به Redis، اتصال به Kubernetes API، لیبل‌گذاری نودها، یک round-trip کامل ساخت/انتظار/فراخوانی/حذف یک Deployment آزمایشی) قبل از اجرای کامل روی خوشه‌ی واقعی.
 - **`analyze_decision_quality.py`**: طبقه‌بندی SCALE_UP/SCALE_DOWN و تحلیل flapping سرور (بخش ۱۰).
-- **`analyze_scaleup_by_service.py`**: مکمل بالا — تعداد/سهم SCALE_UPهای اعمال‌شده و میانگین/کمینه‌ی فاصله‌ی زمانی بین دو SCALE_UP متوالی روی همان سرویس را به‌تفکیک هر ۱۵ سرویس گزارش می‌دهد؛ برای سنجش این‌که آیا سرویس‌های با deadline خیلی سفت (۱ و ۲) نسبت به سهم واقعی‌شان از ترافیک، SCALE_UP نامتناسب زیادی می‌گیرند یا نه.
-- **`analyze_necessity_by_service.py`**: برای هر سرویس دو عدد حساب می‌کند: `necessity_rate` (چند درصد تیک‌های تصمیم، `necessary_scale_up` طبق ممیزی بخش ۱۰ واقعاً True بوده) و نرخ اعمال SCALE_UP وقتی سیگنال ممیزی False بوده — این دو عدد کمک می‌کنند «سیگنال ذاتاً برای سرویس‌های batch بیشتر necessary نشان می‌دهد» را از «الگوریتم/policy حتی وقتی سیگنال هم لازم نیست SCALE_UP می‌زند» جدا کرد.
-- **`diagnose_violations_by_service.py`**: چون نرخ نقض deadline معمولاً در هر ۴ الگوریتم تقریباً به یک اندازه است، این ابزار مشخص می‌کند که آیا این نقض از تعداد محدودی سرویس با deadline خیلی سفت می‌آید (یعنی مشکل ساختاری/تنظیمات دیتاست است، نه ضعف الگوریتم‌ها) یا به‌طور یکنواخت بین هر ۱۵ سرویس پخش شده (یعنی مشکل واقعی صف/ظرفیت است). برای هر سرویس، تعداد ورود/تکمیل/رد، میانگین و بیشینه‌ی `response_time_sec`، سهم آن سرویس از کل نقض‌ها (`violation_share`) و سهمش از کل ترافیک (`traffic_share`) را کنار `deadline` خودش نشان می‌دهد.
+- **`diagnose_violations_by_service.py`**: چون نرخ نقض deadline معمولاً در هر ۴ الگوریتم تقریباً به یک اندازه است، این ابزار مشخص می‌کند که آیا این نقض از تعداد محدودی سرویس با deadline خیلی سفت می‌آید (یعنی مشکل ساختاری/تنظیمات دیتاست است، نه ضعف الگوریتم‌ها) یا به‌طور یکنواخت بین هر ۱۵ سرویس پخش شده (یعنی مشکل واقعی صف/ظرفیت است). برای هر سرویس، تعداد ورود/تکمیل/رد، میانگین و بیشینه‌ی `response_time_sec`، و سهم آن سرویس از کل ترافیک را کنار `deadline` خودش نشان می‌دهد؛ اجرا: `python diagnose_violations_by_service.py outputs/seed45/greedy_events.jsonl`.
 
 اجرای مقایسه‌ی چهارگانه:
 
@@ -1005,12 +926,6 @@ seed آموزش/اجرا با متغیر محیطی قابل تنظیم است �
 export EOTCH_SEED=43
 ```
 
-نرمال‌ساز reward مربوط به رد‌شدگی (بخش ۱۱ و ۱۳.۵) هم با متغیر محیطی قابل بازنویسی است:
-
-```bash
-export EOTCH_NORM_REJECTED_PER_TICK=6.0
-```
-
 ---
 
 ## ۱۷. راهنمای اجرا
@@ -1062,14 +977,12 @@ python -m evaluation.compare_runs --data test
 
 ```bash
 python analyze_decision_quality.py outputs/ppo_events.jsonl
-python analyze_scaleup_by_service.py outputs/ppo_events.jsonl
-python analyze_necessity_by_service.py outputs/ppo_events.jsonl
-```
 
 تشخیص منشأ نقض deadline بر حسب سرویس:
 
 ```bash
 python diagnose_violations_by_service.py outputs/ppo_events.jsonl
+```
 ```
 
 ---
@@ -1081,7 +994,7 @@ python diagnose_violations_by_service.py outputs/ppo_events.jsonl
 1. **`common/`** — مدل داده (`models.py`)، پیکربندی مرکزی (`config.py`)، متریک (`metrics.py`)، محاسبات جغرافیایی (`geo.py`)، لاگ ساخت‌یافته (`logger.py`).
 2. **`data/loader.py`** — پیش‌پردازش دیتاست BTS شانگهای و ساخت تایم‌لاین پیوسته.
 3. **`simulator/engine.py`** + **`algorithms/base.py`** — موتور discrete-event و اینترفیس مشترک الگوریتم‌ها؛ در همین مرحله چرخه‌ی کامل یک درخواست (بخش ۶)، مقداردهی اولیه (بخش ۵)، provisioning/migration (بخش ۸) و auto-scaling (بخش ۹) پیاده می‌شوند.
-4. **چهار الگوریتم** (`greedy`, `hpa`, `voila`, `ppo`) — از ساده به پیچیده: ابتدا Greedy به‌عنوان baseline، سپس HPA، سپس VOILA (با منطق medoid/proximity برای placement/scaling؛ مسیریابی لحظه‌ای همچنان مشترک با بقیه، بخش ۷)، و در نهایت PPO (که نیازمند `common/state_builder.py`، محیط Gymnasium، و آموزش با BC warm-start است).
+4. **چهار الگوریتم** (`greedy`, `hpa`, `voila`, `ppo`) — از ساده به پیچیده: ابتدا Greedy به‌عنوان baseline، سپس HPA، سپس VOILA (با منطق medoid/proximity)، و در نهایت PPO (که نیازمند `common/state_builder.py`، محیط Gymnasium، و آموزش با BC warm-start است).
 5. **`evaluation/`** — برای مقایسه‌ی چهارگانه و جمع‌بندی چند-seed، بعد از این‌که همه‌ی الگوریتم‌ها قابل‌اجرا هستند.
 6. **`k8s_adapter/`** — در نهایت، برای پورت کردن همان منطق تصمیم‌گیری (بدون تغییر در `AlgorithmBase`) به یک خوشه‌ی Kubernetes واقعی، با هماهنگی Redis و دیسپچر HTTP واقعی (`dispatcher_api.py` + `realtime_dispatcher.py` + `k8s_client.py` + `worker_service/`).
 

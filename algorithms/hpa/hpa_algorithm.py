@@ -12,15 +12,11 @@ TARGET_UTILIZATION = 0.70
 class HPAAlgorithm(AlgorithmBase):
     name = "hpa"
 
-    # *** تصمیم عمدی (نه باگ): برخلاف Greedy/Voila/PPO، اینجا can_host بدون
-    # bts_lat/bts_long صدا زده می‌شود. HPA واقعی به موقعیت جغرافیایی BTSها
-    # آگاه نیست (فقط از متریک‌های utilization/occupancy کار می‌کند)، پس
-    # همیشه باید از مسیر محافظه‌کارانه‌ی is_sla_feasible (بدترین فاصله‌ی
-    # ممکن) عبور کند - این خودِ تفاوت واقعی HPA با بقیه‌ی الگوریتم‌هاست،
-    # نه یک نبود fairness.
+    # تصمیم عمدی (نه باگ): can_host بدون bts_lat/bts_long صدا زده می‌شود چون
+    # HPA واقعی location-unaware است.
 
     def scale_decision(self, service_id, metrics_snapshot):
-        sv = metrics_snapshot["services"][service_id] 
+        sv = metrics_snapshot["services"][service_id]
         current_replicas = max(sv["n_ready_replicas"], 1)
         current_util = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
@@ -54,17 +50,22 @@ class HPAAlgorithm(AlgorithmBase):
 
         avg_util = sum(metrics_snapshot["servers"][s.id]["utilization"] for s in active) / len(active)
         overloaded = [s for s in active
-                      if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold] 
+                      if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
         starved_services = self._capacity_starved_services(metrics_snapshot, servers, occ_threshold=0.7)
 
         if avg_util > CFG.util_scale_up_threshold or starved_services:
             off_servers = sorted([s for s in servers.values() if s.state == ServerState.OFF],
-                                  key=lambda s: s.id)  
-            if off_servers: 
-                desired_profile = self._pick_profile_for_overload(overloaded or active, active[0].capacity)
-                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile) 
+                                  key=lambda s: s.id)
+            if off_servers:
+                # *** رفع باگ ۴: هم‌راستا با greedy_algorithm.py - فقط overloadهای
+                # واقعی پاس داده می‌شود، نه "overloaded or active".
+                desired_profile = self._pick_profile_for_overload(overloaded, active[0].capacity)
+                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
                 pool = sorted(pool, key=lambda s: s.id)
                 return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
+            # *** رفع باگ ۲ (fallthrough): هم‌راستا با Greedy/VOILA - دیگر به
+            # بررسی TURN_OFF سقوط نمی‌کند وقتی سرور خاموشی برای روشن‌کردن نمانده.
+            return ProvisionAction(ProvisionActionType.NO_CHANGE)
 
         if avg_util < CFG.util_scale_down_threshold:
             idle = min(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
