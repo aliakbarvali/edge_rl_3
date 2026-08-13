@@ -133,6 +133,7 @@ class VoilaAlgorithm(AlgorithmBase):
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:
                 ref_lat, ref_lon = None, None
+                ref = None
                 if overloaded:
                     ref = overloaded[0]
                     ref_lat, ref_lon = ref.lat, ref.long
@@ -142,12 +143,36 @@ class VoilaAlgorithm(AlgorithmBase):
                     centroid = metrics_snapshot["services"][worst].get("demand_centroid")
                     if centroid:
                         ref_lat, ref_lon = centroid
-                    elif active:
+                    if active:
                         ref = max(active, key=lambda s: metrics_snapshot["servers"][s.id]["utilization"])
-                        ref_lat, ref_lon = ref.lat, ref.long
+                        if ref_lat is None:
+                            ref_lat, ref_lon = ref.lat, ref.long
+
+                # *** رفع باگ (heterogeneity-aware TURN_ON): قبلاً VOILA برخلاف
+                # Greedy/HPA (که هر دو از _pick_profile_for_overload +
+                # _filter_by_profile_with_fallback استفاده می‌کنند - نگاه کنید
+                # README بخش ۸.۲) سرور OFF را فقط بر اساس نزدیکی جغرافیایی
+                # انتخاب می‌کرد، بدون فیلتر پروفایل - یعنی ممکن بود یک
+                # edge_small روشن شود وقتی نیاز واقعی به ظرفیت large بود و
+                # سیستم مجبور شود چند TURN_ON پشت‌سرهم بزند.
+                fallback_capacity = ref.capacity if ref is not None else off_servers[0].capacity
+                # *** رفع بازگشت باگ: "overloaded or active" وقتی overloaded
+                # خالی است (فقط starved_services) کل لیست active را پاس
+                # می‌دهد - دقیقاً همان باگی که در greedy_algorithm.py رفع شده
+                # بود (مجموع ظرفیت کل فلیت تقریباً همیشه از آستانه‌ی large
+                # می‌گذرد، پس desired_profile صرف‌نظر از شدت واقعی starvation
+                # تقریباً همیشه "large" می‌شود و fallback_capacity هیچ‌وقت
+                # استفاده نمی‌شود). باید فقط overloaded پاس داده شود تا وقتی
+                # خالی است، خودِ _pick_profile_for_overload طبق طراحی اصلی‌اش
+                # از fallback_capacity (همان ظرفیت شلوغ‌ترین سرور فعال) استفاده کند.
+                desired_profile = self._pick_profile_for_overload(overloaded, fallback_capacity)
+                pool = self._filter_by_profile_with_fallback(off_servers, desired_profile)
+
                 if ref_lat is not None:
-                    off_servers.sort(key=lambda s: haversine_km(ref_lat, ref_lon, s.lat, s.long))
-                return ProvisionAction(ProvisionActionType.TURN_ON, off_servers[0].id)
+                    pool = sorted(pool, key=lambda s: haversine_km(ref_lat, ref_lon, s.lat, s.long))
+                else:
+                    pool = sorted(pool, key=lambda s: s.id)
+                return ProvisionAction(ProvisionActionType.TURN_ON, pool[0].id)
             # *** رفع باگ ۲ (fallthrough): هم‌راستا با Greedy/HPA - وقتی
             # overload/starvation تشخیص داده شده ولی سرور خاموشی نمانده، دیگر به
             # بررسی TURN_OFF زیر سقوط نمی‌کند.

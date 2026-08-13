@@ -556,16 +556,7 @@ class SimulationEngine:
                               or self._any_service_capacity_starved(snapshot))
         turn_off_opportunity = self._any_active_server_sustained_underloaded()
 
-        # *** جدید: برخی الگوریتم‌ها (فعلاً فقط PPO - نگاه کنید
-        # algorithms/ppo/ppo_algorithm.py:bypass_sustain_gate) اجازه دارند
-        # اکشن TURN_ON/TURN_OFF خودشان را حتی *قبل* از sustained شدن
-        # necessity اعمال کنند. این پرچم به‌صراحت روی خودِ الگوریتم تعریف
-        # شده (نه اینجا هاردکد)، طبق AlgorithmBase.bypass_sustain_gate
-        # (پیش‌فرض False برای Greedy/HPA/VOILA - رفتارشان دقیقاً حفظ
-        # می‌شود). ممیزی decision_correctness/missed/blocked هیچ‌کدام
-        # تغییر نمی‌کنند - همچنان دقیقاً طبق همان معیار عینی مستقل
-        # (necessary_now/turn_off_necessary_audit) قضاوت می‌شوند؛ این پرچم
-        # فقط تعیین می‌کند آیا اکشن *اعمال* می‌شود یا نه.
+        # «هر الگوریتم آزاد است تصمیم provisioning خودش را فوری (فقط با رعایت cooldown/min_active_duration) اعمال کند، بدون گیت مشترک sustain-tracking؛ این گیت صرفاً برای امکان محدودسازی انتخابی یک الگوریتم خاص در آینده نگه داشته شده و پیش‌فرض آن اکنون True است.»
         bypass = getattr(self.algorithm, "bypass_sustain_gate", False)
 
         if action.action == ProvisionActionType.TURN_ON and action.server_id is not None:

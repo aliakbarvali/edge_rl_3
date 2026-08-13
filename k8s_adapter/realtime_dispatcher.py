@@ -327,6 +327,16 @@ class RealtimeEngine:
         k8s_client.create_deployment(service_id, server_id)
         redis_state.set_replica_state(service_id, server_id, "STARTING")
         self.metrics.record_transition("pod_create")
+        # *** رفع باگ ۳ (تازه اضافه‌شده): معادل simulator/engine.py:_place_replica
+        # که دارد `s.cumulative_energy_joule += CFG.e_pod_create_j` را بلافاصله
+        # بعد از هر pod-create اضافه می‌کند. این نسخه‌ی k8s واقعی این خط را
+        # نداشت - دقیقاً همان کلاس باگی که برای CFG.e_boot_server_j در
+        # _activate_server (بالاتر در همین فایل) قبلاً پیدا و رفع شده بود، اما
+        # برای هزینه‌ی ثابت هر pod-create فراموش شده بود. بدون این خط،
+        # cumulative_energy_joule در اجرای واقعی k8s به تعداد pod-createها
+        # ضربدر CFG.e_pod_create_j (۲۰ ژول) کمتر از simulator گزارش می‌شد -
+        # مستقیماً برخلاف هدف README («مقایسه‌ی sim-vs-real باید یکسان باشد»).
+        s.cumulative_energy_joule += CFG.e_pod_create_j
         self._log("pod_create_started", server_id=server_id, service_id=service_id)
 
         r = Replica(service_id=service_id, server_id=server_id,
@@ -450,13 +460,7 @@ class RealtimeEngine:
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
-                # *** رفع باگ: بدون این، PPOAlgorithm._build_action_masks با
-                # snapshot["services"][sid].get("scale_cooldown_active", False)
-                # همیشه False می‌گرفت - یعنی ماسک PPO در k8s واقعی هیچ‌وقت
-                # SCALE_UP/DOWN را به‌خاطر cooldown غیرفعال نمی‌کرد (اجرای
-                # واقعی decision_loop جداگانه cooldown را چک می‌کند و اکشن را
-                # بی‌صدا/بدون لاگ رد می‌کند - یعنی مدل مدام اکشن‌هایی
-                # "انتخاب" می‌کرد که دور ریخته می‌شدند، بدون هیچ سرنخ دیباگ).
+                # «هر الگوریتم آزاد است تصمیم provisioning خودش را فوری (فقط با رعایت cooldown/min_active_duration) اعمال کند، بدون گیت مشترک sustain-tracking؛ این گیت صرفاً برای امکان محدودسازی انتخابی یک الگوریتم خاص در آینده نگه داشته شده و پیش‌فرض آن اکنون True است.»
                 "scale_cooldown_active": (now - self._service_last_scale_time[svc_id]) < CFG.cooldown_sec,
             }
 
