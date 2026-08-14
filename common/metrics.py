@@ -22,6 +22,9 @@ class MetricsCollector:
     completed_requests: int = 0
     rejected_queue_full: int = 0
     rejected_no_replica: int = 0
+    # *** پچ (رفع باگ ۳): شمارنده‌ی جدا برای درخواست‌های routed-ولی-بی‌پاسخ
+    # در مسیر k8s واقعی - نگاه کنید common/models.py:RequestStatus.LOST_NO_COMPLETION.
+    lost_no_completion: int = 0
     num_server_boots: int = 0
     num_server_shutdowns: int = 0
     num_pod_creates: int = 0
@@ -41,15 +44,9 @@ class MetricsCollector:
         self._decision_correctness[kind]["correct" if necessary else "incorrect"] += 1
 
     def record_missed_opportunity(self, kind: str):
-        """اکشن لازم بود ولی الگوریتم اصلاً آن را پیشنهاد نداد."""
         self._decision_correctness[kind]["missed"] += 1
 
     def record_blocked_opportunity(self, kind: str):
-        """(رفع BUG-G) اکشن لازم بود *و* الگوریتم واقعاً همان اکشن را
-        پیشنهاد داد، ولی یک گیت سیستمی (cooldown/migration ناقص/...) مانع
-        اعمالش شد. این را نباید با 'missed' (که یعنی الگوریتم اصلاً تلاش
-        نکرد) یکی حساب کرد - وگرنه معیار decision_correctness نمی‌تواند بین
-        «ضعف الگوریتم» و «محدودیت سیستمی» تمایز بگذارد."""
         self._decision_correctness[kind]["blocked"] += 1
 
     def record_request(self, req: Request):
@@ -66,6 +63,11 @@ class MetricsCollector:
             self.deadline_violations += 1
         elif req.status == RequestStatus.REJECTED_NO_REPLICA:
             self.rejected_no_replica += 1
+            self.deadline_violations += 1
+        elif req.status == RequestStatus.LOST_NO_COMPLETION:
+            # *** پچ (رفع باگ ۳): قبلاً این حالت اصلاً وجود نداشت و چنین
+            # درخواست‌هایی هیچ‌جای متریک نهایی ثبت نمی‌شدند (undercount).
+            self.lost_no_completion += 1
             self.deadline_violations += 1
 
     @staticmethod
@@ -140,6 +142,7 @@ class MetricsCollector:
             "num_pod_deletes": self.num_pod_deletes,
             "num_requests_rejected_queue_full": self.rejected_queue_full,
             "num_requests_rejected_no_replica": self.rejected_no_replica,
+            "num_requests_lost_no_completion": self.lost_no_completion,
             "avg_active_servers": float(np.mean(self._active_server_counts)) if self._active_server_counts else 0.0,
             "num_scale_up": self.num_scale_up,
             "num_scale_down": self.num_scale_down,

@@ -77,16 +77,34 @@ class RealtimeEngine:
         # می‌شد و درین بی هیچ اقدام جبرانی متوقف می‌شد.
         self._emergency_boot_for_service: Dict[int, int] = {}
 
-        # *** رفع باگ (avg_distance_km/avg_network_delay_ms همیشه صفر در k8s):
-        # route_request این دو مقدار را دقیق حساب و لاگ می‌کند، اما
-        # record_external_completion که async و بعداً (از طریق صف Redis)
-        # صدا زده می‌شود، یک Request خام با bts_lat=bts_long=0.0 می‌سازد و
-        # هرگز network_delay_ms/_distance_km را نمی‌داند. این map همان دو
-        # مقدار را زیر request_id نگه می‌دارد تا در لحظه‌ی completion به
-        # Request منتقل شوند. هر ورودی timestamp هم دارد تا اگر completion
-        # هرگز نرسید (پاد کرش کرد و هیچ‌وقت گزارش نداد)، sweep دوره‌ای در
-        # _reservation_sweeper_loop آن را پاک کند و اینجا نشتی حافظه رخ ندهد.
-        self._request_geo: Dict[int, Tuple[float, float, float]] = {}
+        # *** پچ (رفع باگ ۳ - درخواست‌های بی‌پاسخ گم‌شده از متریک‌ها): حالا
+        # service_id/server_id هم نگه داشته می‌شوند (نه فقط geo) تا
+        # _reap_lost_requests بتواند وقتی completion هرگز نرسید، یک رکورد
+        # RequestStatus.LOST_NO_COMPLETION واقعی برای metrics.record_request
+        # بسازد - قبلاً این ورودی‌ها فقط بی‌صدا پاک می‌شدند
+        # (_prune_stale_request_geo) بدون این‌که هیچ‌جا در متریک نهایی ثبت
+        # شوند؛ یعنی total_requests/deadline_violations برای این دسته
+        # سیستماتیک کمتر از واقع بود.
+        self._request_geo: Dict[int, dict] = {}
+
+        # *** پچ (رفع باگ ۳ - ادامه: dedup در برابر دبل‌کانتینگ): وقتی
+        # _reap_lost_requests یک درخواست را «گم‌شده» تشخیص و یک‌بار
+        # metrics.record_request(status=LOST_NO_COMPLETION) صدا می‌زند، اگر
+        # *بعداً* هم completion واقعی‌اش (موفق یا ناموفق) از طریق
+        # edge:metrics:completions برسد - که برای سرویس‌های batch سنگین با
+        # صف بلند (مثلاً svc15: queue_len=20) کاملاً ممکن است، چون زمان
+        # واقعی انتظار در صف می‌تواند از max_age استفاده‌شده در
+        # _reap_lost_requests بیشتر شود - record_external_completion قبلاً
+        # بدون هیچ چکی دوباره metrics.record_request صدا می‌زد: یعنی همان
+        # request_id یک‌بار LOST و یک‌بار COMPLETED شمرده می‌شد
+        # (double-counting در total_requests/deadline_violations). این مجموعه
+        # فقط request_idهایی را نگه می‌دارد که قبلاً به‌عنوان lost نهایی
+        # شده‌اند؛ record_external_completion قبل از ثبت متریک این مجموعه را
+        # چک می‌کند. برای جلوگیری از رشد نامحدود حافظه، ورودی‌های قدیمی‌تر از
+        # چند برابر max_age در _reap_lost_requests هرس می‌شوند (نگاه کنید
+        # _prune_reaped_ids).
+        self._reaped_request_ids: Dict[int, float] = {}
+
         # *** رفع باگ ۶: تسک‌های پس‌زمینه‌ی fire-and-forget (پاک‌سازی رپلیکای
         # SCALE_DOWN در _apply_scale_decision، poll-until-ready رپلیکای جدید در
         # _create_replica) قبلاً هیچ‌جا track نمی‌شدند. وقتی _lifetime_watcher
@@ -339,13 +357,22 @@ class RealtimeEngine:
         s.cumulative_energy_joule += CFG.e_pod_create_j
         self._log("pod_create_started", server_id=server_id, service_id=service_id)
 
+
         r = Replica(service_id=service_id, server_id=server_id,
                     queue_len=svc["queue_len"], exec_time=compute_exec_time_sec(service_id, CFG.server_profiles[s.profile]["mips_per_core"]),
                     created_at=time.monotonic())
         s.hosted_replicas[service_id] = r
         self.replicas_by_service[service_id].append(r)
- 
+
+        # *** رفع باگ ۶ (تکمیل): این تسک قبلاً با asyncio.create_task خام
+        # ساخته می‌شد - یعنی بدون رصد در self._background_tasks، درست
+        # برخلاف تسک پاک‌سازی SCALE_DOWN (_apply_scale_decision) که همان
+        # الگو را برایش رفع کردیم. اگر _lifetime_watcher درست در وسط poll
+        # این رپلیکای تازه (مثلاً یک migration دیرهنگام) اجرای اصلی را
+        # متوقف می‌کرد، این poll می‌توانست بدون این‌که run() منتظرش بماند
+        # نیمه‌کاره رها شود.
         self._spawn_background_task(self._poll_until_ready(service_id, server_id, r))
+
         return r
 
     async def _poll_until_ready(self, service_id: int, server_id: int, replica: Replica,
@@ -723,6 +750,9 @@ class RealtimeEngine:
             await asyncio.sleep(CFG.decision_interval_sec)
             snapshot = self._build_metrics_snapshot()
             now = time.monotonic()
+            
+            self.metrics.record_snapshot(now, self.servers)
+            
             self._update_sustain_tracking(snapshot, now)
             self._annotate_provisioning_necessity(snapshot, now)
 
@@ -830,10 +860,11 @@ class RealtimeEngine:
         self._log("request_routed", request_id=request_id, server_id=server.id, 
                   distance_km=distance_km, network_delay_ms=delay_ms)
 
-        # *** رفع باگ: ذخیره‌ی distance_km/delay_ms برای همین request_id تا
-        # وقتی completion (async، از طریق drain_completion_queue) رسید،
-        # record_external_completion بتواند آن‌ها را روی Request ست کند.
-        self._request_geo[request_id] = (distance_km, delay_ms, time.monotonic())
+        self._request_geo[request_id] = {
+            "service_id": service_id, "server_id": server.id,
+            "distance_km": distance_km, "network_delay_ms": delay_ms,
+            "routed_at": time.monotonic(),
+        }
 
         ip = redis_state.get_pod_ip(service_id, chosen.server_id)
         port = k8s_client.worker_port(service_id)
@@ -855,6 +886,22 @@ class RealtimeEngine:
 
     def record_external_completion(self, request_id: int, service_id: int, server_id: int,
                                     success: bool, response_time_sec: float):
+        # *** پچ (رفع باگ ۳ - dedup در برابر دبل‌کانتینگ): اگر این request_id
+        # قبلاً توسط _reap_lost_requests به‌عنوان LOST_NO_COMPLETION نهایی
+        # شده باشد (رزرو صفش هم قبلاً توسط sweep آزاد شده)، این completion
+        # دیرهنگام دیگر نباید دوباره metrics.record_request صدا بزند - وگرنه
+        # همان درخواست هم به‌عنوان LOST و هم COMPLETED/REJECTED شمرده می‌شود.
+        # این سناریو مخصوصاً برای سرویس‌های batch سنگین با صف بلند (svc11-15)
+        # واقعی است، چون زمان انتظار واقعی صف می‌تواند از max_age استفاده‌شده
+        # در _reap_lost_requests بیشتر شود. با این‌حال هنوز لاگ می‌کنیم (برای
+        # دیباگ/شفافیت)، فقط از دوباره‌شمردن در متریک‌ها صرف‌نظر می‌کنیم.
+        if request_id in self._reaped_request_ids:
+            self._log("late_completion_after_reap", request_id=request_id, service_id=service_id,
+                      server_id=server_id, success=success, response_time_sec=response_time_sec)
+            # ورودی geo (اگر هنوز مانده) را هم پاک می‌کنیم تا نشت حافظه نداشته باشیم.
+            self._request_geo.pop(request_id, None)
+            return
+
         req = Request(id=request_id, bts_lat=0.0, bts_long=0.0, service_id=service_id,
                        arrival_time=time.time())
         req.response_time_sec = response_time_sec
@@ -865,8 +912,8 @@ class RealtimeEngine:
         # صفر می‌ماند (نگاه کنید common/metrics.py:_distance_of).
         geo = self._request_geo.pop(request_id, None)
         if geo is not None:
-            req._distance_km = geo[0]
-            req.network_delay_ms = geo[1]
+            req._distance_km = geo["distance_km"]
+            req.network_delay_ms = geo["network_delay_ms"]
         deadline = CFG.services_info[service_id]["deadline"]
         req.deadline_violated = (not success) or (response_time_sec > deadline)
         req.status = RequestStatus.COMPLETED if success else RequestStatus.REJECTED_NO_REPLICA
@@ -892,7 +939,7 @@ class RealtimeEngine:
     
     
     async def run(self, extra_tasks: list | None = None) -> dict:
-        redis_state.reset_all(CFG.n_servers, CFG.n_servers)
+        redis_state.reset_all(CFG.n_servers, CFG.n_services)
         await self.initial_placement()
         self._util_window_start_time = time.monotonic()
 
@@ -954,30 +1001,75 @@ class RealtimeEngine:
                 s.cumulative_energy_joule += power * elapsed
                 
 
+
     async def _reservation_sweeper_loop(self):
-        """امن‌سازی در برابر نشتی صف: هر رزرو صفی که پاد مقصدش هرگز پاسخ
-        نداد (کرش/شبکه قطع/timeout) را پیدا و آزاد می‌کند - نگاه کنید
-        redis_state.sweep_expired_reservations برای توضیح کامل باگ رفع‌شده."""
         while self._running:
             await asyncio.sleep(RESERVATION_SWEEP_INTERVAL_SEC)
             released = redis_state.sweep_expired_reservations(CFG.n_servers, CFG.n_services)
             if released:
                 self._log("reservation_sweep", released_count=released)
-            self._prune_stale_request_geo()
+            self._reap_lost_requests()
+            self._prune_reaped_ids()
 
-    def _prune_stale_request_geo(self):
-        """اگر یک درخواست هرگز completion نفرستاد (پاد کرش کرد/گیر کرد)،
-        ورودی متناظرش در self._request_geo تا ابد می‌ماند. هر ورودی که از
-        بیشینه‌ی deadline سرویس‌ها + یک حاشیه‌ی امن قدیمی‌تر شده باشد قطعاً
-        دیگر completion نخواهد گرفت (رزرو صفش هم توسط sweep بالا آزاد شده)،
-        پس امن است حذف شود."""
+    def _reap_lost_requests(self):
+        """*** پچ (رفع باگ ۳): معادل _prune_stale_request_geo قبلی، با یک
+        تفاوت اساسی: قبلاً وقتی یک درخواست routed شده هرگز completion
+        (موفق/ناموفق) گزارش نمی‌کرد (پاد کرش کرد/هرگز جواب نداد)، ورودی
+        متناظرش در self._request_geo فقط بی‌صدا پاک می‌شد - یعنی نه
+        total_requests، نه deadline_violations، نه هیچ شمارنده‌ی دیگری در
+        self.metrics هرگز از وجود این درخواست باخبر نمی‌شد (undercount
+        سیستماتیک، دقیقاً همان کلاس باگی که diagnose_violations_by_service.py
+        قبلاً برای رد‌شده‌های route_request پیدا و رفع کرده بود).
+
+        حالا به‌جای پاک‌کردن ساکت، برای هر درخواست routed-ولی-بی‌پاسخ یک
+        Request واقعی با status=LOST_NO_COMPLETION ساخته و از طریق
+        metrics.record_request ثبت می‌شود - هم در total_requests و هم در
+        deadline_violations لحاظ می‌شود. آستانه‌ی زمانی همان max_age قبلی
+        (بیشینه‌ی deadline سرویس‌ها + حاشیه‌ی امن sweep) است - یعنی این
+        درخواست‌ها فقط وقتی *قطعی* می‌شود دیگر هیچ completion‌ای نمی‌آید
+        (رزرو صفش هم قبلاً توسط sweep_expired_reservations آزاد شده)
+        گزارش می‌شوند، نه زودتر.
+
+        *** پچ ادامه (dedup): بعد از ثبت این درخواست به‌عنوان lost، شناسه‌اش
+        در self._reaped_request_ids ثبت می‌شود تا اگر completion واقعی‌اش
+        دیرتر رسید (record_external_completion)، دوباره در متریک‌ها شمرده
+        نشود - نگاه کنید توضیح کامل در __init__ و record_external_completion."""
         if not self._request_geo:
             return
         max_age = max(s["deadline"] for s in CFG.services_info.values()) + RESERVATION_SWEEP_INTERVAL_SEC + 5.0
         now = time.monotonic()
-        stale = [rid for rid, (_, _, ts) in self._request_geo.items() if (now - ts) > max_age]
+        stale_ids = [rid for rid, g in self._request_geo.items() if (now - g["routed_at"]) > max_age]
+        for rid in stale_ids:
+            geo = self._request_geo.pop(rid, None)
+            if geo is None:
+                continue
+            self._log("request_lost", request_id=rid, service_id=geo["service_id"],
+                      server_id=geo["server_id"], reason="no_completion_report")
+            lost_req = Request(id=rid, bts_lat=0.0, bts_long=0.0, service_id=geo["service_id"],
+                                arrival_time=time.time())
+            lost_req._distance_km = geo["distance_km"]
+            lost_req.network_delay_ms = geo["network_delay_ms"]
+            lost_req.status = RequestStatus.LOST_NO_COMPLETION
+            lost_req.deadline_violated = True
+            self.metrics.record_request(lost_req)
+            self._reaped_request_ids[rid] = now
+
+    def _prune_reaped_ids(self):
+        """*** پچ (رفع باگ ۳ - ادامه): self._reaped_request_ids باید عمری
+        محدود داشته باشد وگرنه در یک اجرای طولانی به‌تدریج رشد نامحدود پیدا
+        می‌کند. هر request_id بعد از گذشت چند برابر max_age از زمان reap شدنش
+        دیگر هیچ completion دیرهنگامی نمی‌تواند برایش برسد (worker یا خیلی
+        زودتر جواب داده یا برای همیشه گم شده)، پس امن است حذف شود - همان
+        الگوی _prune_stale_request_geo قدیمی، این‌بار برای این مجموعه‌ی جدید."""
+        if not self._reaped_request_ids:
+            return
+        max_age = max(s["deadline"] for s in CFG.services_info.values()) + RESERVATION_SWEEP_INTERVAL_SEC + 5.0
+        prune_horizon = 2.0 * max_age
+        now = time.monotonic()
+        stale = [rid for rid, reaped_at in self._reaped_request_ids.items()
+                 if (now - reaped_at) > prune_horizon]
         for rid in stale:
-            self._request_geo.pop(rid, None)
+            self._reaped_request_ids.pop(rid, None)
 
 
 async def serve_control_plane(events_df, algorithm, algorithm_name, event_logger=None,

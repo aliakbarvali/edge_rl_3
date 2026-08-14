@@ -142,9 +142,19 @@ def get_queue_occupancy(service_id: int, server_id: int) -> int:
 
 def sweep_expired_reservations(n_servers: int, n_services: int) -> int:
     """برای هر (سرویس، سرور)، رزروهایی که از زمان انقضایشان گذشته ولی هنوز
-    در ZSET مانده‌اند (یعنی worker هرگز /process را کامل نکرد تا خودش پاک
-    کند) را پیدا می‌کند، از ZSET حذف و شمارنده‌ی صف را برایشان یک واحد آزاد
-    می‌کند. خروجی: تعداد رزروهای منقضی‌شده‌ی آزادشده (برای لاگ/مانیتورینگ)."""
+    در ZSET مانده‌اند را پیدا، از ZSET حذف و شمارنده‌ی صف را برایشان یک واحد
+    آزاد می‌کند.
+
+    *** پچ (رفع باگ ۲ - دبل-دیکریمنت): قبلاً این‌جا بدون قید‌وشرط بعد از
+    zrem شمارنده‌ی صف را کم می‌کرد. اگر همین رزرو هم‌زمان توسط خودِ worker
+    (app.py، بعد از اتمام واقعی پردازش) هم در حال آزادسازی بود، شمارنده دو
+    بار کم می‌شد (یک‌بار اینجا، یک‌بار در worker) - چون ZREM اتمیک است، فقط
+    طرفی که واقعاً عضو را حذف کرد (return=1) مجاز به decrement شمارنده است؛
+    طرف دیگر (return=0، یعنی دیگری زودتر رسیده) هیچ کاری نمی‌کند. این دقیقاً
+    هم‌راستا با منطق مشابهی است که در k8s_adapter/worker_service/app.py
+    اضافه شده.
+
+    خروجی: تعداد رزروهای منقضی‌شده‌ی *واقعاً* آزادشده توسط این تابع."""
     now = time.time()
     released = 0
     for svc_id in range(1, n_services + 1):
@@ -154,9 +164,10 @@ def sweep_expired_reservations(n_servers: int, n_services: int) -> int:
             if not expired:
                 continue
             for member in expired:
-                _r.zrem(zkey, member)
-                release_queue_slot(svc_id, srv_id)
-                released += 1
+                removed = _r.zrem(zkey, member)
+                if removed:
+                    release_queue_slot(svc_id, srv_id)
+                    released += 1
     return released
 
 

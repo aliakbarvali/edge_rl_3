@@ -28,6 +28,12 @@ class RequestStatus(Enum):
     COMPLETED = auto()
     REJECTED_QUEUE_FULL = auto()
     REJECTED_NO_REPLICA = auto()
+    # *** پچ (رفع باگ ۳): فقط مسیر k8s واقعی از این استفاده می‌کند - یک
+    # درخواست با موفقیت routed شد (پاسخ ROUTED از دیسپچر گرفت) ولی هیچ‌وقت
+    # هیچ گزارش completion (نه موفق، نه ناموفق) از طریق
+    # edge:metrics:completions نرسید - یعنی پاد مقصد کرش کرده یا هرگز جواب
+    # نداده. نگاه کنید k8s_adapter/realtime_dispatcher.py:_reap_lost_requests.
+    LOST_NO_COMPLETION = auto()
 
 
 @dataclass
