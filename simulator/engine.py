@@ -18,7 +18,8 @@ from common.metrics import MetricsCollector
 from algorithms.base import AlgorithmBase, ScaleAction, ProvisionActionType
 from simulator.events import Event, EventType
 from collections import deque
-
+from common.rolling_signal import RollingRejectionTracker
+ 
 class SimulationEngine:
     def __init__(self, events_df: pd.DataFrame, algorithm: AlgorithmBase,
                  algorithm_name: str, event_logger=None, verbose: bool = False):
@@ -28,6 +29,7 @@ class SimulationEngine:
         self.logger = event_logger
         self.verbose = verbose
 
+        self._rolling_rejection = RollingRejectionTracker()
         self.servers: Dict[int, Server] = self._init_servers()
         self.replicas_by_service: Dict[int, List[Replica]] = defaultdict(list)
 
@@ -130,28 +132,29 @@ class SimulationEngine:
             cpu = CFG.services_info[svc_id]["resource_mips"]
             candidates = [x for x in off_servers if x.capacity - reserved_cpu[x.id] >= cpu]
             if not candidates:
-                continue
+                continue 
             candidates.sort(key=lambda x: haversine_km(
                 draining_server.lat, draining_server.long, x.lat, x.long))
             target = candidates[0]
             reserved_cpu[target.id] += cpu
-            self._emergency_boot_for_service[svc_id] = target.id
-            self._start_server_boot(target.id)
+            self._emergency_boot_for_service[svc_id] = target.id 
+            self._start_server_boot(target.id, is_emergency=True) 
             self._log("emergency_boot_triggered", server_id=target.id, service_id=svc_id,
                       source_server_id=draining_server.id, reason="migration_target_unavailable")
             
 
-    def _start_server_boot(self, server_id: int):
+    def _start_server_boot(self, server_id: int, is_emergency: bool = False):
         s = self.servers[server_id]
         if s.state != ServerState.OFF:
             return
         s.state = ServerState.BOOTING
+        s.is_emergency_boot = is_emergency  
         s.boot_started_at = self.now
         s.last_transition_time = self.now
         s.num_boots += 1
         s.cumulative_energy_joule += CFG.e_boot_server_j  
         self.metrics.record_transition("server_boot")
-        self._log("server_boot_started", server_id=server_id)
+        self._log("server_boot_started", server_id=server_id, is_emergency=is_emergency)
         self._push(self.now + CFG.boot_delay_sec, EventType.SERVER_BOOT_DONE, server_id)
 
 
@@ -519,9 +522,11 @@ class SimulationEngine:
             mature_ready = [r for r in ready
                              if (self.now - r.created_at) >= CFG.min_replica_age_before_scale_down_sec]
             total = max(self._tick_total[svc_id], 1)
+            self._rolling_rejection.push_tick(
+                svc_id, self._tick_rejected[svc_id], self._tick_total[svc_id])
+            rolling_rate = self._rolling_rejection.rolling_rejection_rate(svc_id)
             avg_occ = (sum(r.queue_occupancy(self.now) for r in ready) / len(ready)) if ready else 0.0
-            if self._tick_total[svc_id] > 0:
-                
+            if self._tick_total[svc_id] > 0: 
                 self._service_demand_centroid[svc_id] = _medoid(list(self._recent_positions[svc_id]))
             snapshot["services"][svc_id] = {
                 "n_replicas": len([r for r in reps if r.state in
@@ -532,6 +537,7 @@ class SimulationEngine:
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
+                "rejection_rate_rolling": rolling_rate, 
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
@@ -599,7 +605,7 @@ class SimulationEngine:
                 skip_reason = "last_active_server"
             elif s.in_cooldown(self.now, CFG.cooldown_sec):
                 skip_reason = "cooldown"
-            elif (self.now - s.last_transition_time) < CFG.min_active_duration_sec:
+            elif (not s.is_emergency_boot) and (self.now - s.last_transition_time) < CFG.min_active_duration_sec:
                 skip_reason = "min_active_duration"
             else: 
                 if self._start_server_drain(action.server_id):
@@ -682,19 +688,12 @@ class SimulationEngine:
 
     def _was_turn_off_necessary_audit(self, server_id: int, snapshot: dict) -> bool:
         return snapshot["servers"][server_id]["utilization"] < CFG.util_scale_down_threshold
-    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
-        # *** رفع باگ: قبلاً این معیار عیناً همان فرمول/آستانه‌ی داخلی
-        # GreedyAlgorithm.scale_decision (occ_ratio>0.7 or rejection_rate>0)
-        # بود - یعنی یک تاتولوژی که Greedy را ساختاری "همیشه درست" نشان
-        # می‌داد. حالا آستانه مستقل شده (common/config.py) و سیگنال
-        # deadline_violation_rate (پیامد واقعی SLA، نه پروکسی صف داخلی هیچ
-        # الگوریتمی) هم به‌عنوان معیار مستقل اضافه شده.
+    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool: 
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
         return (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
-                or sv["rejection_rate"] > 0.0
+                or sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0.0
                 or sv["deadline_violation_rate"] > 0.0)
-
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0 

@@ -101,6 +101,13 @@ def compute_cold_start_penalty_sec(service_id: int, host_mips_per_core: float) -
  
     return min(penalty, COLD_START_PENALTY_CAP_SEC)
 
+# آیا can_host علاوه‌بر ظرفیت، شدنی‌بودن SLA (is_sla_feasible) را هم به‌عنوان
+# یک قید سخت اعمال کند؟ با ENFORCE_SLA_FEASIBILITY=False (پیش‌فرض جدید)،
+# can_host فقط ظرفیت را چک می‌کند - هیچ الگوریتمی از قبل توسط سیستم از
+# جای‌گذاری دور/نامناسب منع نمی‌شود؛ اگر تصمیمش بد باشد (مثلاً HPA که
+# location-unaware است)، پیامدش مستقیماً در response_time_sec/deadline_violated
+# همان درخواست‌ها ظاهر می‌شود.
+ENFORCE_SLA_FEASIBILITY = bool(int(_os.environ.get("EOTCH_ENFORCE_SLA_FEASIBILITY", "0")))
 
 # *** رفع باگ: قبلاً is_sla_feasible موقعیت دیسپچر را از مرکز باکس جغرافیایی
 # داده (LAT_MIN..MAX) می‌ساخت، در حالی که simulator/engine.py:_handle_arrival
@@ -202,9 +209,10 @@ PPO_REWARD_WEIGHTS = {
     "w3_energy": 0.20,
     "w4_load_balance": 0.12,
     "w5_rejected": 0.25,
+    "w6_rejected_service_spread": 0.15,
 }
-PPO_PENALTY_PER_ACTION = 0.02
-
+ 
+PPO_PENALTY_PER_ACTION = float(_os.environ.get("EOTCH_PPO_ACTION_PENALTY", "0.01"))
 # *** میانگین‌گیری deadline_violation_rate بین سرویس‌ها قبلاً بدون وزن بود
 # (هر سرویس، صرف‌نظر از حجم ترافیعش، سهم برابر در جریمه داشت) - این باعث
 # می‌شد سرویس‌های کم‌ترافیک و batch (۱۱-۱۵) با یک نقض تک (که با ~۱ درخواست
@@ -271,6 +279,6 @@ class Config:
     seed: int = SEED
     min_active_duration_sec: float = MIN_ACTIVE_DURATION_SEC
     min_replica_age_before_scale_down_sec: float = MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC
-
+    enforce_sla_feasibility: bool = ENFORCE_SLA_FEASIBILITY
 
 CFG = Config()

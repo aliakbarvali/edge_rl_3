@@ -20,13 +20,13 @@ class HPAAlgorithm(AlgorithmBase):
         current_replicas = max(sv["n_ready_replicas"], 1)
         current_util = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
-        if current_util <= 0 and sv["rejection_rate"] <= 0:
+        if current_util <= 0 and sv.get("rejection_rate_rolling", sv["rejection_rate"]) <= 0:
             desired = 1
         else:
             desired = math.ceil(current_replicas * (current_util / TARGET_UTILIZATION))
         desired = max(1, desired)
 
-        if sv["rejection_rate"] > 0:
+        if sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0:
             desired = max(desired, current_replicas + 1)
 
         if desired > current_replicas:

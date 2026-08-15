@@ -14,7 +14,8 @@ import httpx
 import pandas as pd
 import json
 
-
+from common.rolling_signal import RollingRejectionTracker
+ 
 from common.geo import haversine_km, network_delay_ms
 from common.models import Server, Replica, ServerState, ReplicaState, Request, RequestStatus
 from common.metrics import MetricsCollector
@@ -37,6 +38,7 @@ class RealtimeEngine:
         self.algorithm = algorithm
         self.metrics = MetricsCollector(algorithm=algorithm_name)
         self.logger = event_logger
+        self._rolling_rejection = RollingRejectionTracker()
 
         self.servers: Dict[int, Server] = self._init_shadow_servers()
         self.replicas_by_service: Dict[int, List[Replica]] = defaultdict(list)
@@ -169,13 +171,14 @@ class RealtimeEngine:
             await asyncio.sleep(1)
         self._log("initial_placement_ready_timeout")
 
-    async def _activate_server(self, server_id: int):
+    async def _activate_server(self, server_id: int, is_emergency: bool = False):
         s = self.servers[server_id]
         if s.state == ServerState.ACTIVE:
             return
         k8s_client.uncordon_node(server_id)
         redis_state.set_server_state(server_id, "ACTIVE")
         s.state = ServerState.ACTIVE
+        s.is_emergency_boot = is_emergency 
         s.last_transition_time = time.monotonic()
         s.num_boots += 1
         # *** رفع باگ: هزینه‌ی انرژی ثابت هر رویداد boot (CFG.e_boot_server_j
@@ -219,8 +222,9 @@ class RealtimeEngine:
                 draining_server.lat, draining_server.long, x.lat, x.long))
             target = candidates[0]
             reserved_cpu[target.id] += cpu
-            self._emergency_boot_for_service[svc_id] = target.id
-            await self._activate_server(target.id)
+            self._emergency_boot_for_service[svc_id] = target.id 
+            await self._activate_server(target.id, is_emergency=True)
+            target.is_emergency_boot = True
             self._log("emergency_boot_triggered", server_id=target.id, service_id=svc_id,
                       source_server_id=draining_server.id, reason="migration_target_unavailable")
 
@@ -468,6 +472,9 @@ class RealtimeEngine:
                              if (time.monotonic() - r.created_at) >=
                              CFG.min_replica_age_before_scale_down_sec]
             total = max(self._tick_total[svc_id], 1)
+            self._rolling_rejection.push_tick(
+                svc_id, self._tick_rejected[svc_id], self._tick_total[svc_id])
+            rolling_rate = self._rolling_rejection.rolling_rejection_rate(svc_id)
             avg_occ = (sum(redis_state.get_queue_occupancy(svc_id, r.server_id) for r in ready)
                        / len(ready)) if ready else 0.0
 
@@ -484,6 +491,7 @@ class RealtimeEngine:
                 "queue_len": CFG.services_info[svc_id]["queue_len"],
                 "rejection_rate": self._tick_rejected[svc_id] / total,
                 "deadline_violation_rate": self._tick_violated[svc_id] / total,
+                "rejection_rate_rolling": rolling_rate, 
                 "recent_arrivals": self._tick_total[svc_id],
                 "demand_centroid": self._service_demand_centroid.get(svc_id),
                 "proximity_violation_rate": self._tick_proximity_violated[svc_id] / total,
@@ -563,14 +571,11 @@ class RealtimeEngine:
                 return True
         return False
 
-    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool:
-        # *** رفع باگ: هم‌راستا با simulator/engine.py - این معیار دیگر عیناً
-        # فرمول/آستانه‌ی داخلی Greedy نیست (نگاه کنید common/config.py برای
-        # توضیح کامل رفع تاتولوژی ممیزی SCALE_UP).
+    def _was_scale_up_necessary(self, svc_id: int, snapshot: dict) -> bool: 
         sv = snapshot["services"][svc_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
         return (occ_ratio > CFG.decision_audit_scale_up_occ_threshold
-                or sv["rejection_rate"] > 0.0
+                or sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0.0
                 or sv["deadline_violation_rate"] > 0.0)
 
     def _was_scale_down_necessary(self, svc_id: int, snapshot: dict) -> bool:
@@ -649,8 +654,8 @@ class RealtimeEngine:
             elif n_active <= 1:
                 skip_reason = "last_active_server"
             elif s.in_cooldown(now, CFG.cooldown_sec):
-                skip_reason = "cooldown"
-            elif (now - s.last_transition_time) < CFG.min_active_duration_sec:
+                skip_reason = "cooldown" 
+            elif (not s.is_emergency_boot) and (self.now - s.last_transition_time) < CFG.min_active_duration_sec:
                 skip_reason = "min_active_duration"
             else:
                 if await self._drain_server(action.server_id):

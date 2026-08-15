@@ -98,7 +98,8 @@ class Server:
     cumulative_busy_cpu_seconds: float = 0.0  
     num_boots: int = 0
     num_shutdowns: int = 0
-
+    is_emergency_boot: bool = False
+    
     def _speed_factor(self) -> float:
         from common.config import CFG, REFERENCE_MIPS_PER_CORE
         return CFG.server_profiles[self.profile]["mips_per_core"] / REFERENCE_MIPS_PER_CORE
@@ -136,11 +137,12 @@ class Server:
         effective_demand = round(cpu_demand * self._speed_factor())
         if self.free_capacity() < effective_demand:
             return False
+        if not CFG.enforce_sla_feasibility:
+            return True
         return is_sla_feasible(service_id, self.lat, self.long,
                                 CFG.server_profiles[self.profile]["mips_per_core"],
                                 bts_lat=bts_lat, bts_long=bts_long)
-
-
+        
     def in_cooldown(self, now: float, cooldown_sec: float) -> bool:
         return (now - self.last_transition_time) < cooldown_sec
 

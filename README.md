@@ -1104,6 +1104,20 @@ python -m evaluation.compare_runs --data test
 EOTCH_SEED=42 python3 -m algorithms.ppo.train
 EOTCH_SEED=42 python3 -m evaluation.compare_runs --output-dir outputs/seed42
 python3 -m evaluation.aggregate_seeds --seeds 42 43 44 45 --base-dir outputs
+
+
+
+python analyze_decision_quality.py outputs/seed40/ppo_events.jsonl
+
+python diagnose_violations_by_service.py outputs/seed40/ppo_events.jsonl
+
+python analyze_scaleup_by_service.py outputs/seed40/ppo_events.jsonl
+
+python analyze_necessity_by_service.py outputs/seed40/ppo_events.jsonl
+python analyze_decision_quality.py outputs/seed40/voila_events.jsonl
+python analyze_decision_quality.py outputs/seed40/hpa_events.jsonl
+
+
 ```
 
 اجرای واقعی روی Kubernetes (دو ترمینال):

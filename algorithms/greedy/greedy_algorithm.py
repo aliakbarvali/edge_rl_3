@@ -20,12 +20,13 @@ class GreedyAlgorithm(AlgorithmBase):
         svc = metrics_snapshot["services"][service_id]
         queue_len = svc["queue_len"]
         occ_ratio = svc["avg_queue_occupancy"] / queue_len if queue_len else 0.0
-        if occ_ratio > 0.7 or svc["rejection_rate"] > 0:
+        rejection_signal = svc.get("rejection_rate_rolling", svc["rejection_rate"])
+        if occ_ratio > 0.7 or rejection_signal > 0:
             return ScaleAction.SCALE_UP
         if occ_ratio < 0.1 and svc["n_ready_replicas"] > 1:
             return ScaleAction.SCALE_DOWN
         return ScaleAction.NO_CHANGE
-
+ 
     def provision_decision(self, servers, metrics_snapshot, now):
         self._last_snapshot = metrics_snapshot
         active = [s for s in servers.values() if s.state == ServerState.ACTIVE]

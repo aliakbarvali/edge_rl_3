@@ -169,12 +169,16 @@ class EdgeResourceEnv(gym.Env):
         norm_energy = min(g["energy_recent_joule"] / NORM_ENERGY_JOULE, 2.0)
         norm_lb = min(load_cv, 2.0)
         norm_rejected = min(g["num_rejected_recent"] / _NORM_REJECTED_PER_TICK, 2.0)
-
+        n_services_rejected = sum(1 for s in snapshot["services"].values()
+                                if s["rejection_rate"] > 0)
+        norm_rejected_services = min(n_services_rejected / CFG.n_services, 1.0)
+     
         penalty = (w["w1_response_time"] * norm_rt +
-                   w["w2_deadline"] * avg_dv_rate +
-                   w["w3_energy"] * norm_energy +
-                   w["w4_load_balance"] * norm_lb +
-                   w["w5_rejected"] * norm_rejected)
+           w["w2_deadline"] * avg_dv_rate +
+           w["w3_energy"] * norm_energy +
+           w["w4_load_balance"] * norm_lb +
+           w["w5_rejected"] * norm_rejected +
+           w["w6_rejected_service_spread"] * norm_rejected_services)
         penalty += CFG.ppo_penalty_per_action * n_actions_applied
 
         self._last_reward_components = {
@@ -183,6 +187,7 @@ class EdgeResourceEnv(gym.Env):
             "energy": w["w3_energy"] * norm_energy,
             "load_balance": w["w4_load_balance"] * norm_lb,
             "rejected": w["w5_rejected"] * norm_rejected,
+            "rejected_service_spread": w["w6_rejected_service_spread"] * norm_rejected_services,
             "action_penalty": CFG.ppo_penalty_per_action * n_actions_applied,
             "deadline_weighted_raw": weighted_dv_rate,
             "deadline_unweighted_raw": unweighted_dv_rate,

@@ -35,7 +35,7 @@ class VoilaAlgorithm(AlgorithmBase):
         sv = metrics_snapshot["services"][service_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
-        capacity_violation = occ_ratio > self.OCC_UP_THRESHOLD or sv["rejection_rate"] > 0.0
+        capacity_violation = occ_ratio > self.OCC_UP_THRESHOLD or sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0.0
         proximity_violation = (not capacity_violation) and sv["proximity_violation_rate"] > 0.0
 
         if capacity_violation:
