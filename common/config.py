@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Tuple
-
+import os as _os
 
 SERVER_PROFILES = {
     # HPE ProLiant DL360 Gen10, 1x Xeon Silver 4110 (8c, 2.10GHz, 85W TDP)

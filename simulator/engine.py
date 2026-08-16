@@ -172,7 +172,11 @@ class SimulationEngine:
         for svc_id in rescued:
             del self._emergency_boot_for_service[svc_id]
             self._log("emergency_boot_completed", server_id=server_id, service_id=svc_id)
-            
+        # *** بعد از این‌که رپلیکای emergency رسماً میزبانی شد، دیگر این سرور
+        # از قید min_active_duration معاف نیست - رفتار عادی برایش برقرار می‌شود
+        # تا اگر بعداً بار واقعی روی آن قرار گرفت، زودتر از موعد TURN_OFF نشود.
+        if rescued:
+            s.is_emergency_boot = False
             
     def _start_server_drain(self, server_id: int) -> bool:
         s = self.servers[server_id]
@@ -460,8 +464,8 @@ class SimulationEngine:
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": s.instantaneous_utilization(self.now),
                 "free_capacity": s.free_capacity(),
-                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec),
-                "min_active_duration_met": (self.now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec), 
+                "min_active_duration_met": (s.is_emergency_boot or (self.now - s.last_transition_time) >= CFG.min_active_duration_sec),
                 "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
             }
         for svc_id in CFG.active_services:
@@ -502,8 +506,9 @@ class SimulationEngine:
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
-                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec),
-                "min_active_duration_met": (self.now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "provision_cooldown_active": s.in_cooldown(self.now, CFG.cooldown_sec), 
+                "min_active_duration_met": (s.is_emergency_boot or (self.now - s.last_transition_time) >= CFG.min_active_duration_sec),
+                
                 "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
             }
         

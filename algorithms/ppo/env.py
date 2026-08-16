@@ -56,9 +56,10 @@ def compute_action_masks(engine: SimulationEngine, last_snapshot: dict | None) -
     for sid in _SERVER_IDS:
         s = engine.servers[sid]
         cooldown = s.in_cooldown(now, CFG.cooldown_sec)
-        can_on = (s.state == ServerState.OFF) and (not cooldown)
+        can_on = (s.state == ServerState.OFF) and (not cooldown) 
         can_off = (s.state == ServerState.ACTIVE and not cooldown and n_active > 1
-                   and (now - s.last_transition_time) >= CFG.min_active_duration_sec)
+           and (s.is_emergency_boot or
+                (now - s.last_transition_time) >= CFG.min_active_duration_sec))
         masks.extend([True, can_on, can_off])
     return np.array(masks, dtype=bool)
 

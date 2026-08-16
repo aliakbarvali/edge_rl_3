@@ -461,8 +461,8 @@ class RealtimeEngine:
             snapshot["servers"][sid] = {
                 "state": s.state, "utilization": avg_util,
                 "free_capacity": s.free_capacity(),
-                "provision_cooldown_active": s.in_cooldown(now, CFG.cooldown_sec),
-                "min_active_duration_met": (now - s.last_transition_time) >= CFG.min_active_duration_sec,
+                "provision_cooldown_active": s.in_cooldown(now, CFG.cooldown_sec), 
+                "min_active_duration_met": (s.is_emergency_boot or (now - s.last_transition_time) >= CFG.min_active_duration_sec),
                 "is_last_active_server": (s.state == ServerState.ACTIVE and n_active <= 1),
             }
         for svc_id in CFG.active_services:
@@ -654,8 +654,8 @@ class RealtimeEngine:
             elif n_active <= 1:
                 skip_reason = "last_active_server"
             elif s.in_cooldown(now, CFG.cooldown_sec):
-                skip_reason = "cooldown" 
-            elif (not s.is_emergency_boot) and (self.now - s.last_transition_time) < CFG.min_active_duration_sec:
+                skip_reason = "cooldown"  
+            elif (not s.is_emergency_boot) and (now - s.last_transition_time) < CFG.min_active_duration_sec:
                 skip_reason = "min_active_duration"
             else:
                 if await self._drain_server(action.server_id):
