@@ -185,7 +185,7 @@ UTIL_SCALE_DOWN_THRESHOLD = 0.45
 MONITOR_WINDOW_SEC = 30.0
 SUSTAIN_LOW_SEC = 60.0
 SUSTAIN_HIGH_SEC = 30.0
-COOLDOWN_SEC = 60.0
+COOLDOWN_SEC = 20.0
 
 # *** رفع باگ (ممیزی SCALE هم‌ارز با Greedy): این آستانه قبلاً دقیقاً 0.7
 # بود، یعنی عین آستانه‌ی داخلی GreedyAlgorithm.scale_decision (occ_ratio>0.7).
@@ -200,7 +200,7 @@ COOLDOWN_SEC = 60.0
 #    اشغال صف که می‌تواند تصادفاً با آستانه‌ی یکی از الگوریتم‌ها یکی باشد.
 DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD = 0.85
 DECISION_AUDIT_SCALE_DOWN_OCC_THRESHOLD = 0.2
-DECISION_INTERVAL_SEC = 30.0
+DECISION_INTERVAL_SEC = 50.0
 
 # PPO Reward
 PPO_REWARD_WEIGHTS = {
@@ -232,7 +232,63 @@ PPO_DEADLINE_FAIRNESS_ALPHA = 0.7
 
 SEED = int(_os.environ.get("EOTCH_SEED", "42"))
 
- 
+# ---------------------------------------------------------------------------
+# افزایش ترافیک با «زنجیره‌ی درخواست همتراز» (uniform request-chaining)
+#
+# ایده: ۱۵ سرویس به ۵ سه‌تایی (triad) بر اساس نزدیکی deadline/نوع کارکرد
+# افراز می‌شوند (نه دلبخواهی):
+#   G1 = {1,2,3}   ultra-low-latency signalling/V2X          (30-60ms)
+#   G2 = {4,5,6}   mission-critical voice/PTT                (75-100ms)
+#   G3 = {7,8,9}   streaming/mission-critical data            (150-300ms)
+#   G4 = {10,11,12} video-buffered/IoT-batch/analytics-offload (300ms-2s)
+#   G5 = {13,14,15} heavy batch/ML/retraining                 (3s-40s)
+#
+# توجیه دامنه‌ای: وقوع یک رویداد شبکه در یک سرویس، معمولاً چند تابع شبکه‌ی
+# هم‌ردیف/هم‌زمان دیگر را هم در همان لایه‌ی تأخیر فعال می‌کند (مثلاً یک
+# رویداد ایمنی V2X هم‌زمان signalling حیاتی و پیام تبادلی را هم فعال
+# می‌کند) - این الگوی «service function chaining» در NFV/MEC شناخته‌شده
+# است. چون هر سه‌تایی دقیقاً ۳ عضو دارد و هر عضو خودش را هم شامل می‌شود،
+# هر سرویس (بدون استثنا) دقیقاً ۳ برابر تقویت می‌شود - در تضاد با نگاشت
+# دستی قبلی که ضریب ۱× تا ۷× نامتوازن تولید می‌کرد.
+SERVICE_CHAIN_GROUPS: Tuple[Tuple[int, ...], ...] = (
+    (1, 2, 3), (4, 5, 6), (7, 8, 9), (10, 11, 12), (13, 14, 15),
+)
+SERVICE_EXPANSION_MAP: Dict[int, Tuple[int, ...]] = {
+    sid: group for group in SERVICE_CHAIN_GROUPS for sid in group
+}
+# jitter کوچک زمانی (نه احتمال کمتر از ۱): برای اینکه دو عضو دیگر زنجیره
+# دقیقاً در همان تیک ساعت (هم‌بستگی مصنوعی/burst کاملاً هم‌زمان) نرسند، ولی
+# ضریب تقویت هر سرویس دقیقاً ۳× (uniform) بماند - طبق درخواست صریح.
+SERVICE_EXPANSION_JITTER_SEC = 0.05
+ENABLE_SERVICE_EXPANSION = bool(int(_os.environ.get("EOTCH_ENABLE_SVC_EXPANSION", "0")))
+# ---------------------------------------------------------------------------
+# ضریب افزایش خام ترافیک (مستقل از _expand_service_chains)
+#
+# برخلاف SERVICE_EXPANSION که دقیقاً ۳× و بر پایه‌ی گروه‌بندی معنادار
+# deadline است، این یک ضریب دلخواه (حتی اعشاری) است که صرفاً برای رساندن
+# سطح کلی ترافیک به جایی که واقعاً provisioning/scaling را فعال کند
+# استفاده می‌شود. اگر هر دو فعال باشند، ترکیبی می‌شوند
+# (مثلاً 3× زنجیره × 4× ضریب خام = 12× کل).
+TRAFFIC_MULTIPLIER = float(_os.environ.get("EOTCH_TRAFFIC_MULTIPLIER", "1.0"))
+TRAFFIC_MULTIPLIER_JITTER_SEC = 0.02
+# ---------------------------------------------------------------------------
+# ضریب افزایش ترافیک به‌تفکیک سرویس (per-service traffic multiplier)
+#
+# TRAFFIC_MULTIPLIER سراسری (بالا) روی همه‌ی سرویس‌ها یکسان اعمال می‌شود؛
+# اما exec_time سرویس‌ها سه مرتبه‌ی بزرگی فرق دارد (svc1≈11ms در برابر
+# svc15≈26s)، پس یک ضریب یکسان یا سرویس‌های سبک را در حد ۱ رپلیکا نگه
+# می‌دارد یا سرویس‌های سنگین را به‌شدت overload می‌کند (Erlang=rate×exec_time).
+# اعداد پیش‌فرض زیر با فرمول همین Erlang، روی نرخ واقعی مشاهده‌شده در
+# Day_2014-06-01.csv (بعد از prepare_shanghai_data.py) کالیبره شده‌اند تا
+# svc11-15 در پیک به ۵-۸ رپلیکا برسند و svc1-10 (latency-critical، فیزیکاً
+# امکان رپلیکای زیاد بدون حجم غیرواقعی ندارند) در ۱-۳ رپلیکا بمانند.
+TRAFFIC_MULTIPLIER_PER_SERVICE: Dict[int, float] = {
+    1: 17.0, 2: 17.0, 3: 22.0, 4: 21.0, 5: 24.5, 6: 28.0,
+    7: 31.0, 8: 33.5, 9: 38.0, 10: 51.0,
+    11: 320.0, 12: 192.0, 13: 145.0, 14: 30.0, 15: 12.5,
+}
+# اگر خاموش باشد (پیش‌فرض)، رفتار قبلی (فقط TRAFFIC_MULTIPLIER سراسری) دقیقاً حفظ می‌شود.
+ENABLE_PER_SERVICE_MULTIPLIER = bool(int(_os.environ.get("EOTCH_ENABLE_PER_SERVICE_MULTIPLIER", "0"))) 
 
 @dataclass(frozen=True)
 class Config:
@@ -280,5 +336,12 @@ class Config:
     min_active_duration_sec: float = MIN_ACTIVE_DURATION_SEC
     min_replica_age_before_scale_down_sec: float = MIN_REPLICA_AGE_BEFORE_SCALE_DOWN_SEC
     enforce_sla_feasibility: bool = ENFORCE_SLA_FEASIBILITY
+    service_expansion_map: dict = field(default_factory=lambda: SERVICE_EXPANSION_MAP)
+    service_expansion_jitter_sec: float = SERVICE_EXPANSION_JITTER_SEC
+    enable_service_expansion: bool = ENABLE_SERVICE_EXPANSION
+    traffic_multiplier: float = TRAFFIC_MULTIPLIER
+    traffic_multiplier_jitter_sec: float = TRAFFIC_MULTIPLIER_JITTER_SEC
+    traffic_multiplier_per_service: dict = field(default_factory=lambda: TRAFFIC_MULTIPLIER_PER_SERVICE)
+    enable_per_service_multiplier: bool = ENABLE_PER_SERVICE_MULTIPLIER
 
 CFG = Config()

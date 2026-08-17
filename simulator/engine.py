@@ -771,10 +771,12 @@ class SimulationEngine:
                 self.metrics.record_blocked_opportunity("SCALE_DOWN")
             else:
                 self.metrics.record_missed_opportunity("SCALE_DOWN")
- 
+    
+        sv = snapshot["services"][svc_id]
+        occ_ratio_dbg = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
         self._log("scale_decision", service_id=svc_id, decision=decision.name,
                   applied=applied, skip_reason=skip_reason,
-                  necessary_scale_up=necessary_up, necessary_scale_down=necessary_down)
+                  necessary_scale_up=necessary_up, necessary_scale_down=necessary_down,occ_ratio=occ_ratio_dbg, rejection_rate=sv["rejection_rate"])
 
     def _update_sustain_tracking(self, snapshot: dict):
         for sid, s in self.servers.items():

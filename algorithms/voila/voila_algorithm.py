@@ -14,7 +14,18 @@ from algorithms.base import AlgorithmBase, ScaleAction, ProvisionAction, Provisi
 
 class VoilaAlgorithm(AlgorithmBase):
     name = "voila"
-    OCC_UP_THRESHOLD = 0.65
+
+    # *** طبق مقاله‌ی VOILA (بخش V.C): نقض ظرفیت واقعی (Vco) وقتی رخ می‌دهد
+    # که workload یک replica از co×τ بگذرد - یعنی معادل occ_ratio=1.0. اما
+    # مقاله صراحتاً یک safety margin تعریف می‌کند تا scale-up *قبل* از این
+    # نقطه (نه دقیقاً روی آن) trigger شود، چون ایجاد replica جدید چند ده
+    # ثانیه طول می‌کشد. در آزمایش تست‌بد (Fig. 4) و در تحلیل حساسیت (بخش
+    # V.D) مقاله safety=20% را به‌عنوان مقدار پیش‌فرض/تعادل انتخاب کرده -
+    # یعنی trigger در (1 - 0.20) = 80% ظرفیت، نه در 100%.
+    OCC_UP_THRESHOLD = 1.0        # نقطه‌ی نقض واقعی (معادل دقیق Vco مقاله) - فقط مرجع مفهومی
+    OCC_SAFETY_MARGIN = 0.20      # safety=20% طبق بخش V.C/V.D مقاله
+    OCC_UP_TRIGGER = OCC_UP_THRESHOLD - OCC_SAFETY_MARGIN   # = 0.80 — نقطه‌ی واقعی trigger
+
     OCC_DOWN_THRESHOLD = 0.20
 
     SCALE_DOWN_PATIENCE_TICKS = 3
@@ -35,7 +46,24 @@ class VoilaAlgorithm(AlgorithmBase):
         sv = metrics_snapshot["services"][service_id]
         occ_ratio = (sv["avg_queue_occupancy"] / sv["queue_len"]) if sv["queue_len"] else 0.0
 
-        capacity_violation = occ_ratio > self.OCC_UP_THRESHOLD or sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0.0
+        # *** رفع باگ (پیاده‌سازی ناقص safety margin مقاله‌ی VOILA):
+        # OCC_UP_THRESHOLD=1.0 معادل نقطه‌ی نقض واقعی Vco مقاله است (وقتی
+        # ϕj.load > co×τ)، اما مقاله صراحتاً می‌گوید تصمیم scale-up باید
+        # *قبل* از رسیدن به این نقطه گرفته شود (بخش V.C: "a practical
+        # solution... consists of defining a safety margin and triggering
+        # scale-up operations... before saturation actually takes place").
+        # پیش از این رفع، اینجا مستقیماً از OCC_UP_THRESHOLD (۱.۰) استفاده
+        # می‌شد که یعنی سیستم دقیقاً تا لحظه‌ی نقض کامل صف صبر می‌کرد -
+        # همان چیزی که OCC_UP_TRIGGER (۰.۸۰، معادل safety=20% در آزمایش
+        # تست‌بد مقاله) قرار بود جلویش را بگیرد اما هرگز واقعاً استفاده
+        # نمی‌شد (تعریف شده بود ولی جایی خوانده نمی‌شد). حالا trigger واقعی
+        # روی OCC_UP_TRIGGER است؛ OCC_UP_THRESHOLD (۱.۰) صرفاً به‌عنوان
+        # مرجع مفهومی نگه داشته می‌شود - ممیزی مستقل necessity در
+        # common/config.py:DECISION_AUDIT_SCALE_UP_OCC_THRESHOLD از این
+        # ثابت اصلاً استفاده نمی‌کند (عمداً جدا نگه داشته شده تا تاتولوژی
+        # نشود - نگاه کنید توضیح در common/config.py).
+        capacity_violation = (occ_ratio > self.OCC_UP_TRIGGER
+                               or sv.get("rejection_rate_rolling", sv["rejection_rate"]) > 0.0)
         proximity_violation = (not capacity_violation) and sv["proximity_violation_rate"] > 0.0
 
         if capacity_violation:
@@ -67,11 +95,10 @@ class VoilaAlgorithm(AlgorithmBase):
             return ScaleAction.SCALE_DOWN
 
         return ScaleAction.NO_CHANGE
-    
-    
-    """def select_replica(self, request: Request, candidate_replicas: List[Replica],
+
+    def select_replica(self, request: Request, candidate_replicas: List[Replica],
                         servers: Dict[int, Server], now: float) -> Optional[Replica]:
-     
+
         if not candidate_replicas:
             return None
         if self._vivaldi is None:
@@ -94,7 +121,8 @@ class VoilaAlgorithm(AlgorithmBase):
             true_rtt_ms = 2 * network_delay_ms(true_dist_km, CFG.base_latency_ms, CFG.k_ms_per_km)
             self._vivaldi.observe(request.bts_lat, request.bts_long, chosen.server_id, true_rtt_ms)
 
-        return chosen"""
+        return chosen
+
     # ------------------------------------------------------------------
     def select_placement_server(self, service_id: int, servers: Dict[int, Server]) -> Optional[int]:
         cpu = CFG.services_info[service_id]["resource_mips"]
@@ -127,8 +155,15 @@ class VoilaAlgorithm(AlgorithmBase):
         overloaded = [s for s in active
                       if metrics_snapshot["servers"][s.id]["utilization"] > CFG.util_scale_up_threshold]
 
+        # *** رفع باگ (سازگاری با safety margin جدید): این occ_threshold
+        # قبلاً هم روی OCC_UP_THRESHOLD (۱.۰) بود - یعنی سرویسی فقط وقتی
+        # "starved" حساب می‌شد که صفش کاملاً پر شده باشد. طبق همان فلسفه‌ی
+        # safety-margin مقاله (بخش V.C)، شناسایی starvation هم باید زودتر
+        # (روی OCC_UP_TRIGGER=0.80) اتفاق بیفتد، نه فقط وقتی صف کاملاً پر
+        # شده - وگرنه TURN_ON برای رفع starvation همیشه یک قدم عقب‌تر از
+        # SCALE_UP خودِ سرویس می‌ماند.
         starved_services = self._capacity_starved_services(metrics_snapshot, servers,
-                                                             occ_threshold=self.OCC_UP_THRESHOLD)
+                                                             occ_threshold=self.OCC_UP_TRIGGER)
         if overloaded or starved_services:
             off_servers = [s for s in servers.values() if s.state == ServerState.OFF]
             if off_servers:
